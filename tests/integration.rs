@@ -106,11 +106,10 @@ impl Daemon {
     fn wait_for_relay(sandbox: &Sandbox) -> String {
         let deadline = Instant::now() + Duration::from_secs(45);
         loop {
-            if let Some(info) = sandbox.daemon_info() {
-                if info["relay_connected"] == true {
+            if let Some(info) = sandbox.daemon_info()
+                && info["relay_connected"] == true {
                     return info["relay_url"].as_str().unwrap().to_string();
                 }
-            }
             assert!(Instant::now() < deadline, "the daemon did not reach an iroh relay within 45 seconds (is this computer online?)");
             std::thread::sleep(Duration::from_millis(250));
         }
@@ -234,6 +233,25 @@ fn link_pairing_and_sync_over_iroh() {
     let report = phone(&sandbox, &["--identity", identity, "--protocol-version", "2", "--addr", &addr]);
     assert_eq!((report["result"].as_str(), report["reason"].as_str()), (Some("refused"), Some("version")), "{report}");
     assert_eq!(total_items(&sandbox), 700, "refused sessions stored nothing");
+
+    // Items from a JSONL file, one of which has no kind: it is counted as rejected, the
+    // rest are stored, and the session carries on.
+    let jsonl = sandbox.home.join("items.jsonl");
+    let lines = [
+        json!({ "id": "0A000000-0000-4000-8000-000000000001", "kind": "note", "created_at": 1794000000.0, "text": "from a file" }).to_string(),
+        json!({ "id": "0A000000-0000-4000-8000-000000000002", "created_at": 1794000001.0, "text": "no kind" }).to_string(),
+        json!({ "id": "0a000000-0000-4000-8000-000000000003", "kind": "dictation", "source": "watch", "created_at": 1794000002.0, "updated_at": 1794000003.0, "text": "lowercase id, unknown source", "surprise": true }).to_string(),
+    ];
+    std::fs::write(&jsonl, lines.join("\n")).unwrap();
+    let report = phone(&sandbox, &["--identity", identity, "--file", jsonl.to_str().unwrap(), "--addr", &addr]);
+    assert_eq!((report["acks"][0]["stored"].as_u64(), report["acks"][0]["rejected"].as_u64()), (Some(2), Some(1)), "{report}");
+    assert_eq!(total_items(&sandbox), 702);
+    // Ids are stored uppercase, and a source this version has never heard of passes through.
+    let shown = sandbox.json(&["show", "0A000000-0000-4000-8000-000000000003", "--json"]);
+    assert_eq!((shown[0]["source"].as_str(), shown[0]["carrier"].as_str()), (Some("watch"), Some("link")));
+    let report = phone(&sandbox, &["--identity", identity, "--delete", "0A000000-0000-4000-8000-000000000001", "--delete", "0A000000-0000-4000-8000-000000000003", "--addr", &addr]);
+    assert_eq!(report["stored"], 2);
+    assert_eq!(total_items(&sandbox), 700);
 
     // A deletion removes the item from every listing.
     let victim = "FA4E0000-0000-4000-8000-000000000003";
@@ -392,9 +410,10 @@ fn web_page_is_local_and_locked() {
     assert_eq!(status, 200);
     assert!(response.contains("zone://pair?v=1&n=") && response.contains("<svg"));
 
-    // The listener is on the loopback interface only.
-    let info = sandbox.daemon_info().unwrap();
-    assert_eq!(info["http_port"], port);
+    // A second daemon for the same data folder refuses to start.
+    let second = sandbox.run(&["serve", "--port", "0", "--quiet"]);
+    assert!(!second.status.success());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("already running"));
 }
 
 // ------------------------------------------------------------------------- backup import and queries
