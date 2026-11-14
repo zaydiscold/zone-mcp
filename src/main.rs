@@ -3,6 +3,23 @@
 //! One program. It receives an iPhone's Zone library (dictations, notes, meeting
 //! transcripts), keeps a copy in SQLite, and serves it to people and to AI agents.
 
+// These take the place of the standard macros in every module below. The standard ones panic
+// when the output is a closed pipe (`zone status | head -1`). See out.rs.
+macro_rules! println {
+    () => { $crate::out::stdout(format_args!(""), true) };
+    ($($arg:tt)*) => { $crate::out::stdout(format_args!($($arg)*), true) };
+}
+macro_rules! print {
+    ($($arg:tt)*) => { $crate::out::stdout(format_args!($($arg)*), false) };
+}
+macro_rules! eprintln {
+    () => { $crate::out::stderr(format_args!(""), true) };
+    ($($arg:tt)*) => { $crate::out::stderr(format_args!($($arg)*), true) };
+}
+macro_rules! eprint {
+    ($($arg:tt)*) => { $crate::out::stderr(format_args!($($arg)*), false) };
+}
+
 mod admin;
 mod backup;
 mod cli;
@@ -16,6 +33,7 @@ mod item;
 mod link;
 mod log;
 mod mcp;
+mod out;
 mod pairing;
 mod paths;
 mod serve;

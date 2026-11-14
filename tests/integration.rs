@@ -850,3 +850,42 @@ fn mcp_install_claude_code_calls_claude_mcp_add() {
     let explained = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(explained.contains("claude mcp add --scope user zone"), "{explained}");
 }
+
+/// `zone mcp status | head -4` used to panic with "failed printing to stdout: Broken pipe".
+/// Every command given a standard output nobody reads must finish quietly.
+#[test]
+fn a_closed_pipe_is_not_a_crash() {
+    let sandbox = Sandbox::new();
+    let package = write_backup(&sandbox.home.join("Zone Backups"));
+    sandbox.ok(&["import", package.to_str().unwrap()]);
+    let commands: &[&[&str]] = &[
+        &["mcp", "status"],
+        &["status"],
+        &["status", "--json"],
+        &["doctor"],
+        &["devices"],
+        &["list"],
+        &["list", "--json"],
+        &["search", "synthetic"],
+        &["stats"],
+        &["export"],
+        &["backup-folder"],
+        &["import", package.to_str().unwrap()],
+        &["dev", "synthetic", "--count", "2000"],
+        &["--help"],
+    ];
+    for args in commands {
+        // A pipe whose reading end is already closed: the first write fails.
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = sandbox.zone().args(*args).stdin(Stdio::null()).stdout(writer).stderr(Stdio::piped()).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("panicked") && !stderr.contains("Broken pipe"), "zone {args:?} with a closed pipe:\n{stderr}");
+        // `doctor` exits 1 because no daemon runs in this sandbox. Nothing may exit by panic (101) or signal.
+        let code = output.status.code();
+        assert!(matches!(code, Some(0) | Some(1)), "zone {args:?} with a closed pipe exited with {code:?}:\n{stderr}");
+        if args[0] != "doctor" {
+            assert_eq!(code, Some(0), "zone {args:?} with a closed pipe:\n{stderr}");
+        }
+    }
+}
