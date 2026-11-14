@@ -213,6 +213,17 @@ pub fn computer_name() -> String {
             return name.to_string();
         }
     }
+    // On a Mac, the name the person gave it (shown in Finder and AirDrop).
+    #[cfg(target_os = "macos")]
+    {
+        let friendly = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok();
+        if let Some(out) = friendly.filter(|out| out.status.success()) {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
     let from_command = std::process::Command::new("hostname")
         .output()
         .ok()

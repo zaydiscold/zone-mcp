@@ -1,7 +1,7 @@
 //! One library item as it travels between the phone and the computer (see PROTOCOL.md).
 
 use anyhow::{Result, bail};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 /// How an item reached this computer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,12 +98,13 @@ impl Item {
     }
 
     /// The wire form, as the phone would send it.
+    #[cfg(test)]
     pub fn to_json(&self) -> Value {
         if self.deleted {
-            return json!({ "id": self.id, "kind": self.kind, "deleted": true, "updated_at": self.updated_at });
+            return serde_json::json!({ "id": self.id, "kind": self.kind, "deleted": true, "updated_at": self.updated_at });
         }
-        let extra: Value = serde_json::from_str(&self.extra).unwrap_or_else(|_| json!({}));
-        json!({
+        let extra: Value = serde_json::from_str(&self.extra).unwrap_or_else(|_| serde_json::json!({}));
+        serde_json::json!({
             "id": self.id,
             "kind": self.kind,
             "source": self.source,
@@ -163,6 +164,7 @@ pub fn preview(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn reads_the_protocol_example() {

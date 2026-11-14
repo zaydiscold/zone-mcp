@@ -145,14 +145,6 @@ impl Applied {
     pub fn changed(&self) -> usize {
         self.inserted + self.replaced
     }
-
-    pub fn add(&mut self, other: Applied) {
-        self.inserted += other.inserted;
-        self.replaced += other.replaced;
-        self.unchanged += other.unchanged;
-        self.kept_newer += other.kept_newer;
-        self.deletions += other.deletions;
-    }
 }
 
 /// One stored item.
@@ -327,7 +319,16 @@ impl Db {
     /// Opens the library in the data directory, creating both when missing.
     pub fn open_default() -> Result<Db> {
         let dir = paths::ensure_data_dir()?;
-        Db::open(&paths::database(&dir))
+        let db = Db::open(&paths::database(&dir))?;
+        // The library holds private speech: readable by its owner only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["zone.db", "zone.db-wal", "zone.db-shm"] {
+                let _ = std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o600));
+            }
+        }
+        Ok(db)
     }
 
     pub fn open(path: &Path) -> Result<Db> {
@@ -457,6 +458,17 @@ impl Db {
         let (clause, args) = filter_sql(filter);
         let sql = format!("SELECT count(*) FROM items i WHERE {clause}");
         Ok(self.conn.query_row(&sql, params_from_iter(args), |row| row.get(0))?)
+    }
+
+    /// `(kind, count)` for the items a filter selects, largest first.
+    pub fn counts_by_kind_filtered(&self, filter: &Filter) -> Result<Vec<(String, i64)>> {
+        let (clause, args) = filter_sql(filter);
+        let sql = format!("SELECT i.kind, count(*) FROM items i WHERE {clause} GROUP BY i.kind ORDER BY count(*) DESC, i.kind");
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement
+            .query_map(params_from_iter(args), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Full-text search. `order` none means best match first.
