@@ -1,6 +1,6 @@
 //! The library on this computer: one SQLite file.
 //!
-//! Every carrier (Link, backup folder, later Flash) ends in [`Db::apply_items`], which applies
+//! Every carrier (Link, Flash, backup folder) ends in [`Db::apply_items`], which applies
 //! the merge rule from PROTOCOL.md through the single function [`merge_decision`].
 
 use std::path::Path;
@@ -95,23 +95,26 @@ pub enum Decision {
     Keep,
 }
 
-/// The merge rule, for every carrier.
+/// The merge rule, for every carrier (PROTOCOL.md, "Items").
 ///
-/// Insert when the id is new. Otherwise replace when the incoming `updated_at` is greater than
-/// or equal to the stored one. A deletion always wins over a non-deleted row with an older or
-/// equal `updated_at`: so a stored deletion is not undone by a copy of the item that is not
-/// strictly newer than the deletion.
-pub fn merge_decision(stored: Option<(f64, bool)>, incoming_updated_at: f64, incoming_deleted: bool) -> Decision {
+/// A new id is always inserted. After that it depends on who is speaking:
+///
+/// - The phone itself (Link and Flash) is the source of truth. What it sends always takes the
+///   place of the stored row, whatever the times say, and a live item brings back a row that
+///   was deleted: the person restored it on the phone.
+/// - A backup folder can be stale. Its copy replaces the stored row only when its `updated_at`
+///   is greater than or equal to the stored one, and it never brings back a deleted row.
+pub fn merge_decision(carrier: Carrier, stored: Option<(f64, bool)>, incoming_updated_at: f64, incoming_deleted: bool) -> Decision {
     let Some((stored_updated_at, stored_deleted)) = stored else {
         return Decision::Insert;
     };
-    if incoming_updated_at > stored_updated_at {
+    if carrier.is_the_phone() {
         return Decision::Replace;
     }
-    if incoming_updated_at < stored_updated_at {
+    if stored_deleted && !incoming_deleted {
         return Decision::Keep;
     }
-    if stored_deleted && !incoming_deleted { Decision::Keep } else { Decision::Replace }
+    if incoming_updated_at >= stored_updated_at { Decision::Replace } else { Decision::Keep }
 }
 
 /// Who delivered a batch.
@@ -128,11 +131,11 @@ pub struct Delivery<'a> {
 pub struct Applied {
     /// New ids.
     pub inserted: usize,
-    /// Existing rows replaced by a newer or equal version with different content.
+    /// Existing rows replaced by the incoming version, which had different content.
     pub replaced: usize,
     /// Existing rows that were already identical.
     pub unchanged: usize,
-    /// Incoming items older than what is stored.
+    /// Incoming backup items that lost to the stored row: older than it, or deleted here.
     pub kept_newer: usize,
     /// Of the inserted and replaced, how many were deletions.
     pub deletions: usize,
@@ -864,7 +867,7 @@ fn apply_one(tx: &Transaction<'_>, item: &Item, delivery: &Delivery<'_>, applied
         )
         .optional()?;
 
-    let decision = merge_decision(stored.as_ref().map(|s| (s.updated_at, s.deleted)), item.updated_at, item.deleted);
+    let decision = merge_decision(delivery.carrier, stored.as_ref().map(|s| (s.updated_at, s.deleted)), item.updated_at, item.deleted);
     match decision {
         Decision::Keep => applied.kept_newer += 1,
         Decision::Insert => {
@@ -1130,6 +1133,10 @@ mod tests {
         Delivery { carrier: Carrier::Link, device_id: Some("PHONE"), received_at: now }
     }
 
+    fn flash(now: f64) -> Delivery<'static> {
+        Delivery { carrier: Carrier::Flash, device_id: Some("PHONE"), received_at: now }
+    }
+
     fn backup(now: f64) -> Delivery<'static> {
         Delivery { carrier: Carrier::Backup, device_id: None, received_at: now }
     }
@@ -1137,24 +1144,38 @@ mod tests {
     #[test]
     fn merge_rule_table() {
         use Decision::*;
-        // New id.
-        assert_eq!(merge_decision(None, 5.0, false), Insert);
-        assert_eq!(merge_decision(None, 5.0, true), Insert);
-        // Newer incoming always replaces.
-        assert_eq!(merge_decision(Some((5.0, false)), 6.0, false), Replace);
-        assert_eq!(merge_decision(Some((5.0, false)), 6.0, true), Replace);
-        assert_eq!(merge_decision(Some((5.0, true)), 6.0, false), Replace);
-        assert_eq!(merge_decision(Some((5.0, true)), 6.0, true), Replace);
-        // Equal replaces, except that a stored deletion beats a live copy of the same age.
-        assert_eq!(merge_decision(Some((5.0, false)), 5.0, false), Replace);
-        assert_eq!(merge_decision(Some((5.0, false)), 5.0, true), Replace);
-        assert_eq!(merge_decision(Some((5.0, true)), 5.0, true), Replace);
-        assert_eq!(merge_decision(Some((5.0, true)), 5.0, false), Keep);
-        // Older incoming never replaces.
-        assert_eq!(merge_decision(Some((5.0, false)), 4.0, false), Keep);
-        assert_eq!(merge_decision(Some((5.0, false)), 4.0, true), Keep);
-        assert_eq!(merge_decision(Some((5.0, true)), 4.0, false), Keep);
-        assert_eq!(merge_decision(Some((5.0, true)), 4.0, true), Keep);
+        // A new id is inserted, whoever brings it.
+        for carrier in [Carrier::Link, Carrier::Flash, Carrier::Backup] {
+            assert_eq!(merge_decision(carrier, None, 5.0, false), Insert);
+            assert_eq!(merge_decision(carrier, None, 5.0, true), Insert);
+        }
+        // The phone itself always replaces: newer, equal or older, live or deleted, and a live
+        // item brings back a deleted row.
+        for carrier in [Carrier::Link, Carrier::Flash] {
+            for stored_deleted in [false, true] {
+                for incoming_updated_at in [4.0, 5.0, 6.0] {
+                    for incoming_deleted in [false, true] {
+                        assert_eq!(
+                            merge_decision(carrier, Some((5.0, stored_deleted)), incoming_updated_at, incoming_deleted),
+                            Replace,
+                            "{carrier:?} stored_deleted={stored_deleted} at={incoming_updated_at} deleted={incoming_deleted}"
+                        );
+                    }
+                }
+            }
+        }
+        // A backup replaces a live row when it is as new or newer.
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, false)), 6.0, false), Replace);
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, false)), 5.0, false), Replace);
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, false)), 4.0, false), Keep);
+        // A backup never brings back a deleted row, however new its copy claims to be.
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, true)), 4.0, false), Keep);
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, true)), 5.0, false), Keep);
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, true)), 6.0, false), Keep);
+        // Backups hold no deletions today. If one ever did, the time rule would apply to it.
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, false)), 6.0, true), Replace);
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, false)), 4.0, true), Keep);
+        assert_eq!(merge_decision(Carrier::Backup, Some((5.0, true)), 6.0, true), Replace);
     }
 
     #[test]
@@ -1173,34 +1194,62 @@ mod tests {
     }
 
     #[test]
-    fn insert_replace_keep() {
+    fn the_phone_always_replaces() {
         let mut db = Db::open_in_memory().unwrap();
         let a = db.apply_items(&[item("A", 10.0, "first")], &link(1.0)).unwrap();
         assert_eq!((a.inserted, a.replaced, a.stored()), (1, 0, 1));
 
-        // Older: kept.
+        // Older by its own clock, but it is what the phone holds now: replaced.
         let a = db.apply_items(&[item("A", 9.0, "older words")], &link(2.0)).unwrap();
-        assert_eq!((a.kept_newer, a.changed()), (1, 0));
-        assert_eq!(db.get("A").unwrap().unwrap().text, "first");
+        assert_eq!((a.replaced, a.kept_newer), (1, 0));
+        let row = db.get("A").unwrap().unwrap();
+        assert_eq!((row.text.as_str(), row.updated_at), ("older words", 9.0));
 
         // Equal time, different content: replaced.
-        let a = db.apply_items(&[item("A", 10.0, "second")], &link(3.0)).unwrap();
+        let a = db.apply_items(&[item("A", 9.0, "second")], &link(3.0)).unwrap();
         assert_eq!(a.replaced, 1);
         assert_eq!(db.get("A").unwrap().unwrap().text, "second");
 
         // Identical again: nothing written.
-        let a = db.apply_items(&[item("A", 10.0, "second")], &link(4.0)).unwrap();
+        let a = db.apply_items(&[item("A", 9.0, "second")], &link(4.0)).unwrap();
         assert_eq!((a.unchanged, a.changed()), (1, 0));
         assert_eq!(db.get("A").unwrap().unwrap().received_at, 3.0);
 
-        // Newer: replaced.
-        let a = db.apply_items(&[item("A", 11.0, "third and final")], &link(5.0)).unwrap();
+        // Newer: replaced. Flash speaks for the phone exactly as Link does.
+        let a = db.apply_items(&[item("A", 11.0, "third and final")], &flash(5.0)).unwrap();
         assert_eq!(a.replaced, 1);
         let row = db.get("a").unwrap().unwrap();
         assert_eq!(row.text, "third and final");
         assert_eq!(row.words, 3);
         assert_eq!(row.updated_at, 11.0);
+        assert_eq!(row.carrier, "flash");
+        let a = db.apply_items(&[item("A", 2.0, "flash wins too")], &flash(6.0)).unwrap();
+        assert_eq!(a.replaced, 1);
+        assert_eq!(db.get("A").unwrap().unwrap().text, "flash wins too");
         assert_eq!(db.total_items().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_backup_follows_the_times() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.apply_items(&[item("A", 10.0, "from the phone")], &link(1.0)).unwrap();
+
+        // A stale backup copy does not overwrite what the phone sent.
+        let a = db.apply_items(&[item("A", 9.0, "stale backup copy")], &backup(2.0)).unwrap();
+        assert_eq!((a.kept_newer, a.changed()), (1, 0));
+        assert_eq!(db.get("A").unwrap().unwrap().text, "from the phone");
+
+        // As new, with different content: replaced. Newer: replaced.
+        let a = db.apply_items(&[item("A", 10.0, "same age")], &backup(3.0)).unwrap();
+        assert_eq!(a.replaced, 1);
+        let a = db.apply_items(&[item("A", 11.0, "newer backup copy")], &backup(4.0)).unwrap();
+        assert_eq!(a.replaced, 1);
+        let row = db.get("A").unwrap().unwrap();
+        assert_eq!((row.text.as_str(), row.carrier.as_str()), ("newer backup copy", "backup"));
+
+        // A new id from a backup is inserted.
+        let a = db.apply_items(&[item("B", 1.0, "only in the backup")], &backup(5.0)).unwrap();
+        assert_eq!(a.inserted, 1);
     }
 
     #[test]
@@ -1209,13 +1258,8 @@ mod tests {
         db.apply_items(&[item("A", 10.0, "secret words about pineapples")], &link(1.0)).unwrap();
         assert_eq!(db.search("pineapples", &Filter::default(), None, 10).unwrap().total, 1);
 
-        // A deletion older than the row loses.
+        // The phone says it is gone. Its clock does not have to agree with the stored time.
         let a = db.apply_items(&[deletion("A", 9.0)], &link(2.0)).unwrap();
-        assert_eq!(a.kept_newer, 1);
-        assert!(!db.get("A").unwrap().unwrap().deleted);
-
-        // A deletion of equal age wins.
-        let a = db.apply_items(&[deletion("A", 10.0)], &link(3.0)).unwrap();
         assert_eq!((a.replaced, a.deletions), (1, 1));
         let row = db.get("A").unwrap().unwrap();
         assert!(row.deleted);
@@ -1226,17 +1270,32 @@ mod tests {
         assert_eq!(db.search("pineapples", &Filter::default(), None, 10).unwrap().total, 0);
         assert!(db.list(&Filter::default(), Order::Newest, 10, None).unwrap().is_empty());
 
-        // The backup folder still holds the old copy. It must not bring the item back.
-        let a = db.apply_items(&[item("A", 10.0, "secret words about pineapples")], &backup(4.0)).unwrap();
-        assert_eq!((a.kept_newer, a.changed()), (1, 0));
-        assert!(db.get("A").unwrap().unwrap().deleted);
+        // The same deletion again changes nothing.
+        let a = db.apply_items(&[deletion("A", 9.0)], &link(3.0)).unwrap();
+        assert_eq!((a.unchanged, a.changed()), (1, 0));
 
-        // Only a strictly newer version does.
-        let a = db.apply_items(&[item("A", 12.0, "restored")], &link(5.0)).unwrap();
-        assert_eq!(a.replaced, 1);
-        let row = db.get("A").unwrap().unwrap();
-        assert!(!row.deleted);
-        assert_eq!(row.text, "restored");
+        // The backup folder still holds the old copy, or even a newer looking one. Neither
+        // brings the item back.
+        for updated_at in [8.0, 9.0, 10.0, 500.0] {
+            let a = db.apply_items(&[item("A", updated_at, "secret words about pineapples")], &backup(4.0)).unwrap();
+            assert_eq!((a.kept_newer, a.changed()), (1, 0), "backup copy at {updated_at}");
+            assert!(db.get("A").unwrap().unwrap().deleted);
+        }
+        assert_eq!(db.search("pineapples", &Filter::default(), None, 10).unwrap().total, 0);
+
+        // The phone sending it live again does: the person restored it there. Even with a
+        // time older than the deletion.
+        for (carrier, text) in [(link(5.0), "restored over link"), (flash(6.0), "restored by flash")] {
+            db.apply_items(&[deletion("A", 9.0)], &link(4.5)).unwrap();
+            assert!(db.get("A").unwrap().unwrap().deleted);
+            let a = db.apply_items(&[item("A", 7.0, text)], &carrier).unwrap();
+            assert_eq!(a.replaced, 1);
+            let row = db.get("A").unwrap().unwrap();
+            assert!(!row.deleted);
+            assert_eq!(row.text, text);
+            assert_eq!(db.total_items().unwrap(), 1);
+        }
+        assert_eq!(db.search("restored", &Filter::default(), None, 10).unwrap().total, 1);
     }
 
     #[test]
@@ -1244,9 +1303,9 @@ mod tests {
         let mut db = Db::open_in_memory().unwrap();
         let a = db.apply_items(&[deletion("GONE", 50.0)], &link(1.0)).unwrap();
         assert_eq!((a.inserted, a.deletions), (1, 1));
-        // An older copy arriving later (from a backup) stays deleted.
-        let a = db.apply_items(&[item("GONE", 40.0, "old words")], &backup(2.0)).unwrap();
-        assert_eq!(a.kept_newer, 1);
+        // A copy arriving later from a backup stays deleted, older or newer.
+        let a = db.apply_items(&[item("GONE", 40.0, "old words"), item("GONE", 60.0, "newer words")], &backup(2.0)).unwrap();
+        assert_eq!(a.kept_newer, 2);
         assert_eq!(db.total_items().unwrap(), 0);
     }
 

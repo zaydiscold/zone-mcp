@@ -75,9 +75,12 @@ All three end in the same merge into the same database, so they can be mixed fre
 3. **Flash.** The phone shows a fast sequence of QR codes and the computer's camera reads them. No
    network at all. Not built yet.
 
-The merge rule: a new id is inserted; an existing id is replaced when the incoming version is as
-new or newer; a deletion on the phone keeps the row and drops its text. Items the phone merely aged
-out of its own history are kept here: the computer is the long-term copy.
+The merge rule: a new id is inserted. After that, the phone itself (Link and Flash) is the source of
+truth: what it sends always replaces the stored copy, a deletion on the phone keeps the row and
+drops its text, and an item the phone sends again after deleting it comes back. A backup folder can
+be stale, so its copy replaces the stored one only when it is as new or newer, and it never brings
+back an item that was deleted. Items the phone merely aged out of its own history are kept here:
+the computer is the long-term copy.
 
 ## See your transcriptions
 

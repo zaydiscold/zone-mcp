@@ -264,6 +264,16 @@ fn link_pairing_and_sync_over_iroh() {
     assert_eq!(listed["total"], 699);
     assert!(listed["items"].as_array().unwrap().iter().all(|item| item["id"] != victim));
 
+    // The phone sending that item live again brings it back, although its updated_at is older
+    // than the deletion: the phone is the source of truth.
+    let report = phone(&sandbox, &["--identity", identity, "--count", "1", "--start-index", "3", "--addr", &addr]);
+    assert_eq!(report["stored"], 1);
+    assert_eq!(total_items(&sandbox), 700);
+    assert_eq!(sandbox.json(&["show", victim, "--json"])[0]["text"], before[0]["text"]);
+    let report = phone(&sandbox, &["--identity", identity, "--delete", victim, "--addr", &addr]);
+    assert_eq!(report["stored"], 1);
+    assert_eq!(total_items(&sandbox), 699);
+
     // Asking for a full resend shows up in the next welcome, once.
     sandbox.ok(&["resync"]);
     let report = phone(&sandbox, &["--identity", identity, "--count", "1", "--addr", &addr]);

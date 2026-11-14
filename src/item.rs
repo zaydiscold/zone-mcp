@@ -10,13 +10,17 @@ pub enum Carrier {
     Link,
     /// Read from a Zone backup folder.
     Backup,
-    /// Read from the phone's screen by the computer's camera. Not built yet: the name is
-    /// reserved so the Flash page can call the same merge as the other two.
-    #[allow(dead_code)]
+    /// Read from the phone's screen by the computer's camera.
     Flash,
 }
 
 impl Carrier {
+    /// True when the items come from the phone itself, which is the source of truth. A
+    /// backup folder is a copy that can be stale.
+    pub fn is_the_phone(self) -> bool {
+        matches!(self, Carrier::Link | Carrier::Flash)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Carrier::Link => "link",
