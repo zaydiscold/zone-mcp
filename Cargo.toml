@@ -1,0 +1,39 @@
+[package]
+name = "zone"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "Receives an iPhone's Zone dictation library and serves it to people and AI agents"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "zone"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+getrandom = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+iroh = "1.4.1"
+jiff = "0.2"
+qrcode = { version = "0.14", default-features = false }
+rmcp = { version = "3.10", default-features = false, features = ["server", "transport-io"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync", "signal"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
