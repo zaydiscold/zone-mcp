@@ -49,7 +49,10 @@ One item is one JSON object. Unknown fields are ignored by receivers and never a
 
 A deletion is `{"id":"...","kind":"dictation","deleted":true,"updated_at":1794445300.0}`. The computer marks the item deleted (keeps the row, drops the text). Items the phone merely aged out of its own history (retention) are not deletions and are never sent as such: the computer is the long-term copy.
 
-Merge rule on the computer, for every carrier: insert when the id is new; otherwise replace when the incoming `updated_at` is greater than or equal to the stored one. A deletion always wins over a non-deleted row with an older or equal `updated_at`.
+Merge rule on the computer:
+
+- From the phone itself (Link and Flash), the phone is the source of truth: an incoming item always replaces the stored row, and an incoming live item brings back a row that was deleted (the person restored it on the phone).
+- From a backup folder (which can be stale): insert when the id is new; otherwise replace only when the incoming `updated_at` is greater than or equal to the stored one, and never bring back a deleted row.
 
 ## Carrier 1: Link (iroh)
 
@@ -101,13 +104,20 @@ On pairing (everything), a few seconds after any dictation, note or meeting is s
 
 For networks that block everything, and for the fun of it. The phone shows a rapid sequence of QR codes; the computer's camera reads them through the local page `zone open` serves (the browser's camera API works on `http://127.0.0.1`). No network is involved at any point.
 
-- Payload: `zlib(deflate)` of the UTF-8 JSON `{"t":"flash","v":1,"phone":{...same as hello...},"items":[...]}`, then sealed with ChaCha20-Poly1305 using the 32-byte flash key, as `nonce(12) || ciphertext || tag(16)`.
+- Payload: raw DEFLATE (RFC 1951, no zlib or gzip header; this is what Apple's `COMPRESSION_ZLIB` and `NSData.compressed(using: .zlib)` produce) of the UTF-8 JSON `{"t":"flash","v":1,"phone":{...same as hello...},"items":[...]}`, then sealed with ChaCha20-Poly1305 using the 32-byte flash key, as `nonce(12) || ciphertext || tag(16)`.
 - Flash key: `HKDF-SHA256(ikm = pairing secret bytes, salt = empty, info = "zone-flash/1")`, 32 bytes, derived by both sides at pairing and kept. A flash therefore only works with a computer the phone has paired with (over Link, or by scanning the pairing QR while offline: scanning alone is enough to learn the secret, and the computer accepts a first flash sealed with a still-valid pairing secret as that phone's pairing).
-- Chunking: the sealed payload is cut into `k` chunks of `c` bytes (default `c` = 600). Frame `i` (0-based, endless, cycling) is a QR code in byte mode, error correction level L, whose bytes are:
-  `"ZF1"` (3 ASCII bytes) `|| session(4 random bytes, same for the whole flash) || total_len(u32 BE) || k(u16 BE) || i mod k (u16 BE) || chunk bytes`.
-- Frame rate: 12 frames per second by default. The receiver collects chunks by index until it has all `k`, then verifies and imports. The page shows progress; the phone keeps cycling until the person taps Done.
+- Chunking: the sealed payload is cut into `k` chunks of `c` bytes (default `c` = 300, the last chunk zero padded; `k` at most 65535). Frame `i` (0, 1, 2, ... without end) is a QR code in byte mode, error correction level L, whose bytes are:
+  `"ZF1"` (3 ASCII bytes) `|| session(u32 BE, random, same for the whole flash) || total_len(u32 BE) || k(u16 BE) || i(u32 BE) || body(c bytes)`. The header is 17 bytes, so `c` is the frame length minus 17.
+- Fountain code: the body of frame `i` is the XOR of a set of chunks, so the receiver never needs one particular frame, only enough different ones.
+  - For `i < k` the set is just chunk `i` (the plain data goes first).
+  - For `i >= k`: take `ceil(k/64)` 64-bit words from splitmix64 started at `state = (session << 32) | i`. Each word is: `state += 0x9E3779B97F4A7C15; z = state; z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9; z = (z ^ (z >> 27)) * 0x94D049BB133111EB; z ^= z >> 31` (all modulo 2^64). Chunk `n` is in the set when bit `n mod 64` of word `n / 64` is 1. If the set comes out empty, it is chunk `i mod k`.
+  - The receiver keeps each received frame as a row (which chunks, the body) and solves by elimination over GF(2). It is done when it has `k` independent rows, usually after about `k + 10` frames, in any order, with any frames missing.
+- Frame rate: 12 frames per second by default. The page shows progress; the phone keeps going until the person taps Done (or it has shown `3k + 60` frames, then starts again from `i = 0`).
+- Sizes: `c` = 300 gives a version 11 QR code, which an ordinary laptop camera reads at arm's length. At 12 frames a second that is about 3.6 kB of compressed data a second: a day of dictation in a few seconds, a whole library of a thousand items in a minute or two.
 
-Plain cycling is enough at these sizes (a day of dictation is a few kilobytes compressed, a handful of frames). A fountain code can replace it later without changing the payload.
+`scripts/flash_reference.py` is the reference encoder and decoder. Both implementations must reproduce its vector: session `0x01020304`, payload byte `i` = `(i*7+3) mod 256` for 1280 bytes, `c` = 300, so `k` = 5. The chunk sets of frames 5 to 12 are `[1] [0,3] [1] [0,3,4] [1,2,4] [1] [1,2,3] [2,4]`, and the SHA-256 of frames 0 to 39 concatenated is `16e659e1a7b1a24735a6f04aeca9514d3ab1a59f285993c2b1e6e97a00c39b12`.
+
+The computer accepts a flash from a paired phone, or from a phone that has scanned a still-valid pairing code (the payload opens with that offer's flash key, which pairs the phone by its `phone.id`). Flash items are merged like Link items.
 
 ## Carrier 3: Backup folder
 
