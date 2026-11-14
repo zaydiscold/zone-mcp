@@ -258,5 +258,31 @@ mod tests {
         assert!(!svg.contains("http://") || svg.matches("http://").count() == 1, "only the SVG namespace");
         let terminal = qr_terminal(&url).unwrap();
         assert_eq!(terminal.lines().count(), (n + 8).div_ceil(2));
+
+        // Reading the terminal picture back gives the same modules, inside a quiet zone.
+        let size = n + 8;
+        let mut read = vec![vec![false; size]; size + 1];
+        for (row, line) in terminal.lines().enumerate() {
+            let cells: Vec<char> = line.replace("\x1b[38;5;16m\x1b[48;5;231m", "").replace("\x1b[0m", "").chars().collect();
+            assert_eq!(cells.len(), size);
+            for (x, cell) in cells.iter().enumerate() {
+                let (top, bottom) = match cell {
+                    '\u{2588}' => (true, true),
+                    '\u{2580}' => (true, false),
+                    '\u{2584}' => (false, true),
+                    ' ' => (false, false),
+                    other => panic!("unexpected character {other:?}"),
+                };
+                read[row * 2][x] = top;
+                read[row * 2 + 1][x] = bottom;
+            }
+        }
+        for y in 0..size {
+            for x in 0..size {
+                let inside = (4..size - 4).contains(&x) && (4..size - 4).contains(&y);
+                let expected = inside && matrix[y - 4][x - 4];
+                assert_eq!(read[y][x], expected, "module at {x},{y}");
+            }
+        }
     }
 }

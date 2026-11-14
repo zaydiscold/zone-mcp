@@ -288,11 +288,10 @@ fn filter(args: &Map<String, Value>, clock: &Clock) -> Result<(Filter, Value)> {
         Some(text) => Some(clock.parse(&text, Bound::End).map_err(|e| anyhow!("end: {e}"))?),
         None => None,
     };
-    if let (Some(s), Some(e)) = (start, end) {
-        if s >= e {
+    if let (Some(s), Some(e)) = (start, end)
+        && s >= e {
             bail!("start ({}) is not before end ({})", clock.full(s), clock.full(e));
         }
-    }
     let kinds = string_list(args, "kinds")?.into_iter().map(|k| normalize_kind(&k)).collect();
     let sources = string_list(args, "sources")?;
     let range = json!({

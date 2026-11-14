@@ -174,7 +174,7 @@ pub fn hex(bytes: &[u8]) -> String {
 
 pub fn unhex(text: &str) -> Option<Vec<u8>> {
     let bytes = text.as_bytes();
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return None;
     }
     let digit = |b: u8| -> Option<u8> {

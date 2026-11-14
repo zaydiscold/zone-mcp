@@ -428,11 +428,10 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
     }
     let mut by_source = Map::new();
     for (kind, source, count) in db.counts_by_kind_and_source()? {
-        if kind == "dictation" {
-            if let Some(source) = source {
+        if kind == "dictation"
+            && let Some(source) = source {
                 by_source.insert(source, json!(count));
             }
-        }
     }
     let link_sync = db.meta_f64("last_sync_link")?;
     let backup_sync = db.meta_f64("last_sync_backup")?;

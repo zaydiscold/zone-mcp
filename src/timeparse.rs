@@ -148,36 +148,32 @@ fn parse_time(input: &str, clock: &Clock, bound: Bound) -> Result<f64> {
     }
 
     // Unix seconds. Nine digits or more, so a year alone is never mistaken for one.
-    if text.len() >= 9 && text.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-        if let Ok(value) = text.parse::<f64>() {
+    if text.len() >= 9 && text.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && let Ok(value) = text.parse::<f64>() {
             return Ok(value);
         }
-    }
 
     // A whole local day.
-    if text.len() == 10 {
-        if let Ok(date) = text.parse::<civil::Date>() {
+    if text.len() == 10
+        && let Ok(date) = text.parse::<civil::Date>() {
             return day_bound(date, clock, bound);
         }
-    }
 
     // A time of day, today.
-    if text.len() <= 8 && text.contains(':') {
-        if let Ok(time) = text.parse::<civil::Time>() {
+    if text.len() <= 8 && text.contains(':')
+        && let Ok(time) = text.parse::<civil::Time>() {
             return civil_to_unix(today.to_datetime(time), clock);
         }
-    }
 
     // An exact instant: an offset or Z is present.
     if let Ok(ts) = text.parse::<Timestamp>() {
         return Ok(unix(ts));
     }
     // `2026-11-11T12:00[America/Los_Angeles]`
-    if text.contains('[') {
-        if let Ok(zoned) = text.parse::<Zoned>() {
+    if text.contains('[')
+        && let Ok(zoned) = text.parse::<Zoned>() {
             return Ok(unix(zoned.timestamp()));
         }
-    }
 
     // A local date and time, read in the clock's zone.
     if let Ok(datetime) = text.parse::<civil::DateTime>() {

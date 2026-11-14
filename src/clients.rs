@@ -306,13 +306,12 @@ fn codex_registration(path: &Path) -> Option<Launch> {
             inside = trimmed == format!("[mcp_servers.{SERVER_NAME}]");
             continue;
         }
-        if inside {
-            if let Some(value) = trimmed.strip_prefix("command") {
+        if inside
+            && let Some(value) = trimmed.strip_prefix("command") {
                 let value = value.trim_start().strip_prefix('=')?.trim();
                 let unquoted = value.trim_matches('"').replace("\\\\", "\\").replace("\\\"", "\"");
                 command = Some(unquoted);
             }
-        }
     }
     command.map(|command| Launch { command, args: Vec::new(), env: Vec::new() })
 }

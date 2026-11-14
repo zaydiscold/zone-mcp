@@ -50,13 +50,12 @@ pub fn write(level: &str, message: &str) {
         eprint!("{line}");
     }
     // Keep one previous file, so the log cannot grow without bound.
-    if let Some(file) = &sink.file {
-        if file.metadata().map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false) {
+    if let Some(file) = &sink.file
+        && file.metadata().map(|m| m.len() > MAX_LOG_BYTES).unwrap_or(false) {
             let old = sink.path.with_extension("log.1");
             let _ = std::fs::rename(&sink.path, old);
             sink.file = open(&sink.path.clone());
         }
-    }
     if let Some(file) = sink.file.as_mut() {
         let _ = file.write_all(line.as_bytes());
     }

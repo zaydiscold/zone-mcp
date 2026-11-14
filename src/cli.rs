@@ -43,11 +43,10 @@ impl FilterArgs {
     pub fn filter(&self, clock: &Clock) -> Result<Filter> {
         let start = self.since.as_deref().map(|t| clock.parse(t, Bound::Start)).transpose()?;
         let end = self.until.as_deref().map(|t| clock.parse(t, Bound::End)).transpose()?;
-        if let (Some(s), Some(e)) = (start, end) {
-            if s >= e {
+        if let (Some(s), Some(e)) = (start, end)
+            && s >= e {
                 bail!("--since ({}) is not before --until ({})", clock.full(s), clock.full(e));
             }
-        }
         let split = |values: &[String]| -> Vec<String> {
             values.iter().flat_map(|v| v.split(',')).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect()
         };

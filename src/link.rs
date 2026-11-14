@@ -273,7 +273,8 @@ async fn session(
                         let delivery = Delivery { carrier: Carrier::Link, device_id: device_id.as_deref(), received_at: now };
                         // Committed before the ack is written.
                         let applied = db.apply_items(&parsed, &delivery)?;
-                        db.record_delivery(&endpoint_id, applied.stored(), Some(path), now)?;
+                        // Counts what was new to this library, so sending an item twice counts once.
+                        db.record_delivery(&endpoint_id, applied.changed(), Some(path), now)?;
                         Ok(applied)
                     })
                     .await?
