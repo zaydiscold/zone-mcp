@@ -339,7 +339,11 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
       });
     }
     if (status.backup_folder) {
-      box.append(el("span", "sep", "·"), el("span", null, "backup folder read " + ago(status.last_sync.backup_age_s)));
+      const watch = status.backup_folder_state || {};
+      const said = watch.state === "waiting" ? watch.message
+        : watch.state === "error" ? "backup folder cannot be read (run zone doctor)"
+        : "backup folder read " + ago(status.last_sync.backup_age_s);
+      box.append(el("span", "sep", "·"), el("span", null, said));
     }
     box.append(el("span", "sep", "·"), el("span", null, plural(status.items.total, "item", "items")));
 

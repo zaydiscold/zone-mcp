@@ -1,22 +1,23 @@
 //! `zone serve`: the daemon. It accepts paired phones over iroh, watches the backup folder,
 //! and serves the local web page.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use iroh::{Endpoint, Watcher};
 
 use crate::daemon_info::{self, DaemonInfo};
 use crate::db::Db;
 use crate::link::{self, LinkState};
+use crate::watch::Watcher as BackupWatcher;
 use crate::web::{self, WebState};
-use crate::{backup, info, paths, warn};
+use crate::{info, paths, warn};
 
-/// How often the backup folder is checked for a changed `library.json`.
-const BACKUP_POLL: Duration = Duration::from_secs(30);
+/// How often the daemon looks at which backup folder is set. Reading the folder itself
+/// happens every half minute (see watch.rs).
+const SETTING_POLL: Duration = Duration::from_secs(5);
 /// How often the daemon refreshes what it says about itself in `daemon.json`.
 const INFO_POLL: Duration = Duration::from_secs(5);
 
@@ -58,6 +59,7 @@ pub async fn run(options: Options) -> Result<()> {
         relay_connected: false,
         bound_sockets: endpoint.bound_sockets().iter().map(|s| s.to_string()).collect(),
         direct_addrs: Vec::new(),
+        backup: Default::default(),
     }));
     info.lock().map_err(|_| anyhow!("daemon state is unavailable"))?.write(&dir)?;
 
@@ -79,7 +81,7 @@ pub async fn run(options: Options) -> Result<()> {
     let web_task = tokio::spawn(web::serve(listener, web_state));
     let link_task = tokio::spawn(link::accept_loop(endpoint.clone(), LinkState::new(db.clone(), computer_name)));
     let info_task = tokio::spawn(keep_info_fresh(endpoint.clone(), info.clone(), dir.clone()));
-    let backup_task = tokio::spawn(watch_backup_folder(db.clone()));
+    let backup_task = tokio::spawn(watch_backup_folder(db.clone(), info.clone(), dir.clone()));
 
     wait_for_stop().await;
     info!("zone is stopping");
@@ -154,120 +156,27 @@ async fn keep_info_fresh(endpoint: Endpoint, info: Arc<Mutex<DaemonInfo>>, dir: 
     }
 }
 
-/// Re-imports the backup folder whenever a `library.json` in it changes.
-async fn watch_backup_folder(db: Arc<Mutex<Db>>) {
-    let mut announced: Option<String> = None;
+/// Re-imports the backup folder whenever a `library.json` in it changes. See watch.rs for
+/// why none of this ever waits for the folder.
+async fn watch_backup_folder(db: Arc<Mutex<Db>>, info: Arc<Mutex<DaemonInfo>>, dir: PathBuf) {
+    let watcher = Arc::new(Mutex::new(BackupWatcher::new(db, info, dir)));
+    // Never slower than the folder poll itself, when that was shortened.
+    let setting_poll = SETTING_POLL.min(Duration::from_secs_f64(watcher.lock().map(|w| w.poll_seconds()).unwrap_or(30.0)));
     loop {
-        let db = db.clone();
-        let previous = announced.clone();
-        let outcome = tokio::task::spawn_blocking(move || backup_pass(&db, previous)).await;
-        match outcome {
-            Ok(Ok(folder)) => announced = folder,
-            Ok(Err(error)) => warn!("backup folder: {error:#}"),
-            Err(error) => warn!("backup folder: the check failed: {error}"),
-        }
-        tokio::time::sleep(BACKUP_POLL).await;
-    }
-}
-
-/// One look at the backup folder. Returns the folder being watched, if any.
-fn backup_pass(db: &Arc<Mutex<Db>>, announced: Option<String>) -> Result<Option<String>> {
-    let folder = {
-        let db = db.lock().map_err(|_| anyhow!("the library is unavailable"))?;
-        db.meta_get("backup_folder")?
-    };
-    let Some(folder) = folder else {
-        return Ok(None);
-    };
-    if announced.as_deref() != Some(folder.as_str()) {
-        info!("backup folder: watching {folder}");
-    }
-    let manifests = match backup::locate(Path::new(&folder)) {
-        Ok(manifests) => manifests,
-        Err(error) => {
-            // Said once per folder, not every thirty seconds.
-            if announced.as_deref() != Some(folder.as_str()) {
-                warn!("backup folder: {error:#}");
+        let stepped = tokio::task::spawn_blocking({
+            let watcher = watcher.clone();
+            move || {
+                let Ok(mut watcher) = watcher.lock() else { return false };
+                if let Err(error) = watcher.tick(paths::now_unix()) {
+                    warn!("backup folder: {error:#}");
+                }
+                watcher.reading()
             }
-            return Ok(Some(folder));
-        }
-    };
-    let mut db = db.lock().map_err(|_| anyhow!("the library is unavailable"))?;
-    let mut seen: BTreeMap<String, String> =
-        db.meta_get("backup_seen")?.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
-    let mut dirty = false;
-    for manifest in manifests {
-        let key = manifest.to_string_lossy().to_string();
-        let Some(signature) = backup::signature(&manifest) else { continue };
-        if seen.get(&key) == Some(&signature) {
-            continue;
-        }
-        match backup::import_manifest(&mut db, &manifest, paths::now_unix()) {
-            Ok(report) => {
-                info!(
-                    "backup folder: read {} notes, {} dictations, {} meetings: {} new, {} changed, {} already here",
-                    report.notes,
-                    report.dictations,
-                    report.meetings,
-                    report.applied.inserted,
-                    report.applied.replaced,
-                    report.applied.unchanged + report.applied.kept_newer
-                );
-                seen.insert(key, signature);
-                dirty = true;
-            }
-            // A file caught halfway through a sync is tried again on the next pass.
-            Err(error) => warn!("backup folder: could not read {}: {error:#}", manifest.display()),
-        }
-    }
-    if dirty {
-        db.meta_set("backup_seen", &serde_json::to_string(&seen).context("cannot record the backup state")?)?;
-    }
-    Ok(Some(folder))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn backup_folder_is_imported_once_per_change() {
-        let dir = tempfile::tempdir().unwrap();
-        let package = dir.path().join("Zone library.zonebackup");
-        std::fs::create_dir_all(&package).unwrap();
-        let manifest = package.join("library.json");
-        let write = |notes: Vec<serde_json::Value>| {
-            let body = json!({ "formatVersion": 1, "createdAt": 816317953.0, "notes": notes, "dictations": [], "meetings": [] });
-            std::fs::write(&manifest, serde_json::to_vec(&body).unwrap()).unwrap();
-        };
-        write(vec![json!({ "id": "N1", "text": "first", "createdAt": 816200000.0 })]);
-
-        let db = Arc::new(Mutex::new(Db::open_in_memory().unwrap()));
-        // No folder configured: nothing happens.
-        assert_eq!(backup_pass(&db, None).unwrap(), None);
-        db.lock().unwrap().meta_set("backup_folder", &dir.path().to_string_lossy()).unwrap();
-
-        let folder = backup_pass(&db, None).unwrap();
-        assert_eq!(db.lock().unwrap().total_items().unwrap(), 1);
-        let first_sync = db.lock().unwrap().meta_f64("last_sync_backup").unwrap().unwrap();
-
-        // Unchanged file: not read again.
-        std::thread::sleep(Duration::from_millis(20));
-        backup_pass(&db, folder.clone()).unwrap();
-        assert_eq!(db.lock().unwrap().meta_f64("last_sync_backup").unwrap().unwrap(), first_sync);
-
-        // Changed file: read again, new item appears.
-        write(vec![
-            json!({ "id": "N1", "text": "first", "createdAt": 816200000.0 }),
-            json!({ "id": "N2", "text": "second, longer", "createdAt": 816200500.0 }),
-        ]);
-        backup_pass(&db, folder.clone()).unwrap();
-        assert_eq!(db.lock().unwrap().total_items().unwrap(), 2);
-        assert!(db.lock().unwrap().meta_f64("last_sync_backup").unwrap().unwrap() > first_sync);
-
-        // A folder that went away is reported, not fatal.
-        db.lock().unwrap().meta_set("backup_folder", "/nonexistent/zone-backups").unwrap();
-        assert!(backup_pass(&db, folder).is_ok());
+        })
+        .await;
+        // While a read is in flight, look for its answer every second. Otherwise the setting
+        // is checked every few seconds, and the folder itself every half minute.
+        let reading = stepped.unwrap_or(false);
+        tokio::time::sleep(if reading { Duration::from_secs(1) } else { setting_poll }).await;
     }
 }

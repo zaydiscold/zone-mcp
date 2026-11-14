@@ -85,8 +85,13 @@ struct Daemon {
 
 impl Daemon {
     fn start(sandbox: &Sandbox) -> Daemon {
+        Daemon::start_with_env(sandbox, &[])
+    }
+
+    fn start_with_env(sandbox: &Sandbox, env: &[(&str, &str)]) -> Daemon {
         let child = sandbox
             .zone()
+            .envs(env.iter().copied())
             .args(["serve", "--port", "0", "--quiet"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -527,6 +532,7 @@ fn import_then_query_from_the_command_line() {
     let parent = package.parent().unwrap();
     let out = sandbox.ok(&["backup-folder", parent.to_str().unwrap()]);
     assert!(out.contains("Watching") && out.contains("library.json"), "{out}");
+    assert!(out.contains("0 new, 0 changed, 43 already in the library"), "{out}");
     assert!(sandbox.json(&["status", "--json"])["backup_folder"].as_str().unwrap().ends_with("Zone Backups"));
     sandbox.ok(&["backup-folder", "--clear"]);
     assert_eq!(sandbox.json(&["status", "--json"])["backup_folder"], Value::Null);
@@ -534,21 +540,158 @@ fn import_then_query_from_the_command_line() {
     assert!(!missing.status.success());
 }
 
-/// The daemon notices a backup folder and re-imports it when the file changes.
-#[test]
-fn daemon_imports_the_watched_backup_folder() {
-    let sandbox = Sandbox::new();
-    let package = write_backup(&sandbox.home);
-    sandbox.ok(&["backup-folder", package.parent().unwrap().to_str().unwrap()]);
-    assert_eq!(total_items(&sandbox), 0, "nothing is read until the daemon runs");
-    let _daemon = Daemon::start(&sandbox);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while total_items(&sandbox) != 43 {
-        assert!(Instant::now() < deadline, "the daemon did not import the backup folder");
+/// Adds one note to the synthetic backup, as the phone would when it writes a newer backup.
+fn add_note_to_backup(package: &Path, id: &str) {
+    let manifest = package.join("library.json");
+    let mut body: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    body["notes"].as_array_mut().unwrap().push(json!({ "id": id, "text": "a note added later about the ferry", "createdAt": 816_130_000.0 }));
+    std::fs::write(&manifest, serde_json::to_vec_pretty(&body).unwrap()).unwrap();
+}
+
+fn wait_for_total(sandbox: &Sandbox, wanted: i64, seconds: u64, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    while total_items(sandbox) != wanted {
+        assert!(Instant::now() < deadline, "{what} (the library holds {} items, expected {wanted})", total_items(sandbox));
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// `zone backup-folder` imports what is there itself, right away, and the daemon then
+/// re-imports whenever the file changes.
+#[test]
+fn backup_folder_is_imported_at_once_and_then_watched() {
+    let sandbox = Sandbox::new();
+    let package = write_backup(&sandbox.home);
+    let folder = package.parent().unwrap().to_str().unwrap().to_string();
+
+    // No daemon is running: the command itself reads the folder, in the foreground.
+    let out = sandbox.ok(&["backup-folder", &folder]);
+    assert!(out.contains("2 notes, 40 dictations, 1 meetings") && out.contains("43 new, 0 changed"), "{out}");
+    assert!(out.contains("The library now holds 43 items.") && out.contains("Watching "), "{out}");
+    assert!(out.contains("Zone is not running"), "{out}");
+    assert_eq!(total_items(&sandbox), 43, "imported before any daemon runs");
     let status = sandbox.json(&["status", "--json"]);
     assert!(status["last_sync"]["backup_folder"]["time"].is_string());
+    assert_eq!(status["backup_folder_state"]["state"], "not_watching");
+
+    // The daemon takes over. What was just imported is not imported again.
+    let first_import = status["last_sync"]["backup_folder"]["time"].clone();
+    let _daemon = Daemon::start_with_env(&sandbox, &[("ZONE_BACKUP_POLL_SECONDS", "1")]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status = sandbox.json(&["status", "--json"]);
+        if status["backup_folder_state"]["state"] == "watching" {
+            assert_eq!(status["last_sync"]["backup_folder"]["time"], first_import, "the daemon imported the same file again");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the daemon never read the folder: {}", status["backup_folder_state"]);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
+    assert!(log.contains("backup folder: watching") && log.contains("backup folder: reading it now") && log.contains("backup folder: it can be read"), "{log}");
+    assert!(!log.contains("new, "), "nothing was imported by the daemon yet:\n{log}");
+
+    // The phone writes a newer backup: the daemon picks it up.
+    add_note_to_backup(&package, "A0000000-0000-4000-8000-000000000003");
+    wait_for_total(&sandbox, 44, 20, "the daemon did not import the changed backup");
+
+    // With the daemon running, the command still imports by itself and says who watches.
+    let other = sandbox.home.join("second");
+    let package = write_backup(&other);
+    add_note_to_backup(&package, "A0000000-0000-4000-8000-000000000004");
+    let out = sandbox.ok(&["backup-folder", package.parent().unwrap().to_str().unwrap()]);
+    assert!(out.contains("1 new, 0 changed, 43 already in the library") && out.contains("The running zone reads it again"), "{out}");
+    assert_eq!(total_items(&sandbox), 45);
+}
+
+/// The bug from the real install: under launchd, macOS held the daemon's first read of an
+/// iCloud Drive folder behind a permission prompt, forever, and zone said nothing. A debug
+/// build can hold a read the same way. While it is held: the log has said what is going on,
+/// `zone status` and `zone doctor` say it, and syncing and the web page do not wait.
+#[cfg(debug_assertions)]
+#[test]
+fn a_held_backup_read_is_reported_and_blocks_nothing() {
+    let sandbox = Sandbox::new();
+    let package = write_backup(&sandbox.home);
+    let folder = package.parent().unwrap().to_str().unwrap().to_string();
+    let hold = sandbox.home.join("hold-the-read");
+    let hold_text = hold.to_str().unwrap().to_string();
+    std::fs::write(&hold, "").unwrap();
+
+    // In the foreground a held read is explained, then completes when it is let go.
+    let child = sandbox
+        .zone()
+        .env("ZONE_TEST_HOLD_BACKUP_READ", &hold_text)
+        .args(["backup-folder", &folder])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(4500));
+    assert_eq!(total_items(&sandbox), 0, "nothing is imported while the read is held");
+    std::fs::remove_file(&hold).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let (out, err) = (String::from_utf8_lossy(&output.stdout).to_string(), String::from_utf8_lossy(&output.stderr).to_string());
+    assert!(output.status.success(), "{out}\n{err}");
+    assert!(err.contains("Still reading"), "{err}");
+    assert!(out.contains("43 new") && out.contains("Watching "), "{out}");
+    assert_eq!(total_items(&sandbox), 43);
+
+    // Now the daemon's turn: its read is held.
+    std::fs::write(&hold, "").unwrap();
+    let _daemon = Daemon::start_with_env(&sandbox, &[("ZONE_TEST_HOLD_BACKUP_READ", &hold_text), ("ZONE_BACKUP_POLL_SECONDS", "1")]);
+    let waiting = if cfg!(target_os = "macos") { "waiting for macOS permission to read the backup folder" } else { "waiting for the backup folder to answer" };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status = sandbox.json(&["status", "--json"]);
+        let state = &status["backup_folder_state"];
+        if state["state"] == "waiting" {
+            assert_eq!(state["message"], waiting);
+            assert!(state["waiting_s"].as_f64().unwrap() >= 5.0);
+            break;
+        }
+        assert!(Instant::now() < deadline, "status never said the read is waiting: {state}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let text = sandbox.ok(&["status"]);
+    assert!(text.contains(waiting), "{text}");
+    let doctor = sandbox.run(&["doctor"]);
+    let doctor = String::from_utf8_lossy(&doctor.stdout).to_string();
+    let line = doctor.lines().find(|l| l.contains("Backup folder")).unwrap_or("");
+    assert!(line.starts_with("[note]") && line.contains(waiting), "{doctor}");
+    // Said before the read began, so it is in the log although the read never came back.
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
+    assert!(log.contains("backup folder: watching") && log.contains("backup folder: reading it now"), "{log}");
+    if cfg!(target_os = "macos") {
+        assert!(log.contains("macOS may ask for permission"), "{log}");
+    }
+    assert!(!log.contains("it can be read"), "{log}");
+
+    // Nothing else waits for it: a phone pairs and syncs, the web page answers, queries run.
+    let addr = loopback_addr(&sandbox);
+    let url = pair_url(&sandbox);
+    let started = Instant::now();
+    let report = phone(&sandbox, &["--url", &url, "--count", "120", "--addr", &addr]);
+    assert_eq!((report["result"].as_str(), report["stored"].as_u64()), (Some("welcome"), Some(120)), "{report}");
+    assert_eq!(total_items(&sandbox), 163);
+    let port = sandbox.daemon_info().unwrap()["http_port"].as_u64().unwrap() as u16;
+    let (code, _) = http(port, &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"));
+    assert_eq!(code, 401, "the web page answers (locked) while the read is held");
+    assert!(started.elapsed() < Duration::from_secs(20), "syncing waited for the held read");
+    // Still exactly one read in flight after all this time, and the daemon says since when.
+    let info = sandbox.daemon_info().unwrap();
+    assert!(info["backup"]["read_started_at"].is_f64(), "{info}");
+
+    // The person answers the prompt. The read comes back, and watching works from then on.
+    add_note_to_backup(&package, "A0000000-0000-4000-8000-000000000003");
+    std::fs::remove_file(&hold).unwrap();
+    wait_for_total(&sandbox, 164, 20, "the daemon did not import after the read was let go");
+    let status = sandbox.json(&["status", "--json"]);
+    assert_eq!(status["backup_folder_state"]["state"], "watching", "{status}");
+    assert!(sandbox.daemon_info().unwrap()["backup"]["read_started_at"].is_null());
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
+    assert!(log.contains("backup folder: it can be read"), "{log}");
 }
 
 // ------------------------------------------------------------------------- MCP over stdio

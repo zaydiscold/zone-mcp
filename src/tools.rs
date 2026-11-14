@@ -570,6 +570,33 @@ fn library_stats(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
 }
 
 /// Everything `sync_status` reports. Also what `zone status --json` prints.
+/// How the daemon's watch on the backup folder is going, in words a person can act on.
+/// Null when no folder is set.
+pub fn backup_folder_state(daemon: Option<&DaemonInfo>, folder: Option<&str>, now: f64) -> Value {
+    if folder.is_none() {
+        return Value::Null;
+    }
+    let Some(daemon) = daemon else {
+        return json!({ "state": "not_watching", "message": "zone is not running, so the folder is not being watched" });
+    };
+    let watch = &daemon.backup;
+    if let Some(waited) = watch.waiting_for(now) {
+        return json!({
+            "state": "waiting",
+            "message": crate::backup::waiting_reason(),
+            "waiting_s": waited.round(),
+            "fix": crate::backup::waiting_fix(),
+        });
+    }
+    if let Some(error) = &watch.error {
+        return json!({ "state": "error", "message": error });
+    }
+    match watch.read_finished_at {
+        Some(t) => json!({ "state": "watching", "last_read_age_s": (now - t).max(0.0).round() }),
+        None => json!({ "state": "starting", "message": "the first read has not finished yet" }),
+    }
+}
+
 pub fn sync_status(db: &mut Db) -> Result<Value> {
     let clock = Clock::system();
     let now = clock.now_zoned();
@@ -607,6 +634,8 @@ pub fn sync_status(db: &mut Db) -> Result<Value> {
         }
     }
     let span = db.time_span()?;
+    let backup_folder = db.meta_get("backup_folder")?;
+    let backup_folder_state = backup_folder_state(daemon.as_ref(), backup_folder.as_deref(), now_unix);
 
     Ok(json!({
         "now": {
@@ -626,9 +655,11 @@ pub fn sync_status(db: &mut Db) -> Result<Value> {
         "phones": phones,
         "last_sync": {
             "link": last("last_sync_link")?,
+            "flash": last("last_sync_flash")?,
             "backup_folder": last("last_sync_backup")?,
         },
-        "backup_folder": db.meta_get("backup_folder")?,
+        "backup_folder": backup_folder,
+        "backup_folder_state": backup_folder_state,
         "items": {
             "total": db.total_items()?,
             "by_kind": kind_counts(&db.counts_by_kind()?),

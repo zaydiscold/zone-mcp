@@ -33,6 +33,36 @@ pub struct DaemonInfo {
     /// Addresses the endpoint believes it can be reached at directly.
     #[serde(default)]
     pub direct_addrs: Vec<String>,
+    /// How the watch on the backup folder is going.
+    #[serde(default)]
+    pub backup: BackupWatch,
+}
+
+/// The state of the daemon's watch on the backup folder. It lives here, not in the library,
+/// so that it vanishes with the daemon: a read that "began" in a daemon that has since died
+/// must not look like one that is still waiting.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BackupWatch {
+    pub folder: Option<String>,
+    /// When the read now in flight began (Unix seconds). None when no read is in flight. A
+    /// read that stays in flight is waiting for something: on macOS, usually for the person
+    /// to answer a permission prompt.
+    #[serde(default)]
+    pub read_started_at: Option<f64>,
+    /// When the last read that came back did so.
+    #[serde(default)]
+    pub read_finished_at: Option<f64>,
+    /// What the last read that came back said, when it failed.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl BackupWatch {
+    /// Seconds the read in flight has been waiting, once that is long enough to mention.
+    pub fn waiting_for(&self, now: f64) -> Option<f64> {
+        let waited = now - self.read_started_at?;
+        (waited > crate::watch::WAITING_AFTER_SECONDS).then_some(waited)
+    }
 }
 
 impl DaemonInfo {

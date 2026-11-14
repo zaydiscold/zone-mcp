@@ -40,6 +40,7 @@ mod serve;
 mod service;
 mod timeparse;
 mod tools;
+mod watch;
 mod web;
 
 use std::net::SocketAddr;

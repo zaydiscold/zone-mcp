@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::daemon_info::{self, DaemonInfo};
 use crate::db::Db;
-use crate::timeparse::{Clock, human_ago};
+use crate::timeparse::{Clock, human_ago, human_duration};
 use crate::{backup, link, pairing, paths, service, tools};
 
 const START_HINT: &str = "Start it with `zone serve`, or run `zone install` once to start it every time you log in.";
@@ -128,7 +128,7 @@ pub fn status(as_json: bool) -> Result<()> {
     if let Some((oldest, newest)) = db.time_span()? {
         println!("              from {} to {}", clock.short(oldest), clock.short(newest));
     }
-    for (label, key) in [("Link", "last_sync_link"), ("Backup folder", "last_sync_backup")] {
+    for (label, key) in [("Link", "last_sync_link"), ("Flash", "last_sync_flash"), ("Backup folder", "last_sync_backup")] {
         if let Some(t) = db.meta_f64(key)? {
             println!("{label:13} last delivered {} ({})", clock.short(t), human_ago(now - t));
         }
@@ -138,7 +138,28 @@ pub fn status(as_json: bool) -> Result<()> {
         println!("Pairing       {waiting} unused pairing {} still valid", if waiting == 1 { "code is" } else { "codes are" });
     }
     match db.meta_get("backup_folder")? {
-        Some(folder) => println!("Backup folder {folder}"),
+        Some(folder) => {
+            println!("Backup folder {folder}");
+            let state = &value["backup_folder_state"];
+            match state["state"].as_str() {
+                Some("waiting") => {
+                    println!(
+                        "              {} (for {})",
+                        backup::waiting_reason(),
+                        human_duration(state["waiting_s"].as_f64().unwrap_or(0.0))
+                    );
+                    for line in backup::waiting_fix().lines() {
+                        println!("              {line}");
+                    }
+                }
+                Some("error") => {
+                    println!("              cannot be read: {}", state["message"].as_str().unwrap_or(""));
+                    println!("              Run `zone doctor` for how to fix it.");
+                }
+                Some("not_watching") => println!("              not watched while zone is not running"),
+                _ => {}
+            }
+        }
         None => println!("Backup folder not set (`zone backup-folder <path>` to watch one)"),
     }
     println!("Database      {}", paths::database(&dir).display());
@@ -228,28 +249,39 @@ pub fn import(path: &Path) -> Result<()> {
     let reports = backup::import_path(&mut db, path, paths::now_unix())?;
     let clock = Clock::system();
     for report in &reports {
-        println!("Read {}", report.manifest.display());
-        if let Some(written) = report.written_at {
-            println!("  written by the phone {}", clock.short(written));
-        }
-        println!("  {} notes, {} dictations, {} meetings", report.notes, report.dictations, report.meetings);
-        println!(
-            "  {} new, {} changed, {} already in the library",
-            report.applied.inserted,
-            report.applied.replaced,
-            report.applied.unchanged + report.applied.kept_newer
-        );
-        if report.skipped > 0 {
-            println!("  {} records had no id or date and were skipped", report.skipped);
-        }
+        print_import_report(report, &clock);
     }
     println!("The library now holds {} items.", db.total_items()?);
     Ok(())
 }
 
+/// How long a foreground command waits for a folder before saying that it is waiting.
+const FOLDER_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn print_import_report(report: &backup::ImportReport, clock: &Clock) {
+    println!("Read {}", report.manifest.display());
+    if let Some(written) = report.written_at {
+        println!("  written by the phone {}", clock.short(written));
+    }
+    println!("  {} notes, {} dictations, {} meetings", report.notes, report.dictations, report.meetings);
+    println!(
+        "  {} new, {} changed, {} already in the library",
+        report.applied.inserted,
+        report.applied.replaced,
+        report.applied.unchanged + report.applied.kept_newer
+    );
+    if report.skipped > 0 {
+        println!("  {} records had no id or date and were skipped", report.skipped);
+    }
+}
+
 /// `zone backup-folder [path] [--clear]`
+///
+/// With a path: reads the folder here and now, in the foreground, then leaves the watching
+/// to the daemon. A terminal usually already has access to iCloud Drive, and when it does not,
+/// this is where a permission prompt can be seen and answered.
 pub fn backup_folder(path: Option<&Path>, clear: bool) -> Result<()> {
-    let db = Db::open_default()?;
+    let mut db = Db::open_default()?;
     let dir = paths::data_dir()?;
     if clear {
         db.meta_delete("backup_folder")?;
@@ -264,20 +296,70 @@ pub fn backup_folder(path: Option<&Path>, clear: bool) -> Result<()> {
         }
         return Ok(());
     };
-    let absolute = std::fs::canonicalize(path).with_context(|| format!("cannot find {}", path.display()))?;
-    // Fail now, with a clear message, rather than silently in the daemon.
-    let manifests = backup::locate(&absolute)?;
-    db.meta_set("backup_folder", &absolute.to_string_lossy())?;
-    db.meta_delete("backup_seen")?;
-    println!("Watching {}", absolute.display());
-    for manifest in &manifests {
-        println!("  found {}", manifest.display());
+
+    // Everything that touches the folder runs on its own thread, so that a read held up by
+    // the operating system can be explained instead of looking like a hang.
+    let wanted = path.to_path_buf();
+    let work = move || -> Result<(PathBuf, Vec<backup::Scanned>)> {
+        let absolute = std::fs::canonicalize(&wanted).with_context(|| format!("cannot find {}", wanted.display()))?;
+        let scanned = backup::scan(&absolute, &backup::Seen::new())?;
+        Ok((absolute, scanned))
+    };
+    let outcome = match backup::with_patience(FOLDER_PATIENCE, work) {
+        backup::Patient::Done(outcome) => outcome,
+        backup::Patient::Waiting(receiver) => {
+            eprintln!("Still reading {} ...", path.display());
+            if cfg!(target_os = "macos") {
+                eprintln!("If macOS is asking whether your terminal may access the folder, allow it. Press Ctrl-C to give up.");
+            }
+            receiver.recv().context("the read ended without an answer")?
+        }
+    };
+    let (absolute, scanned) = match outcome {
+        Ok(found) => found,
+        Err(error) if backup::is_permission_denied(&error) && cfg!(target_os = "macos") => bail!(
+            "{error:#}\nmacOS did not let this terminal read the folder. Allow your terminal app in \
+             System Settings > Privacy & Security > Files and Folders (or Full Disk Access), then run this again."
+        ),
+        // Fail now, with a clear message, rather than silently in the daemon.
+        Err(error) => return Err(error),
+    };
+
+    // Import now, in the foreground.
+    let clock = Clock::system();
+    let now = paths::now_unix();
+    let mut seen = backup::Seen::new();
+    let mut failed = 0;
+    for found in &scanned {
+        match &found.parsed {
+            Ok(parsed) => {
+                let report = backup::apply_parsed(&mut db, &found.manifest, parsed, now)?;
+                print_import_report(&report, &clock);
+                seen.insert(found.key.clone(), found.signature.clone());
+            }
+            Err(error) => {
+                failed += 1;
+                eprintln!("Could not read {}: {error:#}", found.manifest.display());
+            }
+        }
     }
+    if failed > 0 && seen.is_empty() {
+        bail!("no backup in {} could be read, so the folder is not watched.", absolute.display());
+    }
+    println!("The library now holds {} items.", db.total_items()?);
+
+    // Then hand the watching to the daemon. It skips what was just imported.
+    db.meta_set("backup_seen", &serde_json::to_string(&seen)?)?;
+    db.meta_set("backup_folder", &absolute.to_string_lossy())?;
+    println!();
+    println!("Watching {}", absolute.display());
     if daemon_info::is_running(&dir) {
-        println!("The running daemon will read it within half a minute, and again whenever it changes.");
+        println!("The running zone reads it again whenever the backup changes (it looks every half minute).");
+        if cfg!(target_os = "macos") {
+            println!("If macOS asks whether zone may access the folder, allow it. `zone status` says when zone is waiting for that.");
+        }
     } else {
-        println!("Zone is not running, so nothing is read yet. {START_HINT}");
-        println!("To read it once right now: `zone import \"{}\"`.", absolute.display());
+        println!("Zone is not running, so later changes are not picked up yet. {START_HINT}");
     }
     Ok(())
 }
@@ -378,6 +460,51 @@ pub fn doctor(as_json: bool) -> Result<bool> {
         (p, _) => println!("{p} {} to fix. Start with the first FAIL.", if p == 1 { "thing" } else { "things" }),
     }
     Ok(healthy)
+}
+
+/// Whether the backup folder can be read: by the daemon (which is what matters for watching)
+/// and from here. Neither question is allowed to hang this command.
+fn backup_folder_check(db: &Db, folder: &str, daemon: Option<&DaemonInfo>, now: f64) -> Check {
+    // The daemon's own view first: it is the one that has to read the folder.
+    if let Some(waited) = daemon.and_then(|d| d.backup.waiting_for(now)) {
+        return warn(
+            "Backup folder",
+            format!("{} (for {}): {folder}", backup::waiting_reason(), human_duration(waited)),
+            backup::waiting_fix(),
+        );
+    }
+    let path = PathBuf::from(folder);
+    let from_here = match backup::with_patience(FOLDER_PATIENCE, move || backup::locate(&path)) {
+        backup::Patient::Done(result) => Some(result),
+        backup::Patient::Waiting(_) => None,
+    };
+    let daemon_error = daemon.and_then(|d| d.backup.error.clone());
+    match from_here {
+        None => warn(
+            "Backup folder",
+            format!("{folder} did not answer within {} seconds: {}", FOLDER_PATIENCE.as_secs(), backup::waiting_reason()),
+            backup::waiting_fix(),
+        ),
+        Some(Err(error)) if backup::is_permission_denied(&error) => warn("Backup folder", format!("{error:#}"), backup::denied_fix()),
+        Some(Err(error)) => warn(
+            "Backup folder",
+            format!("{error:#}"),
+            "Check that the folder still exists and has finished syncing, or choose another with `zone backup-folder <path>`.",
+        ),
+        Some(Ok(manifests)) => {
+            if let Some(error) = daemon_error {
+                // This terminal can read it and the daemon cannot: a permission, almost always.
+                return warn("Backup folder", format!("this terminal can read {folder}, but zone itself cannot: {error}"), backup::denied_fix());
+            }
+            let read = db.meta_f64("last_sync_backup").ok().flatten();
+            let count = manifests.len();
+            let detail = match read {
+                Some(t) => format!("{folder} ({count} backup, last imported {})", human_ago(now - t)),
+                None => format!("{folder} ({count} backup, not imported yet)"),
+            };
+            ok("Backup folder", detail)
+        }
+    }
 }
 
 fn run_checks() -> Vec<Check> {
@@ -530,25 +657,10 @@ fn run_checks() -> Vec<Check> {
         }
 
         // Backup folder
-        match db.meta_get("backup_folder") {
-            Ok(Some(folder)) => match backup::locate(&PathBuf::from(&folder)) {
-                Ok(manifests) => {
-                    let read = db.meta_f64("last_sync_backup").ok().flatten();
-                    let detail = match read {
-                        Some(t) => format!("{folder} ({} backup, last read {})", manifests.len(), human_ago(now - t)),
-                        None => format!("{folder} ({} backup, not read yet)", manifests.len()),
-                    };
-                    checks.push(ok("Backup folder", detail));
-                }
-                Err(error) => checks.push(warn(
-                    "Backup folder",
-                    format!("{error:#}"),
-                    "Check that the folder still exists and has finished syncing, or choose another with `zone backup-folder <path>`.\n\
-                     On macOS, if the folder is in iCloud Drive, the system may ask once whether zone may read it.",
-                )),
-            },
-            Ok(None) => checks.push(ok("Backup folder", "not used")),
-            Err(_) => {}
+        if let Ok(Some(folder)) = db.meta_get("backup_folder") {
+            checks.push(backup_folder_check(db, &folder, daemon.as_ref(), now));
+        } else {
+            checks.push(ok("Backup folder", "not used"));
         }
     }
 

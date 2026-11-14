@@ -4,6 +4,7 @@
 //! file is read. Audio beside it is ignored, and so is anything nested deeper, including an
 //! older backup package saved inside this one.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -108,6 +109,11 @@ pub fn import_path(db: &mut Db, path: &Path, now: f64) -> Result<Vec<ImportRepor
 /// Imports one `library.json` in a single transaction.
 pub fn import_manifest(db: &mut Db, manifest: &Path, now: f64) -> Result<ImportReport> {
     let parsed = read_manifest(manifest)?;
+    apply_parsed(db, manifest, &parsed, now)
+}
+
+/// Merges a backup that has already been read. Touches the library only, never the folder.
+pub fn apply_parsed(db: &mut Db, manifest: &Path, parsed: &Parsed, now: f64) -> Result<ImportReport> {
     let delivery = Delivery { carrier: Carrier::Backup, device_id: None, received_at: now };
     let applied = db.apply_items(&parsed.items, &delivery)?;
     Ok(ImportReport {
@@ -119,6 +125,111 @@ pub fn import_manifest(db: &mut Db, manifest: &Path, now: f64) -> Result<ImportR
         written_at: parsed.written_at,
         applied,
     })
+}
+
+/// Which backups have been imported already: manifest path to [`signature`].
+pub type Seen = BTreeMap<String, String>;
+
+/// One `library.json` that changed since it was last imported, read and parsed.
+#[derive(Debug)]
+pub struct Scanned {
+    pub manifest: PathBuf,
+    /// The manifest's key in [`Seen`].
+    pub key: String,
+    pub signature: String,
+    /// A file caught halfway through a sync does not parse. It is tried again next time.
+    pub parsed: Result<Parsed>,
+}
+
+/// Everything about a backup folder that needs the file system: finding the backups and
+/// reading the ones whose `library.json` changed.
+///
+/// This touches no database, on purpose. Reading a folder can block for as long as it likes:
+/// macOS holds the very first `opendir` of an iCloud Drive, Desktop or Documents folder until
+/// the person answers a permission prompt, and a cloud folder can be slow. Whoever calls this
+/// must not hold the library lock.
+pub fn scan(folder: &Path, seen: &Seen) -> Result<Vec<Scanned>> {
+    hold_for_tests();
+    let mut out = Vec::new();
+    for manifest in locate(folder)? {
+        let key = manifest.to_string_lossy().to_string();
+        let Some(signature) = signature(&manifest) else { continue };
+        if seen.get(&key) == Some(&signature) {
+            continue;
+        }
+        let parsed = read_manifest(&manifest);
+        out.push(Scanned { manifest, key, signature, parsed });
+    }
+    Ok(out)
+}
+
+/// Debug builds only: while the file named by `ZONE_TEST_HOLD_BACKUP_READ` exists, a read of
+/// the backup folder does not come back. This stands in for macOS holding `opendir` behind a
+/// permission prompt, which no test can bring about for real. Release builds have no such door.
+fn hold_for_tests() {
+    #[cfg(debug_assertions)]
+    if let Some(gate) = std::env::var_os("ZONE_TEST_HOLD_BACKUP_READ") {
+        while Path::new(&gate).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+/// Runs file system work on its own thread and waits for it for at most `patience`.
+/// None means it has not answered yet. The thread is left to finish, or not, by itself: a
+/// read stuck in the kernel cannot be cancelled.
+pub fn with_patience<T: Send + 'static>(patience: std::time::Duration, work: impl FnOnce() -> T + Send + 'static) -> Patient<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    match receiver.recv_timeout(patience) {
+        Ok(value) => Patient::Done(value),
+        Err(_) => Patient::Waiting(receiver),
+    }
+}
+
+/// The answer of [`with_patience`].
+pub enum Patient<T> {
+    Done(T),
+    /// Still running. The receiver yields the result if it ever comes.
+    Waiting(std::sync::mpsc::Receiver<T>),
+}
+
+/// True when the operating system refused to let this program read something.
+pub fn is_permission_denied(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.downcast_ref::<std::io::Error>().map(|e| e.kind() == std::io::ErrorKind::PermissionDenied).unwrap_or(false))
+}
+
+/// How to fix a refusal.
+pub fn denied_fix() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS did not let zone read the folder.\n\
+         Allow it in System Settings > Privacy & Security > Files and Folders (or Full Disk Access), then wait half a minute.\n\
+         Or run `zone backup-folder <path>` in a terminal: that imports the folder right away, with the terminal's access."
+    } else {
+        "Make the folder readable by your user, or choose another with `zone backup-folder <path>`."
+    }
+}
+
+/// What to tell a person when a read of the backup folder does not come back.
+pub fn waiting_reason() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "waiting for macOS permission to read the backup folder"
+    } else {
+        "waiting for the backup folder to answer"
+    }
+}
+
+/// How to get a stuck read moving.
+pub fn waiting_fix() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Look for a macOS dialog asking whether zone may access the folder, and allow it.\n\
+         If there is no dialog: System Settings > Privacy & Security > Files and Folders, and allow zone there.\n\
+         Running `zone backup-folder <path>` in a terminal imports the folder right away, with the terminal's access."
+    } else {
+        "The folder has not answered. If it is on a network or cloud drive, check that the drive is connected."
+    }
 }
 
 #[derive(Debug)]

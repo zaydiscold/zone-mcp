@@ -436,16 +436,18 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
     let link_sync = db.meta_f64("last_sync_link")?;
     let backup_sync = db.meta_f64("last_sync_backup")?;
     let total = db.total_items()?;
-    let (relay_connected, relay_url) = match state.info.lock() {
-        Ok(info) => (info.relay_connected, info.relay_url.clone()),
-        Err(_) => (false, None),
+    let backup_folder = db.meta_get("backup_folder")?;
+    let (relay_connected, relay_url, backup_folder_state) = match state.info.lock() {
+        Ok(info) => (info.relay_connected, info.relay_url.clone(), crate::tools::backup_folder_state(Some(&info), backup_folder.as_deref(), now)),
+        Err(_) => (false, None, Value::Null),
     };
     Ok(json!({
         "computer": { "name": state.computer_name, "endpoint_id": state.endpoint_id, "version": env!("CARGO_PKG_VERSION") },
         "relay": { "connected": relay_connected, "url": relay_url },
         "phones": phones,
         "last_sync": { "link_age_s": age(link_sync), "backup_age_s": age(backup_sync) },
-        "backup_folder": db.meta_get("backup_folder")?,
+        "backup_folder": backup_folder,
+        "backup_folder_state": backup_folder_state,
         "items": { "total": total, "by_kind": by_kind, "dictations_by_source": by_source },
         // Changes whenever anything arrives, so the page knows to refresh.
         "revision": format!("{total}:{}:{}", link_sync.unwrap_or(0.0), backup_sync.unwrap_or(0.0)),
