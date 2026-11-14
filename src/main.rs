@@ -11,6 +11,7 @@ mod codec;
 mod daemon_info;
 mod db;
 mod fakephone;
+mod flash;
 mod item;
 mod link;
 mod log;
@@ -72,16 +73,19 @@ enum Command {
         /// Put this computer's current relay address in the link
         #[arg(long)]
         relay: bool,
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
     /// Is zone running, which phones are paired, how much is in the library
     Status {
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
     /// List paired phones
     Devices {
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -97,6 +101,7 @@ enum Command {
     },
     /// Check the setup and explain how to fix anything that is wrong
     Doctor {
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -113,6 +118,7 @@ enum Command {
         /// Show every matching item
         #[arg(long)]
         all: bool,
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -127,6 +133,7 @@ enum Command {
         order: Option<String>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -136,6 +143,7 @@ enum Command {
         ids: Vec<String>,
         #[arg(long, value_name = "ZONE")]
         tz: Option<String>,
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -146,6 +154,7 @@ enum Command {
         /// day, kind or source
         #[arg(long, default_value = "day")]
         by: String,
+        /// Print JSON instead of text
         #[arg(long)]
         json: bool,
     },
@@ -218,6 +227,8 @@ enum McpAction {
     Status,
 }
 
+// Parsed once per run, so the size of the largest variant does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum DevAction {
     /// Act as a phone over iroh: pair or reconnect, send items, report the acks as JSON

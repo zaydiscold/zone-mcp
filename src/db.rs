@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS devices (
     last_sync      REAL,
     items_received INTEGER NOT NULL DEFAULT 0,
     last_path      TEXT,
-    resend_all     INTEGER NOT NULL DEFAULT 0
+    resend_all     INTEGER NOT NULL DEFAULT 0,
+    flash_key      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pairing_offers (
@@ -73,7 +74,8 @@ CREATE TABLE IF NOT EXISTS pairing_offers (
     created_at  REAL NOT NULL,
     expires_at  REAL NOT NULL,
     used_at     REAL,
-    used_by     TEXT
+    used_by     TEXT,
+    flash_key   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -669,9 +671,10 @@ impl Db {
         let expires = now + ttl_seconds;
         // Old offers are of no use to anyone.
         self.conn.execute("DELETE FROM pairing_offers WHERE expires_at < ?1", params![now - 86400.0])?;
+        // The flash key is derived now, while the secret is in hand (see flash.rs).
         self.conn.execute(
-            "INSERT INTO pairing_offers (secret_hash, created_at, expires_at) VALUES (?1, ?2, ?3)",
-            params![hash, now, expires],
+            "INSERT INTO pairing_offers (secret_hash, created_at, expires_at, flash_key) VALUES (?1, ?2, ?3, ?4)",
+            params![hash, now, expires, crate::flash::flash_key(secret_hex)],
         )?;
         Ok(expires)
     }
@@ -719,11 +722,14 @@ impl Db {
         };
         match admission {
             Admission::Paired => {
+                let flash_key = pair_secret.and_then(crate::flash::flash_key);
                 tx.execute(
-                    "INSERT INTO devices (endpoint_id, phone_id, name, app, paired_at, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
+                    "INSERT INTO devices (endpoint_id, phone_id, name, app, paired_at, last_seen, flash_key) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6) \
                      ON CONFLICT (endpoint_id) DO UPDATE SET phone_id = excluded.phone_id, name = excluded.name, \
-                     app = excluded.app, paired_at = excluded.paired_at, last_seen = excluded.last_seen",
-                    params![endpoint_id, phone.id, phone.name, phone.app, now],
+                     app = excluded.app, paired_at = excluded.paired_at, last_seen = excluded.last_seen, \
+                     flash_key = excluded.flash_key",
+                    params![endpoint_id, phone.id, phone.name, phone.app, now, flash_key],
                 )?;
             }
             Admission::Known => {
@@ -739,7 +745,7 @@ impl Db {
         Ok(admission)
     }
 
-    /// Notes that a paired phone delivered a batch.
+    /// Notes that a paired phone delivered a batch. `items` is how many of them were new or changed.
     pub fn record_delivery(&self, endpoint_id: &str, items: usize, path: Option<&str>, now: f64) -> Result<()> {
         self.conn.execute(
             "UPDATE devices SET last_seen = ?2, last_sync = ?2, items_received = items_received + ?3, \
@@ -1412,6 +1418,11 @@ mod tests {
 
         // The right secret pairs, once.
         assert_eq!(db.admit("phone-a", Some(&secret), &phone, now + 10.0).unwrap(), Admission::Paired);
+        // The flash key is kept with the phone, because the secret itself is not kept.
+        let kept: String = db.conn.query_row("SELECT flash_key FROM devices WHERE endpoint_id = 'phone-a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, crate::flash::flash_key(&secret).unwrap());
+        let offered: String = db.conn.query_row("SELECT flash_key FROM pairing_offers WHERE used_by = 'phone-a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(offered, kept);
         assert_eq!(db.open_offers(now + 10.0).unwrap(), 0);
         assert_eq!(db.devices().unwrap().len(), 1);
         assert_eq!(db.admit("phone-b", Some(&secret), &phone, now + 20.0).unwrap(), Admission::BadSecret);
