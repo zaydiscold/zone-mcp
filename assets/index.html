@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>Zone</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b5cf6'/%3E%3Cpath d='M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z' fill='%23fff'/%3E%3C/svg%3E">
+<style nonce="__NONCE__">
+:root {
+  --bg: #121214;
+  --surface: #1a1a1e;
+  --raised: #222227;
+  --line: #2d2d34;
+  --line-soft: #25252b;
+  --text: #e8e7ec;
+  --muted: #a09eab;
+  --faint: #6e6c79;
+  --accent: #a78bfa;
+  --accent-strong: #8b5cf6;
+  --accent-wash: rgba(167, 139, 250, 0.13);
+  --accent-ink: #f4f0ff;
+  --good: #86d3ad;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  --radius: 12px;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f4f7;
+    --surface: #ffffff;
+    --raised: #f1f0f5;
+    --line: #dfdde6;
+    --line-soft: #e9e7ef;
+    --text: #1c1a22;
+    --muted: #5f5c6c;
+    --faint: #8d8a9a;
+    --accent: #6d49e8;
+    --accent-strong: #5b36d6;
+    --accent-wash: rgba(109, 73, 232, 0.09);
+    --accent-ink: #ffffff;
+    --good: #2d8a5f;
+    --shadow: 0 18px 50px rgba(40, 30, 80, 0.18);
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+
+header.top {
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.bar { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -0.01em; font-size: 17px; }
+.brand svg { width: 24px; height: 24px; display: block; }
+.search { flex: 1; min-width: 0; position: relative; }
+.search input {
+  width: 100%; height: 38px; padding: 0 12px 0 36px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+}
+.search input::placeholder { color: var(--faint); }
+.search svg { position: absolute; left: 11px; top: 11px; width: 16px; height: 16px; color: var(--faint); pointer-events: none; }
+.btn {
+  height: 38px; padding: 0 14px; border-radius: 10px; white-space: nowrap;
+  background: var(--surface); border: 1px solid var(--line); color: var(--text);
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn:hover { border-color: var(--faint); }
+.btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.quiet { height: 30px; padding: 0 10px; font-size: 13px; color: var(--muted); background: transparent; }
+.btn.quiet:hover { color: var(--text); }
+
+.status {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  color: var(--muted); font-size: 13px; padding: 14px 0 2px;
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+.status b { color: var(--text); font-weight: 600; }
+.status .sep { color: var(--faint); }
+
+.filters { display: flex; flex-direction: column; gap: 10px; padding: 14px 0 6px; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row .label { color: var(--faint); font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; width: 54px; flex: none; }
+.chip {
+  height: 30px; padding: 0 12px; border-radius: 999px; font-size: 13px;
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.chip:hover { color: var(--text); border-color: var(--faint); }
+.chip[aria-pressed="true"] { background: var(--accent-wash); border-color: var(--accent); color: var(--text); }
+.chip .n { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 12px; }
+.chip[aria-pressed="true"] .n { color: var(--accent); }
+input[type="date"] {
+  height: 30px; padding: 0 8px; border-radius: 8px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--line); color: var(--text);
+}
+.to { color: var(--faint); font-size: 13px; }
+
+main { padding: 6px 0 80px; }
+.summary { color: var(--muted); font-size: 13px; padding: 10px 0 0; min-height: 30px; }
+.day {
+  position: sticky; top: 63px; z-index: 5;
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 18px 0 8px; margin-top: 4px;
+  background: linear-gradient(var(--bg) 78%, transparent);
+}
+.day h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.005em; }
+.day span { color: var(--faint); font-size: 12px; }
+
+.item {
+  background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--radius);
+  padding: 12px 14px 13px; margin-bottom: 8px;
+}
+.item:hover { border-color: var(--line); }
+.meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; }
+.meta time { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.tag {
+  padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.tag.note { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
+.tag.meeting { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.meta .grow { flex: 1; }
+.copy {
+  height: 26px; padding: 0 9px; border-radius: 7px; font-size: 12px;
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+}
+.copy:hover { color: var(--text); border-color: var(--faint); }
+.copy.done { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.title { font-weight: 650; margin: 8px 0 0; }
+.text { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.text.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; line-clamp: 7; overflow: hidden; }
+.more { margin-top: 6px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 13px; }
+mark { background: var(--accent-wash); color: inherit; border-radius: 3px; padding: 0 2px; box-shadow: inset 0 -1px 0 var(--accent); }
+
+.empty { text-align: center; color: var(--muted); padding: 70px 10px; }
+.empty h3 { color: var(--text); margin: 0 0 6px; font-size: 17px; font-weight: 650; }
+.empty p { margin: 0 auto 18px; max-width: 420px; }
+.loadmore { display: flex; justify-content: center; padding: 16px 0; }
+.pill {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 30;
+  background: var(--accent-strong); color: #fff; border: 0; border-radius: 999px;
+  height: 38px; padding: 0 18px; font-weight: 600; box-shadow: var(--shadow);
+}
+[hidden] { display: none !important; }
+
+dialog {
+  border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(440px, calc(100vw - 28px));
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+}
+dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); }
+.sheet { padding: 20px; }
+.sheet h3 { margin: 0 0 4px; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.sheet p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+.qr { background: #fff; border-radius: 12px; padding: 6px; width: min(280px, 100%); margin: 0 auto 12px; aspect-ratio: 1; }
+.qr svg { display: block; width: 100%; height: 100%; }
+.expires { text-align: center; font-size: 13px; color: var(--muted); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+.linkrow { display: flex; gap: 8px; }
+.linkrow input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px; font-family: var(--mono); font-size: 11.5px;
+  background: var(--raised); border: 1px solid var(--line); border-radius: 8px; color: var(--muted);
+}
+.phones { margin: 16px 0 0; padding: 14px 0 0; border-top: 1px solid var(--line-soft); }
+.phones h4 { margin: 0 0 8px; font-size: 12px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; }
+.phone { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 14px; }
+.phone small { color: var(--muted); font-size: 12.5px; text-align: right; }
+.sheet .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.err { color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; margin: 12px 0; }
+
+@media (max-width: 640px) {
+  .wrap { padding: 0 14px; }
+  .bar { flex-wrap: wrap; gap: 10px; }
+  .search { order: 3; flex-basis: 100%; }
+  .brand { flex: 1; }
+  .day { top: 111px; }
+  .row { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .row::-webkit-scrollbar { display: none; }
+  .row .label { width: auto; }
+  .chip, input[type="date"] { flex: none; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .item { transition: border-color 0.12s; }
+  .chip, .btn, .copy { transition: border-color 0.12s, background 0.12s, color 0.12s; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#8b5cf6"/><path d="M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z" fill="#fff"/></svg>
+      Zone
+    </div>
+    <label class="search">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.6 10.6 14 14"/></svg>
+      <input id="q" type="search" placeholder="Search what you said" autocomplete="off" spellcheck="false" aria-label="Search">
+    </label>
+    <button class="btn primary" id="pairOpen" type="button">Pair a phone</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="status" id="status" aria-live="polite"><span class="dot"></span><span>Loading</span></div>
+
+  <div class="filters">
+    <div class="row" id="kinds" role="group" aria-label="Kind"><span class="label">Kind</span></div>
+    <div class="row" id="sources" role="group" aria-label="Source" hidden><span class="label">Source</span></div>
+    <div class="row" role="group" aria-label="Dates">
+      <span class="label">Dates</span>
+      <input type="date" id="from" aria-label="From date">
+      <span class="to">to</span>
+      <input type="date" id="to" aria-label="To date">
+      <button class="chip" type="button" data-range="today">Today</button>
+      <button class="chip" type="button" data-range="7">7 days</button>
+      <button class="chip" type="button" data-range="30">30 days</button>
+      <button class="chip" type="button" data-range="all" aria-pressed="true">All time</button>
+    </div>
+  </div>
+
+  <main>
+    <div class="summary" id="summary"></div>
+    <div id="list"></div>
+    <div class="loadmore"><button class="btn" id="more" type="button" hidden>Load more</button></div>
+  </main>
+</div>
+
+<button class="pill" id="fresh" type="button" hidden>New items. Show them</button>
+
+<dialog id="pair" aria-labelledby="pairTitle">
+  <div class="sheet">
+    <h3 id="pairTitle">Pair a phone</h3>
+    <p>In Zone on your iPhone, open the Link settings and scan this code. It works once and stays valid for ten minutes.</p>
+    <div id="pairBody">
+      <div class="qr" id="qr"></div>
+      <div class="expires" id="expires"></div>
+      <div class="linkrow">
+        <input id="pairUrl" readonly aria-label="Pairing link">
+        <button class="btn" id="pairCopy" type="button">Copy</button>
+      </div>
+    </div>
+    <div class="err" id="pairErr" hidden></div>
+    <div class="phones">
+      <h4>Paired phones</h4>
+      <div id="phones"></div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="pairNew" type="button">New code</button>
+      <button class="btn primary" id="pairClose" type="button" autofocus>Done</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__NONCE__">
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  };
+  const KIND_NAMES = { dictation: "Dictations", note: "Notes", meeting: "Meetings" };
+  const KIND_ONE = { dictation: "Dictation", note: "Note", meeting: "Meeting" };
+  const SOURCE_NAMES = { keyboard: "Keyboard", app: "In Zone", note: "Voice note", remote: "Remote" };
+
+  const state = { q: "", kinds: new Set(), sources: new Set(), from: "", to: "", cursor: null, loading: false, revision: null, lastDay: null, shown: 0, total: 0 };
+  let status = null;
+  let request = 0;
+
+  async function api(path, options) {
+    const response = await fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {}));
+    if (response.status === 401) {
+      document.body.textContent = "";
+      const box = el("div", "empty");
+      box.append(el("h3", null, "This page is locked"), el("p", null, "Run zone open in a terminal to unlock it in this browser."));
+      document.body.append(box);
+      throw new Error("locked");
+    }
+    if (!response.ok) throw new Error("request failed: " + response.status);
+    return response.json();
+  }
+
+  function ago(seconds) {
+    if (seconds === null || seconds === undefined) return "never";
+    if (seconds < 45) return "just now";
+    if (seconds < 3600) return Math.max(1, Math.round(seconds / 60)) + " min ago";
+    if (seconds < 172800) return Math.round(seconds / 3600) + " h ago";
+    return Math.round(seconds / 86400) + " days ago";
+  }
+  function duration(seconds) {
+    if (seconds === null || seconds === undefined) return null;
+    const total = Math.round(seconds);
+    if (total < 60) return total + "s";
+    if (total < 3600) return Math.floor(total / 60) + "m " + String(total % 60).padStart(2, "0") + "s";
+    return Math.floor(total / 3600) + "h " + String(Math.floor((total % 3600) / 60)).padStart(2, "0") + "m";
+  }
+  const plural = (n, one, many) => n.toLocaleString() + " " + (n === 1 ? one : many);
+
+  function chip(label, count, pressed, onClick) {
+    const button = el("button", "chip");
+    button.type = "button";
+    button.setAttribute("aria-pressed", pressed ? "true" : "false");
+    button.append(document.createTextNode(label));
+    if (count !== null) button.append(el("span", "n", count.toLocaleString()));
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function renderStatus() {
+    const box = $("status");
+    box.textContent = "";
+    const phones = status.phones;
+    const dot = el("span", "dot" + (phones.length ? " on" : ""));
+    box.append(dot);
+    if (!phones.length) {
+      box.append(el("span", null, "No phone paired yet"));
+    } else {
+      phones.forEach((phone, index) => {
+        if (index) box.append(el("span", "sep", "·"));
+        box.append(el("b", null, phone.name || "iPhone"), el("span", null, "synced " + ago(phone.last_sync_age_s)));
+      });
+    }
+    if (status.backup_folder) {
+      box.append(el("span", "sep", "·"), el("span", null, "backup folder read " + ago(status.last_sync.backup_age_s)));
+    }
+    box.append(el("span", "sep", "·"), el("span", null, plural(status.items.total, "item", "items")));
+
+    const kinds = $("kinds");
+    kinds.querySelectorAll(".chip").forEach((node) => node.remove());
+    kinds.append(chip("All", status.items.total, state.kinds.size === 0, () => { state.kinds.clear(); state.sources.clear(); changed(); }));
+    for (const kind of ["dictation", "note", "meeting"].concat(Object.keys(status.items.by_kind).filter((k) => !KIND_NAMES[k]))) {
+      const count = status.items.by_kind[kind] || 0;
+      if (!count && !KIND_NAMES[kind]) continue;
+      kinds.append(chip(KIND_NAMES[kind] || kind, count, state.kinds.has(kind), () => {
+        if (state.kinds.has(kind)) state.kinds.delete(kind); else state.kinds.add(kind);
+        if (!showsSources()) state.sources.clear();
+        changed();
+      }));
+    }
+    const sources = $("sources");
+    sources.querySelectorAll(".chip").forEach((node) => node.remove());
+    const names = Object.keys(status.items.dictations_by_source);
+    sources.hidden = !showsSources() || names.length < 2;
+    for (const source of names) {
+      sources.append(chip(SOURCE_NAMES[source] || source, status.items.dictations_by_source[source], state.sources.has(source), () => {
+        if (state.sources.has(source)) state.sources.delete(source); else state.sources.add(source);
+        changed();
+      }));
+    }
+    renderPhones();
+  }
+  const showsSources = () => state.kinds.size === 0 || state.kinds.has("dictation");
+
+  function renderPhones() {
+    const box = $("phones");
+    box.textContent = "";
+    if (!status || !status.phones.length) {
+      box.append(el("div", "phone", "None yet"));
+      return;
+    }
+    for (const phone of status.phones) {
+      const row = el("div", "phone");
+      const left = el("div");
+      left.append(el("div", null, phone.name || "iPhone"));
+      const detail = [phone.app ? "Zone " + phone.app : null, phone.last_path ? phone.last_path + " connection" : null].filter(Boolean).join(" · ");
+      if (detail) left.append(el("small", null, detail));
+      row.append(left, el("small", null, "synced " + ago(phone.last_sync_age_s) + ", " + plural(phone.items_received, "item", "items") + " received"));
+      box.append(row);
+    }
+  }
+
+  function highlight(node, snippet) {
+    // Matches arrive wrapped in [brackets]. Everything is added as text, never as HTML.
+    const parts = snippet.split(/(\[[^\[\]]*\])/);
+    for (const part of parts) {
+      if (part.length > 1 && part.startsWith("[") && part.endsWith("]")) node.append(el("mark", null, part.slice(1, -1)));
+      else if (part) node.append(document.createTextNode(part));
+    }
+  }
+
+  function renderItem(item) {
+    const card = el("article", "item");
+    const meta = el("div", "meta");
+    const time = el("time", null, item.time);
+    time.dateTime = item.rfc3339;
+    time.title = item.full_time;
+    meta.append(time, el("span", "tag " + item.kind, KIND_ONE[item.kind] || item.kind));
+    if (item.source) meta.append(el("span", null, SOURCE_NAMES[item.source] || item.source));
+    const length = duration(item.duration_s);
+    if (length) meta.append(el("span", null, length));
+    meta.append(el("span", null, plural(item.words, "word", "words")), el("span", "grow"));
+    const copy = el("button", "copy", "Copy");
+    copy.type = "button";
+    meta.append(copy);
+    card.append(meta);
+    if (item.title) card.append(el("div", "title", item.title));
+
+    const text = el("div", "text");
+    let full = item.truncated ? null : item.text;
+    const long = item.truncated || item.text.length > 900 || item.text.split("\n").length > 8;
+    if (item.snippet) highlight(text, item.snippet); else text.textContent = item.text;
+    if (long && !item.snippet) text.classList.add("clamp");
+    card.append(text);
+
+    async function whole() {
+      if (full === null) full = (await api("/api/item?id=" + encodeURIComponent(item.id))).text;
+      return full;
+    }
+    // A snippet that already is the whole text needs no button.
+    const partial = item.snippet && (item.truncated || item.snippet.replace(/[\[\]]/g, "") !== item.text);
+    if (long || partial) {
+      const more = el("button", "more", item.snippet ? "Show all of it" : "Show more");
+      more.type = "button";
+      more.addEventListener("click", async () => {
+        text.textContent = await whole();
+        text.classList.remove("clamp");
+        more.remove();
+      });
+      card.append(more);
+    }
+    copy.addEventListener("click", async () => {
+      const value = (item.title ? item.title + "\n\n" : "") + (await whole());
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch (_) {
+        const area = el("textarea");
+        area.value = value;
+        document.body.append(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
+      copy.textContent = "Copied";
+      copy.classList.add("done");
+      setTimeout(() => { copy.textContent = "Copy"; copy.classList.remove("done"); }, 1400);
+    });
+    return card;
+  }
+
+  async function load(reset) {
+    if (state.loading && !reset) return;
+    const mine = ++request;
+    state.loading = true;
+    if (reset) { state.cursor = null; state.lastDay = null; state.shown = 0; }
+    const params = new URLSearchParams();
+    if (state.q) params.set("q", state.q);
+    if (state.kinds.size) params.set("kinds", [...state.kinds].join(","));
+    if (state.sources.size) params.set("sources", [...state.sources].join(","));
+    if (state.from) params.set("start", state.from);
+    if (state.to) params.set("end", state.to);
+    if (state.cursor) params.set("cursor", state.cursor);
+    let data;
+    try {
+      data = await api("/api/items?" + params.toString());
+    } catch (error) {
+      state.loading = false;
+      if (error.message !== "locked") $("summary").textContent = "Could not load items. Is zone still running?";
+      return;
+    }
+    if (mine !== request) return;
+    const list = $("list");
+    if (reset) list.textContent = "";
+    for (const item of data.items) {
+      if (item.day !== state.lastDay) {
+        state.lastDay = item.day;
+        const head = el("div", "day");
+        head.append(el("h2", null, item.day_label));
+        if (data.day_counts && data.day_counts[item.day]) head.append(el("span", null, plural(data.day_counts[item.day], "item", "items")));
+        list.append(head);
+      }
+      list.append(renderItem(item));
+    }
+    state.shown += data.items.length;
+    state.total = data.total;
+    state.cursor = data.next_cursor;
+    $("more").hidden = !data.next_cursor;
+    const summary = $("summary");
+    if (!data.total) {
+      summary.textContent = "";
+      const empty = el("div", "empty");
+      const filtered = state.q || state.kinds.size || state.sources.size || state.from || state.to;
+      if (filtered) {
+        empty.append(el("h3", null, "Nothing matches"), el("p", null, "Try other words, another kind, or a wider range of dates."));
+      } else {
+        empty.append(el("h3", null, "Nothing here yet"), el("p", null, "Pair your iPhone and everything you dictate in Zone will appear here, on this computer only."));
+        const button = el("button", "btn primary", "Pair a phone");
+        button.type = "button";
+        button.addEventListener("click", openPair);
+        empty.append(button);
+      }
+      list.append(empty);
+    } else if (state.q) {
+      summary.textContent = plural(data.total, "match", "matches") + (data.total > state.shown ? ", showing the newest " + state.shown : "") + (data.matched === "prefix" ? " (matched by the beginnings of words)" : "");
+    } else {
+      summary.textContent = plural(data.total, "item", "items");
+    }
+    state.loading = false;
+  }
+
+  function changed() {
+    if (status) renderStatus();
+    load(true);
+  }
+
+  async function refreshStatus() {
+    let next;
+    try { next = await api("/api/status"); } catch (_) { return; }
+    const first = status === null;
+    status = next;
+    renderStatus();
+    if (first) {
+      state.revision = next.revision;
+    } else if (next.revision !== state.revision) {
+      state.revision = next.revision;
+      if (window.scrollY < 200 && !state.q) load(true); else $("fresh").hidden = false;
+    }
+  }
+
+  // Search, as the person types.
+  let typing = 0;
+  $("q").addEventListener("input", (event) => {
+    clearTimeout(typing);
+    typing = setTimeout(() => { state.q = event.target.value.trim(); load(true); }, 180);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "/" && document.activeElement !== $("q") && !$("pair").open) { event.preventDefault(); $("q").focus(); }
+  });
+
+  // Dates.
+  const iso = (date) => date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
+  function setRange(name) {
+    document.querySelectorAll("[data-range]").forEach((node) => node.setAttribute("aria-pressed", node.dataset.range === name ? "true" : "false"));
+  }
+  document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => {
+    const range = button.dataset.range;
+    const today = new Date();
+    if (range === "all") { state.from = ""; state.to = ""; }
+    else if (range === "today") { state.from = iso(today); state.to = iso(today); }
+    else { const start = new Date(today); start.setDate(start.getDate() - (Number(range) - 1)); state.from = iso(start); state.to = iso(today); }
+    $("from").value = state.from;
+    $("to").value = state.to;
+    setRange(range);
+    load(true);
+  }));
+  for (const id of ["from", "to"]) {
+    $(id).addEventListener("change", (event) => {
+      state[id] = event.target.value;
+      setRange(state.from || state.to ? "" : "all");
+      load(true);
+    });
+  }
+
+  $("more").addEventListener("click", () => load(false));
+  new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting) && state.cursor) load(false);
+  }, { rootMargin: "600px" }).observe($("more"));
+  $("fresh").addEventListener("click", () => { $("fresh").hidden = true; window.scrollTo({ top: 0 }); load(true); });
+
+  // Pairing.
+  let countdown = 0;
+  async function newCode() {
+    clearInterval(countdown);
+    $("pairErr").hidden = true;
+    $("pairBody").hidden = false;
+    $("qr").textContent = "";
+    $("expires").textContent = "";
+    let offer;
+    try {
+      offer = await api("/api/pair", { method: "POST" });
+    } catch (_) {
+      $("pairBody").hidden = true;
+      $("pairErr").hidden = false;
+      $("pairErr").textContent = "Could not make a pairing code. Check that zone is still running, then try again.";
+      return;
+    }
+    // The server drew this SVG itself from the link. It contains only rectangles.
+    const svg = new DOMParser().parseFromString(offer.svg, "image/svg+xml").documentElement;
+    if (svg && svg.nodeName === "svg") $("qr").append(document.importNode(svg, true));
+    $("pairUrl").value = offer.url;
+    const ends = Date.now() + offer.expires_in_s * 1000;
+    const tick = () => {
+      const left = Math.max(0, Math.round((ends - Date.now()) / 1000));
+      $("expires").textContent = left ? "Valid for " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") : "This code has expired. Make a new one.";
+      if (!left) { clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; }
+    };
+    tick();
+    countdown = setInterval(tick, 1000);
+  }
+  function openPair() {
+    $("pair").showModal();
+    newCode();
+  }
+  $("pairOpen").addEventListener("click", openPair);
+  $("pairNew").addEventListener("click", newCode);
+  $("pairClose").addEventListener("click", () => $("pair").close());
+  $("pair").addEventListener("close", () => { clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; refreshStatus(); });
+  $("pair").addEventListener("click", (event) => { if (event.target === $("pair")) $("pair").close(); });
+  $("pairCopy").addEventListener("click", async () => {
+    const field = $("pairUrl");
+    try { await navigator.clipboard.writeText(field.value); } catch (_) { field.select(); document.execCommand("copy"); }
+    $("pairCopy").textContent = "Copied";
+    setTimeout(() => { $("pairCopy").textContent = "Copy"; }, 1400);
+  });
+
+  refreshStatus().then(() => load(true));
+  setInterval(refreshStatus, 8000);
+})();
+</script>
+</body>
+</html>
