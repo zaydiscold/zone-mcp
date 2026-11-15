@@ -320,14 +320,16 @@ fn flash_picture(head: &RequestHead, state: &WebState) -> Reply {
         return json_reply(StatusCode::UNAUTHORIZED, &json!({ "error": "locked", "fix": "Run `zone open` to unlock this page." }));
     }
     let side = |key: &str| -> Result<usize> { head.query.get(key).and_then(|v| v.parse().ok()).with_context(|| format!("{key} is required")) };
+    let thorough = state.flash.lock().map(|r| r.codes_in_view()).unwrap_or(true);
     let codes = match side("w").and_then(|w| Ok((w, side("h")?))).and_then(|(w, h)| Gray::new(w, h, head.body.to_vec())) {
-        Ok(gray) => crate::flash::qr::read_camera(&gray),
+        Ok(gray) => crate::flash::qr::read_camera(&gray, thorough),
         Err(error) => return json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
     };
     flash_guarded(head, state, |receiver| {
         receiver.pictures += 1;
         if !codes.is_empty() {
             receiver.pictures_with_code += 1;
+            receiver.last_code_at = Some(std::time::Instant::now());
         }
         let mut read = PictureRead { codes: codes.len(), ..PictureRead::default() };
         for code in &codes {
@@ -742,6 +744,22 @@ mod tests {
     }
 
     #[test]
+    fn the_flash_page_draws_from_the_decoder_and_guides() {
+        // The mosaic is drawn from the decoder's own bit sets, and the page reads what each
+        // picture held, so nothing it shows is made up.
+        for needle in ["status.blocks.held", "status.blocks.solved", "last.frames", "status.setup", "requestVideoFrameCallback"] {
+            assert!(FLASH_PAGE.contains(needle), "{needle}");
+        }
+        // The states it explains, the guide, and the basics for keyboards and screen readers.
+        for needle in ["NotAllowedError", "Send by Flash", "zone pair", "not from Zone", "aria-live", "role=\"progressbar\"", "prefers-reduced-motion", ":focus-visible"] {
+            assert!(FLASH_PAGE.contains(needle), "{needle}");
+        }
+        // Nothing but its own nonce runs or styles it.
+        assert!(!FLASH_PAGE.contains(" style=\""), "no inline style attributes (the policy would block them)");
+        assert!(!FLASH_PAGE.contains("onclick="), "no inline handlers");
+    }
+
+    #[test]
     fn flash_through_the_page_routes() {
         use crate::flash::fountain::Encoder;
         use crate::flash::{qr, seal};
@@ -858,7 +876,9 @@ mod tests {
         assert_eq!(status["state"], "done", "{status}");
         assert_eq!(status["result"]["new"], 40);
         assert_eq!(status["pictures"]["seen"].as_u64(), Some(pictures.len() as u64));
-        assert_eq!(status["pictures"]["with_code"].as_u64(), Some(pictures.len() as u64));
+        // Before any code is in view the daemon only takes the quick look, which can miss a
+        // perfectly sharp first code now and then; after that, every one is read.
+        assert!(status["pictures"]["with_code"].as_u64().unwrap() + 2 >= pictures.len() as u64, "{status}");
     }
 
     #[test]

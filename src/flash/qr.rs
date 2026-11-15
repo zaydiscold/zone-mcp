@@ -44,6 +44,19 @@ impl Gray {
         Gray { width, height, pixels }
     }
 
+    /// The picture mirrored across its diagonal (rows become columns). A QR reader reads a
+    /// mirrored code just as well, but ZXing's search for the three corner squares scans in
+    /// another order, which finds the few codes it missed the first time.
+    fn transposed(&self) -> Gray {
+        let mut pixels = vec![0u8; self.pixels.len()];
+        for (y, row) in self.pixels.chunks(self.width).enumerate() {
+            for (x, pixel) in row.iter().enumerate() {
+                pixels[x * self.height + y] = *pixel;
+            }
+        }
+        Gray { width: self.height, height: self.width, pixels }
+    }
+
     /// Half the size: each pixel the average of four.
     fn halved(&self) -> Gray {
         let (width, height) = (self.width / 2, self.height / 2);
@@ -131,15 +144,32 @@ pub fn read_codes(gray: &Gray) -> Vec<Vec<u8>> {
 
 /// The bytes of every QR code in a camera picture from the page.
 ///
-/// The page posts many pictures a second and most of them either hold the code at a
-/// comfortable size or hold none at all, so this is the fast path: ZXing's reader at the size
-/// the picture came in (about 2 ms for 720 pixels), then once more at half the size, which
-/// smooths out sensor noise (a quarter of that). [`read_codes`] also tries another reader and
-/// more sizes, for files.
-pub fn read_camera(gray: &Gray) -> Vec<Vec<u8>> {
+/// The page posts many pictures a second, so this is the quick path, at the size the picture
+/// came in: ZXing's reader (about 2 ms for 720 pixels, and steady with turned, soft, noisy
+/// codes), then ZXing on the mirrored picture (which reads most of the sharp codes its first
+/// look misses), then ZXing at half the size, which smooths out sensor noise.
+///
+/// `thorough` adds quirc's reader before the last step, for whatever is left. It costs about
+/// 10 ms on a picture with no code in it, so the daemon asks for it only while codes are
+/// actually in view, not while the page waits for a phone. [`read_codes`] also tries other
+/// sizes, for files.
+pub fn read_camera(gray: &Gray, thorough: bool) -> Vec<Vec<u8>> {
     let found = read_zxing(gray);
-    if !found.is_empty() || gray.width.min(gray.height) < 600 {
+    if !found.is_empty() {
         return found;
+    }
+    let found = read_zxing(&gray.transposed());
+    if !found.is_empty() {
+        return found;
+    }
+    if thorough {
+        let found = read_quirc(gray);
+        if !found.is_empty() {
+            return found;
+        }
+    }
+    if gray.width.min(gray.height) < 600 {
+        return Vec::new();
     }
     read_zxing(&gray.halved())
 }
@@ -294,6 +324,41 @@ mod tests {
             }
         }
         assert_eq!(read_codes(&Gray::new(side, side, pixels).unwrap()), vec![b"0123456789".to_vec()]);
+    }
+
+    #[test]
+    fn the_quick_look_reads_nearly_every_clean_code() {
+        // Without the slower reader: 900 byte codes at several sizes, almost all read.
+        let mut missed = 0;
+        for scale in [3, 4, 5, 6] {
+            for seed in 0..40u64 {
+                let bytes: Vec<u8> = (0..917).map(|i| ((i as u64 * 2_654_435_761 + seed * 97) >> 7) as u8).collect();
+                if read_camera(&draw(&bytes, scale, 4).unwrap(), false) != vec![bytes] {
+                    missed += 1;
+                }
+            }
+        }
+        assert!(missed <= 3, "{missed} of 160 missed");
+    }
+
+    #[test]
+    fn clean_codes_always_read_on_the_camera_path() {
+        // ZXing's finder misses a few percent of perfectly sharp codes of random bytes; the
+        // camera path must still read every one.
+        for scale in [2, 3, 4, 6] {
+            for seed in 0..60u64 {
+                let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                let bytes: Vec<u8> = (0..317)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        state as u8
+                    })
+                    .collect();
+                assert_eq!(read_camera(&draw(&bytes, scale, 4).unwrap(), true), vec![bytes], "scale {scale}, seed {seed}");
+            }
+        }
     }
 
     #[test]

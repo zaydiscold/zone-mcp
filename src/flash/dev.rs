@@ -357,7 +357,7 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
             qr::write_png(path, &picture)?;
         }
         let started = std::time::Instant::now();
-        let codes = qr::read_camera(&picture);
+        let codes = qr::read_camera(&picture, true);
         times.push(started.elapsed().as_secs_f64() * 1000.0);
         if codes.contains(&bytes) {
             read += 1;
@@ -368,16 +368,20 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
             }
         }
     }
-    // A picture with no code at all: what every picture costs while the phone is not up yet.
+    // A picture with no code at all: what every picture costs while the phone is not up yet
+    // (the quick look), and right after codes were in view (the thorough one).
     let empty = qr::Gray { width: options.picture, height: options.picture, pixels: vec![60; options.picture * options.picture] };
-    let mut empty_times: Vec<f64> = (0..10)
-        .map(|_| {
-            let started = std::time::Instant::now();
-            let _ = qr::read_camera(&empty);
-            started.elapsed().as_secs_f64() * 1000.0
-        })
-        .collect();
-    empty_times.sort_by(f64::total_cmp);
+    let time_empty = |thorough: bool| {
+        let mut times: Vec<f64> = (0..10)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                let _ = qr::read_camera(&empty, thorough);
+                started.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        times.sort_by(f64::total_cmp);
+        (percentile(&times, 0.5) * 10.0).round() / 10.0
+    };
     let mut sorted = times.clone();
     sorted.sort_by(f64::total_cmp);
     let median = percentile(&sorted, 0.5);
@@ -406,7 +410,7 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
             "p95": (percentile(&sorted, 0.95) * 10.0).round() / 10.0,
             "max": (sorted[sorted.len() - 1] * 10.0).round() / 10.0,
         },
-        "decode_ms_without_a_code": (percentile(&empty_times, 0.5) * 10.0).round() / 10.0,
+        "decode_ms_without_a_code": { "waiting": time_empty(false), "codes_in_view": time_empty(true) },
         "pictures_per_second_one_core": (1000.0 / median).round(),
         "cores": cores,
         "bytes_per_second_if_every_shown_frame_is_read": { "12_fps": rate(12.0), "20_fps": rate(20.0), "30_fps": rate(30.0) },

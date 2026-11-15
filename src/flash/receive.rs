@@ -156,6 +156,8 @@ pub struct Receiver {
     pub frames_useful: u64,
     /// What the most recent picture held.
     pub last_picture: Option<PictureRead>,
+    /// When a picture last held a code of any kind.
+    pub last_code_at: Option<std::time::Instant>,
 }
 
 impl Receiver {
@@ -214,6 +216,12 @@ impl Receiver {
         if let Some(session) = self.sessions.get_mut(&shape) {
             session.outcome = Some(outcome);
         }
+    }
+
+    /// Whether a code was in view in the last few seconds: then a picture that seems to hold
+    /// none is worth a slower, second look.
+    pub fn codes_in_view(&self) -> bool {
+        self.last_code_at.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(3))
     }
 
     /// Forgets everything, for the page's "start over".

@@ -117,11 +117,11 @@ For networks that block everything, and for the fun of it. The phone shows a rap
 
   | `c` | Frame | QR code | Read time, median | Codes read | Data at 12, 20, 30 codes a second |
   | --- | --- | --- | --- | --- | --- |
-  | 300 | 317 bytes | version 11, 61 modules | 1.6 ms | 100% | 3.6, 6.0, 9.0 kB/s |
+  | 300 | 317 bytes | version 11, 61 modules | 1.7 ms | 100% | 3.6, 6.0, 9.0 kB/s |
   | 700 | 717 bytes | version 18, 89 modules | 1.9 ms | 100% | 8.4, 14, 21 kB/s |
-  | 900 | 917 bytes | version 21, 101 modules | 2.0 ms | 99% | 10.7, 17.9, 26.8 kB/s |
+  | 900 | 917 bytes | version 21, 101 modules | 2.0 ms | 100% | 10.8, 18, 27 kB/s |
 
-  With the code only 450 pixels wide (about 4 pixels per module at `c` = 900), 95 to 98% are read. A picture with no code in it costs 1.5 ms. Sent at the full 1080 pixel square of a 1080p camera, a picture takes 3.7 ms. In a harsh case (turned 10 degrees, blur radius 2, noise plus or minus 10) two thirds of the version 18 codes are read. The data rate counts compressed, sealed bytes: ordinary speech compresses to well under half its size.
+  With the code only 450 pixels wide (about 4 pixels per module at `c` = 900), 97 to 100% are read. A picture with no code in it costs 3 ms while the page waits for a phone, and about 13 ms while codes are in view, when a second reader takes a look too. Sent at the full 1080 pixel square of a 1080p camera, a picture takes 3.7 ms. In a harsh case (turned 10 degrees, blur radius 2, noise plus or minus 10) 75% of the version 18 codes are read. The data rate counts compressed, sealed bytes: ordinary speech compresses to well under half its size.
 
 `scripts/flash_reference.py` is the reference encoder and decoder. Both implementations must reproduce its vector: session `0x01020304`, payload byte `i` = `(i*7+3) mod 256` for 1280 bytes, `c` = 300, so `k` = 5. The chunk sets of frames 5 to 12 are `[1] [0,3] [1] [0,3,4] [1,2,4] [1] [1,2,3] [2,4]`, and the SHA-256 of frames 0 to 39 concatenated is `16e659e1a7b1a24735a6f04aeca9514d3ab1a59f285993c2b1e6e97a00c39b12`.
 
