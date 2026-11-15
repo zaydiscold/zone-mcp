@@ -293,6 +293,30 @@ pub struct PhoneInfo {
     pub app: Option<String>,
 }
 
+/// How long a used pairing offer is remembered.
+const USED_OFFER_KEPT_SECONDS: f64 = 30.0 * 86400.0;
+
+/// What the id of a phone's row starts with while the phone has only ever paired by Flash.
+pub const FLASH_DEVICE_PREFIX: &str = "flash:";
+
+/// The row id of a phone known only by its install id.
+pub fn flash_device_id(phone_id: &str) -> String {
+    format!("{FLASH_DEVICE_PREFIX}{phone_id}")
+}
+
+/// A key a flash may be sealed with, and whose it is.
+pub struct FlashKey {
+    pub key: [u8; 32],
+    pub owner: FlashKeyOwner,
+}
+
+pub enum FlashKeyOwner {
+    /// A paired phone, by the id of its row.
+    Device(String),
+    /// A pairing offer that is still valid, by the hash of its secret.
+    Offer(String),
+}
+
 /// The answer to "may this endpoint sync?".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admission {
@@ -672,14 +696,23 @@ impl Db {
     pub fn create_offer(&self, secret_hex: &str, now: f64, ttl_seconds: f64) -> Result<f64> {
         let hash = secret_hash(secret_hex).context("the pairing secret must be 64 hexadecimal characters")?;
         let expires = now + ttl_seconds;
-        // Old offers are of no use to anyone.
-        self.conn.execute("DELETE FROM pairing_offers WHERE expires_at < ?1", params![now - 86400.0])?;
+        self.delete_expired_offers(now)?;
         // The flash key is derived now, while the secret is in hand (see flash.rs).
         self.conn.execute(
             "INSERT INTO pairing_offers (secret_hash, created_at, expires_at, flash_key) VALUES (?1, ?2, ?3, ?4)",
             params![hash, now, expires, crate::flash::flash_key(secret_hex)],
         )?;
         Ok(expires)
+    }
+
+    /// Removes offers nobody can use any more: never used and past their ten minutes. A used
+    /// offer is kept for a month, because it is how a phone that sends its secret a second
+    /// time (its first welcome was lost, or it paired by Flash and is now online) is known.
+    pub fn delete_expired_offers(&self, now: f64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM pairing_offers WHERE (used_at IS NULL AND expires_at <= ?1) OR (used_at IS NOT NULL AND used_at < ?2)",
+            params![now, now - USED_OFFER_KEPT_SECONDS],
+        )?)
     }
 
     /// Offers that could still be used.
@@ -718,7 +751,21 @@ impl Db {
                             .query_row("SELECT used_by FROM pairing_offers WHERE secret_hash = ?1", params![hash], |row| row.get(0))
                             .optional()?
                             .flatten();
-                        if pinned && used_by.as_deref() == Some(endpoint_id) { Admission::Known } else { Admission::BadSecret }
+                        if pinned && used_by.as_deref() == Some(endpoint_id) {
+                            Admission::Known
+                        } else if let Some(flash_id) = used_by.as_deref().filter(|by| by.starts_with(FLASH_DEVICE_PREFIX))
+                            && phone.id.as_deref().map(flash_device_id).as_deref() == Some(flash_id)
+                        {
+                            // The phone scanned the pairing code while offline and paired by
+                            // Flash. This is its first time online: the row made for it then
+                            // becomes the row of its endpoint.
+                            tx.execute("DELETE FROM devices WHERE endpoint_id = ?1", params![endpoint_id])?;
+                            tx.execute("UPDATE devices SET endpoint_id = ?2 WHERE endpoint_id = ?1", params![flash_id, endpoint_id])?;
+                            tx.execute("UPDATE pairing_offers SET used_by = ?2 WHERE secret_hash = ?1", params![hash, endpoint_id])?;
+                            Admission::Known
+                        } else {
+                            Admission::BadSecret
+                        }
                     }
                 }
             },
@@ -746,6 +793,78 @@ impl Db {
         }
         tx.commit()?;
         Ok(admission)
+    }
+
+    /// Every key a flash could be sealed with: each paired phone's, then each pairing offer's
+    /// that is still valid.
+    pub fn flash_keys(&self, now: f64) -> Result<Vec<FlashKey>> {
+        let mut keys = Vec::new();
+        let mut statement = self.conn.prepare("SELECT endpoint_id, flash_key FROM devices WHERE flash_key IS NOT NULL ORDER BY paired_at DESC")?;
+        for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+            let (endpoint_id, key) = row?;
+            if let Some(key) = crate::flash::seal::key_bytes(&key) {
+                keys.push(FlashKey { key, owner: FlashKeyOwner::Device(endpoint_id) });
+            }
+        }
+        let mut statement = self.conn.prepare(
+            "SELECT secret_hash, flash_key FROM pairing_offers WHERE flash_key IS NOT NULL AND used_at IS NULL AND expires_at > ?1 \
+             ORDER BY created_at DESC",
+        )?;
+        for row in statement.query_map(params![now], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+            let (hash, key) = row?;
+            if let Some(key) = crate::flash::seal::key_bytes(&key) {
+                keys.push(FlashKey { key, owner: FlashKeyOwner::Offer(hash) });
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Pairs a phone whose flash opened with a still-valid offer's key, using the offer up.
+    /// Returns the id of the phone's row, or none when the offer was used or ran out in the
+    /// meantime.
+    ///
+    /// A phone that has never been online has no endpoint id yet, so its row is named after
+    /// its install id. `admit` renames the row when the phone first connects over Link.
+    pub fn pair_by_flash(&mut self, offer_hash: &str, phone: &PhoneInfo, now: f64) -> Result<Option<String>> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A phone already paired over Link keeps its row and gets the new key.
+        let existing: Option<String> = match &phone.id {
+            Some(id) => tx
+                .query_row(
+                    "SELECT endpoint_id FROM devices WHERE phone_id = ?1 ORDER BY paired_at DESC LIMIT 1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => None,
+        };
+        let device_id = existing.unwrap_or_else(|| flash_device_id(phone.id.as_deref().unwrap_or(&offer_hash[..16.min(offer_hash.len())])));
+        let used = tx.execute(
+            "UPDATE pairing_offers SET used_at = ?2, used_by = ?3 WHERE secret_hash = ?1 AND used_at IS NULL AND expires_at > ?2",
+            params![offer_hash, now, device_id],
+        )?;
+        if used != 1 {
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO devices (endpoint_id, phone_id, name, app, paired_at, last_seen, flash_key) \
+             SELECT ?1, ?2, ?3, ?4, ?5, ?5, flash_key FROM pairing_offers WHERE secret_hash = ?6 \
+             ON CONFLICT (endpoint_id) DO UPDATE SET name = coalesce(excluded.name, name), app = coalesce(excluded.app, app), \
+             last_seen = excluded.last_seen, flash_key = excluded.flash_key",
+            params![device_id, phone.id, phone.name, phone.app, now, offer_hash],
+        )?;
+        tx.commit()?;
+        Ok(Some(device_id))
+    }
+
+    /// Notes what a phone said about itself in a flash.
+    pub fn touch_device(&self, endpoint_id: &str, phone: &PhoneInfo, now: f64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE devices SET phone_id = coalesce(?2, phone_id), name = coalesce(?3, name), app = coalesce(?4, app), \
+             last_seen = ?5 WHERE endpoint_id = ?1",
+            params![endpoint_id, phone.id, phone.name, phone.app, now],
+        )?;
+        Ok(())
     }
 
     /// Notes that a paired phone delivered a batch. `items` is how many of them were new or changed.

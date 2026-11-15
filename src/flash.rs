@@ -17,6 +17,7 @@
 
 pub mod fountain;
 pub mod qr;
+pub mod receive;
 pub mod seal;
 
 use sha2::{Digest, Sha256};
