@@ -136,7 +136,7 @@ pub fn synthetic_items(start_index: usize, count: usize) -> Vec<Value> {
         .collect()
 }
 
-fn load_jsonl(path: &Path) -> Result<Vec<Value>> {
+pub fn load_jsonl(path: &Path) -> Result<Vec<Value>> {
     let text = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     let mut items = Vec::new();
     for (number, line) in text.lines().enumerate() {

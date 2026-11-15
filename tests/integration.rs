@@ -431,6 +431,129 @@ fn web_page_is_local_and_locked() {
     assert!(String::from_utf8_lossy(&second.stderr).contains("already running"));
 }
 
+// ------------------------------------------------------------------------- flash
+
+/// Posts bytes to the daemon's page and returns the status and the JSON it answered with.
+fn http_post(port: u16, path: &str, cookie: &str, body: &[u8]) -> (u16, Value) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\n\
+         Content-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    let status = response.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let json = response.split_once("\r\n\r\n").and_then(|(_, body)| serde_json::from_str(body).ok()).unwrap_or(Value::Null);
+    (status, json)
+}
+
+/// Unlocks the page the way `zone open` does and returns the session cookie.
+fn page_cookie(sandbox: &Sandbox, port: u16) -> String {
+    let link = sandbox.ok(&["open", "--print"]);
+    let token = link.trim().split("?t=").nth(1).unwrap().to_string();
+    let (status, response) = http(port, &format!("GET /?t={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"));
+    assert_eq!(status, 303);
+    let line = response.lines().find(|l| l.to_ascii_lowercase().starts_with("set-cookie:")).unwrap();
+    line.split_once(':').unwrap().1.trim().split(';').next().unwrap().to_string()
+}
+
+/// A grayscale PNG as written by `zone dev flash-encode`: width, height, one byte per pixel.
+fn read_gray_png(path: &Path) -> (usize, usize, Vec<u8>) {
+    let decoder = png::Decoder::new(BufReader::new(std::fs::File::open(path).unwrap()));
+    let mut reader = decoder.read_info().unwrap();
+    let mut pixels = vec![0u8; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!((frame.color_type, frame.bit_depth), (png::ColorType::Grayscale, png::BitDepth::Eight));
+    pixels.truncate(frame.buffer_size());
+    (frame.width as usize, frame.height as usize, pixels)
+}
+
+/// A flash from pictures to the library: `flash-encode` draws the frames a phone would show,
+/// `flash-decode` reads them back, and the daemon takes them as camera pictures over HTTP.
+#[test]
+fn flash_pictures_through_the_command_line_and_the_daemon() {
+    let sandbox = Sandbox::new();
+    let _daemon = Daemon::start(&sandbox);
+    let port = sandbox.daemon_info().unwrap()["http_port"].as_u64().unwrap() as u16;
+    let frames = sandbox.home.join("frames");
+    let frames_text = frames.to_str().unwrap();
+
+    // The phone scanned a pairing code (and nothing else: it has never been online).
+    let url = pair_url(&sandbox);
+    let secret = url.split("&s=").nth(1).unwrap().split('&').next().unwrap().to_string();
+    assert_eq!(secret.len(), 64);
+    let made = sandbox.json(&[
+        "dev", "flash-encode", "--out", frames_text, "--secret", &secret, "--count", "130", "--scale", "3", "--phone-id", "PHONE-FLASH", "--name", "Flash phone",
+    ]);
+    let k = made["k"].as_u64().unwrap();
+    assert!(k > 10 && made["frames"].as_u64().unwrap() > k, "{made}");
+
+    // flash-decode reads the folder back and reports counts, never text.
+    let output = sandbox.ok(&["dev", "flash-decode", frames_text, "--secret", &secret]);
+    let report: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!((report["complete"].as_bool(), report["items"].as_u64(), report["k"].as_u64()), (Some(true), Some(130), Some(k)));
+    assert_eq!(report["by_kind"], json!({ "dictation": 117, "meeting": 2, "note": 11 }));
+    assert!(!output.contains("amber") && !output.contains("harbor"), "flash-decode printed item text");
+    assert_eq!(total_items(&sandbox), 0, "nothing is stored without --import");
+    // The wrong secret opens nothing.
+    let wrong = sandbox.run(&["dev", "flash-decode", frames_text, "--secret", &"cd".repeat(32)]);
+    assert!(!wrong.status.success());
+
+    // The daemon takes the same pictures as the page's camera would post them. Every fourth
+    // picture is missed and they arrive from the last to the first.
+    let cookie = page_cookie(&sandbox, port);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&frames).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    files.reverse();
+    let mut last = Value::Null;
+    for (n, file) in files.iter().enumerate() {
+        if n % 4 == 3 {
+            continue;
+        }
+        let (width, height, pixels) = read_gray_png(file);
+        let (status, answer) = http_post(port, &format!("/api/flash/picture?w={width}&h={height}"), &cookie, &pixels);
+        assert_eq!(status, 200, "{answer}");
+        last = answer;
+        if last["state"] == "done" {
+            break;
+        }
+        assert_eq!(last["state"], "receiving", "{last}");
+    }
+    assert_eq!(last["state"], "done", "{last}");
+    assert_eq!(last["k"].as_u64(), Some(k));
+    assert_eq!(last["result"], json!({ "ok": true, "phone": "Flash phone", "items": 130, "new": 130, "changed": 0, "unchanged": 0, "deletions": 0, "rejected": 0, "paired": true }));
+    assert_eq!(total_items(&sandbox), 130);
+
+    // The flash paired the phone and used the code up.
+    let devices = sandbox.json(&["devices", "--json"]);
+    let list = devices.as_array().or_else(|| devices["devices"].as_array()).unwrap().clone();
+    assert_eq!(list.len(), 1, "{devices}");
+    assert_eq!(list[0]["name"], "Flash phone");
+    assert_eq!(list[0]["items_received"], 130);
+    let refused = phone(&sandbox, &["--url", &url, "--addr", &loopback_addr(&sandbox), "--count", "1"]);
+    assert_eq!(refused["reason"], "bad_secret", "{refused}");
+
+    // Without the page's key the daemon takes no pictures.
+    assert_eq!(http_post(port, "/api/flash/picture?w=4&h=4", "zone_session_1=nope", &[0u8; 16]).0, 401);
+    // More than a picture's worth of bytes is refused before it is read in full.
+    assert_eq!(http_post(port, "/api/flash/picture?w=4&h=4", &cookie, &vec![0u8; 5 * 1024 * 1024]).0, 413);
+
+    // The log names the phone and the counts, and none of the words.
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap_or_default();
+    assert!(log.contains("flash: Flash phone sent 130 items"), "{log}");
+    assert!(!log.contains("amber") && !log.contains("harbor"));
+
+    // Later flashes open with the phone's kept key: here straight from the folder, with
+    // --import and no secret. Everything is already there.
+    let again = sandbox.json(&["dev", "flash-decode", frames_text, "--import"]);
+    assert_eq!(again["imported"], json!({ "new": 0, "changed": 0, "unchanged": 130, "paired": false }));
+    assert_eq!(total_items(&sandbox), 130);
+}
+
 // ------------------------------------------------------------------------- backup import and queries
 
 /// A synthetic backup in the phone's format. Dates are seconds since 2001-01-01 UTC.

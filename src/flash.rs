@@ -15,6 +15,7 @@
 //!
 //! The key opens flashes. It cannot be turned back into the pairing secret.
 
+pub mod dev;
 pub mod fountain;
 pub mod qr;
 pub mod receive;

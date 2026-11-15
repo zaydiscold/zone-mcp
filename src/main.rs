@@ -294,6 +294,57 @@ enum DevAction {
         #[arg(long, default_value_t = 30)]
         timeout: u64,
     },
+    /// Draw a flash as numbered PNG pictures of QR codes, sealed with a pairing secret
+    FlashEncode {
+        /// Folder to write frame-000000.png, frame-000001.png, ... into
+        #[arg(long, short)]
+        out: PathBuf,
+        /// The pairing secret, 64 hex characters
+        #[arg(long)]
+        secret: String,
+        /// Items as JSON Lines. Without it, synthetic items are used
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Synthetic items to flash
+        #[arg(long, default_value_t = 100)]
+        count: usize,
+        /// Index of the first synthetic item
+        #[arg(long, default_value_t = 0)]
+        start_index: usize,
+        /// Bytes per frame body
+        #[arg(long, default_value_t = flash::fountain::DEFAULT_CHUNK)]
+        chunk: usize,
+        /// How many frames to draw (default: enough to rebuild, with some to spare)
+        #[arg(long)]
+        frames: Option<usize>,
+        /// Index of the first frame drawn
+        #[arg(long, default_value_t = 0)]
+        first_frame: u32,
+        /// Pixels per module
+        #[arg(long, default_value_t = 4)]
+        scale: usize,
+        /// Modules of white around the code
+        #[arg(long, default_value_t = 4)]
+        quiet: usize,
+        /// The session number, as hex (default: random)
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        phone_id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Read a folder of PNG pictures of flash frames, rebuild the flash and report counts
+    FlashDecode {
+        /// The folder. File names and their order do not matter
+        dir: PathBuf,
+        /// Open with this pairing secret (64 hex characters) instead of the library's keys
+        #[arg(long)]
+        secret: Option<String>,
+        /// Store the items in the library
+        #[arg(long)]
+        import: bool,
+    },
     /// Print synthetic items as JSON Lines
     Synthetic {
         #[arg(long, default_value_t = 100)]
@@ -382,6 +433,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 };
                 let report = runtime()?.block_on(fakephone::run(options))?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            DevAction::FlashEncode { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name } => {
+                let session = match session {
+                    Some(text) => Some(u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| anyhow::anyhow!("--session is up to 8 hex characters"))?),
+                    None => None,
+                };
+                let options = flash::dev::EncodeOptions { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name };
+                println!("{}", serde_json::to_string_pretty(&flash::dev::encode(&options)?)?);
+            }
+            DevAction::FlashDecode { dir, secret, import } => {
+                let report = flash::dev::decode(&flash::dev::DecodeOptions { dir, secret, import })?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                if report["complete"] != true {
+                    return Ok(ExitCode::from(1));
+                }
             }
             DevAction::Synthetic { count, start_index } => {
                 for item in fakephone::synthetic_items(start_index, count) {
