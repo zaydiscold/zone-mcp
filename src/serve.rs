@@ -37,6 +37,8 @@ pub async fn run(options: Options) -> Result<()> {
 
     let db = Db::open_default()?;
     let database_id = db.database_id()?;
+    // Pairing codes that ran out while zone was not running.
+    db.delete_expired_offers(paths::now_unix())?;
     let db = Arc::new(Mutex::new(db));
 
     let key = link::load_or_create_key(&dir)?;
