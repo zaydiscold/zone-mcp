@@ -269,7 +269,7 @@ may be added, existing ones keep their names and meaning.
 | `zone pair --json` | A new code: `id`, `url`, `endpoint_id`, `name`, `expires_at`, `expires_local`, `state` (`waiting`), `claimed` (`false`), `qr_svg` (the code as an SVG picture). With `--wait` it prints that on one line and stays until a phone has used the code or it has run out, then prints a second line: what `--check` prints. |
 | `zone pair --check <id> --json` | What became of a code: `id`, `state` (`waiting`, `claimed`, `expired`, or `unknown` once a code that ran out has been forgotten), `claimed`, `expires_at`, `claimed_at`, `device` (`name`, `endpoint_id`, `app`). Exits 0 when claimed, 2 when not. |
 | `zone events --json` | The feed, one object per line. See below. |
-| `zone mcp status --json` | `zone` (this program), `automatic`, and `clients`: one object per place with `client`, `label`, `profile`, `path`, `installed`, `state` (`registered`, `registered_read_only`, `other_copy`, `not_registered`, `removed_by_you`, `unreadable`), `detail`, and for a registered place `read_only` and `scope` (`limited`, `kinds`, `exclude_sources`: what its agents can see). |
+| `zone mcp status --json` | `zone` (this program), `automatic`, and `clients`: one object per place with `client`, `label`, `profile`, `path`, `installed`, `state` (`registered`, `registered_read_only`, `other_copy`, `not_registered`, `removed_by_you`, `unreadable`), `detail`, and for a place that starts zone (this copy or another) `read_only` and `scope` (`limited`, `kinds`, `exclude_sources`: what its agents can see). |
 | `zone doctor --json` | `healthy` and `checks`: a list of `check`, `result` (`ok`, `warn`, `fail`), `detail`, `fix`. Exits 1 when something is broken. |
 | `zone list --json`, `zone search --json` | `total` and `items`: `id`, `kind`, `source`, `created_at`, `updated_at`, `created_local`, `text`, `title`, `duration_s`, `words`, `engine`, `status`, `extra`, `rev`, `processed_at`, `carrier`, `device_id`, `received_at`. |
 | `zone show --json`, `zone stats --json`, `zone open --print` | A list of items in full, counts by day, kind or source, and the page's link. |
@@ -398,7 +398,8 @@ its view is limited so it does not mistake what it sees for everything.
 
 Running an install line again never shows an agent more than it saw before. A client that
 already has a limited view keeps it until you name another (`--kinds all` is everything), and one
-that is read-only stays read-only until you give `--read-write`. `zone mcp install --all` without
+that is read-only stays read-only until you give `--read-write`, also when the install points it
+from another copy of zone to this one. `zone mcp install --all` without
 a view flag leaves every client's view as it is. A mistyped kind is an error, never "everything".
 
 ### Staying registered

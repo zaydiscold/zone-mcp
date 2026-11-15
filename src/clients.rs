@@ -632,6 +632,12 @@ impl Launch {
         self.args.iter().any(|a| a == "--read-only")
     }
 
+    /// True when this entry starts a zone server, whichever copy of zone it is: every one is
+    /// started as `zone mcp ...`.
+    pub fn is_zone_server(&self) -> bool {
+        self.args.first().is_some_and(|first| first == "mcp")
+    }
+
     /// This launch with another view: the same program and environment, started read-only or
     /// not and with the given scope.
     pub fn with_view(&self, read_only: bool, scope: &Scope) -> Launch {
@@ -1108,9 +1114,12 @@ impl Wish {
     /// What was not asked for stays as it is: a client that already has a limited view keeps
     /// it unless a view is named, and one that is read-only stays so unless `--read-write` is
     /// given. Running the same install line twice must never show an agent more than before.
+    /// That holds when the entry starts another copy of zone, too (one installed by hand,
+    /// where this one came with an app): pointing a client at this copy is not a reason to
+    /// show it more.
     pub fn launch_for(&self, base: &Launch, existing: &Found) -> Result<Launch, String> {
         let kept = match existing {
-            Found::Present(found) if found.command == base.command => Some(found),
+            Found::Present(found) if found.is_zone_server() => Some(found),
             _ => None,
         };
         let read_only = self.read_only || (kept.is_some_and(|found| found.read_only()) && !self.read_write);
@@ -1315,6 +1324,9 @@ pub struct Row {
     pub target: Target,
     pub installed: bool,
     pub standing: Standing,
+    /// Zone's entry as the place has it, when it has one: which copy it starts, and with
+    /// which view.
+    pub entry: Option<Launch>,
 }
 
 /// Every place of every client, read without changing anything.
@@ -1323,14 +1335,19 @@ pub fn survey(env: &Env, state: &State, current: &Launch) -> Vec<Row> {
     for client in Client::ALL {
         let installed = client.installed(env);
         for target in client.targets(env) {
-            let standing = match read_entry(&target, env) {
+            let found = read_entry(&target, env);
+            let entry = match &found {
+                Found::Present(launch) => Some(launch.clone()),
+                _ => None,
+            };
+            let standing = match found {
                 Found::Present(found) if found.command == current.command => Standing::Registered { read_only: found.read_only(), scope: found.scope() },
                 Found::Present(found) => Standing::OtherCopy(found.command),
                 Found::Absent if state.removed.contains(&target.id()) || state.registered.contains(&target.id()) => Standing::OptedOut,
                 Found::Absent => Standing::NotRegistered,
                 Found::Unreadable(why) => Standing::Unreadable(why),
             };
-            rows.push(Row { target, installed, standing });
+            rows.push(Row { target, installed, standing, entry });
         }
     }
     rows
@@ -1346,16 +1363,17 @@ pub fn status(as_json: bool) -> Result<()> {
         let list: Vec<Value> = rows
             .iter()
             .map(|row| {
-                // For a registered place: whether agents there can flag items, and what they see.
-                let (read_only, scope) = match &row.standing {
-                    Standing::Registered { read_only, scope } => (
-                        Some(*read_only),
-                        Some(match scope {
+                // For a place that starts zone (this copy or another): whether agents there
+                // can flag items, and what they see.
+                let (read_only, scope) = match row.entry.as_ref().filter(|entry| entry.is_zone_server()) {
+                    Some(entry) => (
+                        Some(entry.read_only()),
+                        Some(match entry.scope() {
                             Some(scope) => json!({ "limited": !scope.is_everything(), "kinds": scope.visible_kinds(), "exclude_sources": scope.exclude_sources }),
                             None => json!({ "limited": true, "kinds": null, "exclude_sources": null }),
                         }),
                     ),
-                    _ => (None, None),
+                    None => (None, None),
                 };
                 let (standing, detail) = match &row.standing {
                     Standing::Registered { read_only, .. } => (if *read_only { "registered_read_only" } else { "registered" }, None),
@@ -1404,7 +1422,10 @@ pub fn status(as_json: bool) -> Result<()> {
                 }
                 println!("{label:width$}  {words:22}  {path}")
             }
-            Standing::OtherCopy(command) => println!("{label:width$}  registered, but it starts another copy: {command} (`zone mcp install {name}` points it here)"),
+            Standing::OtherCopy(command) => {
+                let view = row.entry.as_ref().and_then(|entry| entry.view_words()).map(|view| format!(", {view}")).unwrap_or_default();
+                println!("{label:width$}  registered{view}, but it starts another copy: {command} (`zone mcp install {name}` points it here and keeps its view)")
+            }
             Standing::NotRegistered => println!("{label:width$}  not registered          (`zone mcp install {name}`)"),
             Standing::OptedOut => println!("{label:width$}  removed by you          (`zone mcp install {name}` adds it back)"),
             Standing::Unreadable(why) => println!("{label:width$}  cannot tell: {why}"),

@@ -505,9 +505,13 @@ fn an_install_keeps_what_it_was_not_asked_to_change() {
     let no_keyboard = Scope::new(&[], &["keyboard".to_string()]).unwrap();
     assert_eq!(args(Wish { scope: no_keyboard.clone(), view_named: true, read_write: true, ..Wish::default() }, &narrow), ["mcp", "--exclude-sources", "keyboard"]);
     assert_eq!(args(Wish { read_only: true, ..Wish::default() }, &Found::Present(base.clone())), ["mcp", "--read-only"]);
-    // Another copy of zone has no say in what this one is registered with.
+    // An entry that starts another copy of zone keeps its view when it is pointed here.
     let other = Found::Present(Launch { command: "/old/zone".into(), ..base.with_view(true, &notes) });
-    assert_eq!(args(Wish::default(), &other), ["mcp"]);
+    assert_eq!(args(Wish::default(), &other), ["mcp", "--read-only", "--kinds", "note"]);
+    assert_eq!(Wish::default().launch_for(&base, &other).unwrap().command, base.command);
+    // Something else that happens to be registered under zone's name is not a view to keep.
+    let stranger = Found::Present(Launch { command: "/usr/bin/other".into(), args: vec!["--stdio".into()], env: Vec::new() });
+    assert_eq!(args(Wish::default(), &stranger), ["mcp"]);
     // Arguments that cannot be read are not guessed at, unless a view is named.
     let odd = Found::Present(Launch { args: vec!["mcp".into(), "--kinds".into(), "songs".into()], ..base.clone() });
     assert!(Wish::default().launch_for(&base, &odd).unwrap_err().contains("will not guess"));
