@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::codec::{self, FrameError, IDLE_TIMEOUT};
-use crate::db::{Admission, Db, Delivery, PhoneInfo};
+use crate::db::{Admission, Applied, Db, Delivery, PhoneInfo};
 use crate::item::{Carrier, Item};
-use crate::paths;
+use crate::{events, paths};
 use crate::{info, warn};
 
 /// The protocol name both endpoints must offer.
@@ -173,18 +173,31 @@ async fn session(
     if hello.get("t").and_then(Value::as_str) != Some("hello") {
         bail!("{short} did not start with hello");
     }
+    let started = std::time::Instant::now();
+    let phone_value = hello.get("phone").cloned().unwrap_or(Value::Null);
+    let text = |key: &str| phone_value.get(key).and_then(Value::as_str).map(|s| s.chars().take(200).collect::<String>());
+    let phone = PhoneInfo { id: text("id"), name: text("name"), app: text("app") };
+    // A refusal goes in the feed, so an app can say why a phone is not getting through.
+    let refused = |reason: &'static str| {
+        let db = state.db.clone();
+        let fields = json!({ "device": phone.name, "device_id": endpoint_id, "reason": reason });
+        blocking(move || {
+            events::record(&*db.lock().map_err(poisoned)?, "link_refused", fields);
+            Ok(())
+        })
+    };
     if hello.get("v").and_then(Value::as_i64) != Some(PROTOCOL_VERSION) {
         info!("link: refused {short}: protocol version {} is not {PROTOCOL_VERSION}", hello.get("v").unwrap_or(&Value::Null));
+        refused("version").await?;
         return refuse(send, "version").await;
     }
     let Ok(_permit) = state.sessions.try_acquire() else {
         info!("link: refused {short}: busy");
+        refused("busy").await?;
         return refuse(send, "busy").await;
     };
-    let phone_value = hello.get("phone").cloned().unwrap_or(Value::Null);
-    let text = |key: &str| phone_value.get(key).and_then(Value::as_str).map(|s| s.chars().take(200).collect::<String>());
-    let phone = PhoneInfo { id: text("id"), name: text("name"), app: text("app") };
     let pair_secret = hello.get("pair").and_then(Value::as_str).map(str::to_string);
+    let offer = pair_secret.as_deref().and_then(crate::db::offer_id);
 
     // 2. welcome or refused
     let admission = {
@@ -197,13 +210,24 @@ async fn session(
     match admission {
         Admission::NotPaired => {
             info!("link: refused {short}: not paired");
+            refused("not_paired").await?;
             return refuse(send, "not_paired").await;
         }
         Admission::BadSecret => {
             info!("link: refused {short}: pairing secret is wrong, expired or already used");
+            refused("bad_secret").await?;
             return refuse(send, "bad_secret").await;
         }
-        Admission::Paired => info!("link: paired {phone_label} ({short})"),
+        Admission::Paired => {
+            info!("link: paired {phone_label} ({short})");
+            let db = state.db.clone();
+            let fields = json!({ "device": phone.name, "device_id": endpoint_id, "via": "link", "offer": offer });
+            blocking(move || {
+                events::record(&*db.lock().map_err(poisoned)?, "paired", fields);
+                Ok(())
+            })
+            .await?;
+        }
         Admission::Known => {}
     }
 
@@ -236,17 +260,81 @@ async fn session(
     .await?;
 
     // 3. items and acks, until bye
-    let mut received = 0usize;
-    let mut changed = 0usize;
-    let mut frames = 0usize;
+    let mut tally = Tally::default();
+    let ended = exchange(connection, send, recv, state, endpoint_id, &phone, &mut tally).await;
+
+    let last_path = path_kind(connection);
+    let path = if first_path == last_path { last_path.to_string() } else { format!("{first_path} then {last_path}") };
+    let end = match &ended {
+        Ok(end) => *end,
+        Err(_) => "error",
+    };
+    {
+        let db = state.db.clone();
+        let endpoint_id = endpoint_id.to_string();
+        let applied = tally.applied;
+        let fields = json!({
+            "device": phone.name,
+            "device_id": endpoint_id,
+            "items": applied.stored(),
+            "new": applied.new_items(),
+            "changed": applied.changed_items(),
+            "deleted": applied.deleted_items(),
+            "unchanged": applied.unchanged_items(),
+            "rejected": tally.rejected,
+            "frames": tally.frames,
+            "path": path,
+            "duration_s": (started.elapsed().as_secs_f64() * 100.0).round() / 100.0,
+            "paired": admission == Admission::Paired,
+            "end": end,
+        });
+        blocking(move || {
+            let db = db.lock().map_err(poisoned)?;
+            db.record_path(&endpoint_id, last_path, paths::now_unix())?;
+            events::record(&db, "link_session", fields);
+            Ok(())
+        })
+        .await?;
+    }
+    ended?;
+    info!(
+        "link: {phone_label} ({short}) sent {} items in {} frames, {} new or changed, path: {path}",
+        tally.applied.stored(),
+        tally.frames,
+        tally.applied.changed()
+    );
+    Ok(())
+}
+
+/// What one session carried.
+#[derive(Default)]
+struct Tally {
+    applied: Applied,
+    frames: usize,
+    /// Items without an id, kind or time.
+    rejected: usize,
+}
+
+/// The items and acks of a session. Returns how it ended: `bye`, `closed` (the phone went
+/// away without saying so) or `idle`.
+async fn exchange(
+    connection: &Connection,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    state: &Arc<LinkState>,
+    endpoint_id: &str,
+    phone: &PhoneInfo,
+    tally: &mut Tally,
+) -> Result<&'static str> {
+    let short = short_id(endpoint_id);
     loop {
         let frame = match codec::read_frame(recv, IDLE_TIMEOUT).await {
             Ok(frame) => frame,
             // The phone went away without bye. Everything acked is already on disk.
-            Err(FrameError::Closed) => break,
+            Err(FrameError::Closed) => return Ok("closed"),
             Err(FrameError::Idle) => {
                 info!("link: {short} was silent for {} seconds, closing", IDLE_TIMEOUT.as_secs());
-                break;
+                return Ok("idle");
             }
             Err(e) => bail!("{short}: {e}"),
         };
@@ -279,9 +367,9 @@ async fn session(
                     })
                     .await?
                 };
-                received += applied.stored();
-                changed += applied.changed();
-                frames += 1;
+                tally.applied.add(&applied);
+                tally.frames += 1;
+                tally.rejected += rejected;
                 let mut ack = json!({ "t": "ack", "seq": seq, "stored": applied.stored() });
                 if rejected > 0 {
                     // Items without an id, kind or time cannot be stored. Saying so lets the
@@ -291,21 +379,11 @@ async fn session(
                 }
                 codec::write_frame(send, &ack).await?;
             }
-            Some("bye") => break,
+            Some("bye") => return Ok("bye"),
             // A message from a newer phone that this version does not know.
             _ => {}
         }
     }
-
-    let last_path = path_kind(connection);
-    {
-        let db = state.db.clone();
-        let endpoint_id = endpoint_id.to_string();
-        blocking(move || db.lock().map_err(poisoned)?.record_path(&endpoint_id, last_path, paths::now_unix())).await?;
-    }
-    let path = if first_path == last_path { last_path.to_string() } else { format!("{first_path} then {last_path}") };
-    info!("link: {phone_label} ({short}) sent {received} items in {frames} frames, {changed} new or changed, path: {path}");
-    Ok(())
 }
 
 pub fn short_id(endpoint_id: &str) -> String {

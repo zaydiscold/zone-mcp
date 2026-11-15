@@ -24,6 +24,11 @@ pub fn stdout(args: Arguments<'_>, newline: bool) {
     }
 }
 
+/// True once a write to standard output has failed: nobody is reading any more.
+pub fn stdout_closed() -> bool {
+    STDOUT_CLOSED.load(Ordering::Relaxed)
+}
+
 /// Writes to standard error. A failure is ignored: there is nowhere left to report it.
 pub fn stderr(args: Arguments<'_>, newline: bool) {
     let mut err = std::io::stderr().lock();

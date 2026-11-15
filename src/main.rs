@@ -27,6 +27,7 @@ mod clients;
 mod codec;
 mod daemon_info;
 mod db;
+mod events;
 mod fakephone;
 mod flash;
 mod item;
@@ -92,6 +93,17 @@ enum Command {
         /// Put this computer's current relay address in the link
         #[arg(long)]
         relay: bool,
+        /// Stay until a phone has used the code or it has run out (what a terminal does anyway).
+        /// With --json: one line for the code, then one line saying what became of it
+        #[arg(long, conflicts_with = "no_wait")]
+        wait: bool,
+        /// Print the code and return at once
+        #[arg(long)]
+        no_wait: bool,
+        /// Instead of making a code: say whether a phone has used the code with this id
+        /// (the "id" that `zone pair --json` printed)
+        #[arg(long, value_name = "ID", conflicts_with_all = ["qr", "no_qr", "relay", "wait", "no_wait"])]
+        check: Option<String>,
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
@@ -117,6 +129,29 @@ enum Command {
     Resync {
         /// The phone's name or id. Leave out for every phone
         device: Option<String>,
+    },
+    /// What happened lately: syncs, pairings, flashes, backup imports, zone starting and stopping
+    #[command(long_about = "What happened lately, one line each: a phone synced over Link, a phone paired or was unpaired, a \
+                            Flash arrived, the backup folder was read, zone started or stopped, the relay came or went.\n\n\
+                            Names and counts only, never your words. The newest 2000 are kept.\n\n\
+                            With --json each line is one JSON object: seq (a number that only goes up), at (Unix seconds), \
+                            time (local RFC 3339), event (the kind), then that kind's fields. The README lists them.")]
+    Events {
+        /// Print one JSON object per line instead of text
+        #[arg(long)]
+        json: bool,
+        /// Keep running and print events as they happen
+        #[arg(long, short)]
+        follow: bool,
+        /// At most this many of the newest events (0: none, only what follows)
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Only events at or after this time: 2h, today, 2026-11-11, "2026-11-11 14:30"
+        #[arg(long, value_name = "TIME")]
+        since: Option<String>,
+        /// Only events numbered above this one (the "seq" of the last line you read)
+        #[arg(long, value_name = "SEQ")]
+        after: Option<i64>,
     },
     /// Check the setup and explain how to fix anything that is wrong
     Doctor {
@@ -229,6 +264,9 @@ enum Command {
         /// Print the link (it contains the page's key) instead of opening a browser
         #[arg(long)]
         print: bool,
+        /// Open the Flash page, where the camera reads the phone's codes
+        #[arg(long)]
+        flash: bool,
     },
     /// Tools for testing zone itself
     #[command(hide = true)]
@@ -430,10 +468,18 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Serve { port, quiet } => runtime()?.block_on(serve::run(serve::Options { port, quiet }))?,
-        Command::Pair { no_qr, qr, relay, json } => {
+        Command::Pair { no_qr, qr, relay, wait, no_wait, check, json } => {
             let show = if no_qr { Some(false) } else if qr { Some(true) } else { None };
-            admin::pair(show, relay, json)?
+            let wait = if wait { Some(true) } else if no_wait { Some(false) } else { None };
+            let claimed = match check {
+                Some(id) => admin::pair_check(&id, json)?,
+                None => admin::pair(show, relay, json, wait)?,
+            };
+            if !claimed {
+                return Ok(ExitCode::from(2));
+            }
         }
+        Command::Events { json, follow, limit, since, after } => events::run(&events::Options { json, follow, limit, since, after })?,
         Command::Status { json } => admin::status(json)?,
         Command::Devices { json } => admin::devices(json)?,
         Command::Unpair { device } => admin::unpair(&device)?,
@@ -476,7 +522,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             clients::stop_registering_by_itself();
             println!("AI clients keep zone registered (it works without the daemon). `zone mcp uninstall --all` takes it out of them.");
         }
-        Command::Open { print } => admin::open(print)?,
+        Command::Open { print, flash } => admin::open(print, flash)?,
         Command::Dev { action } => match action {
             DevAction::FakePhone {
                 url,

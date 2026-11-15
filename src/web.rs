@@ -235,7 +235,7 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
         "/" if get => {
             if let Some(offered) = head.query.get("t") {
                 if same_secret(offered, &state.token) {
-                    return redirect_with_session(state);
+                    return redirect_with_session(state, "/");
                 }
                 return locked();
             }
@@ -248,6 +248,13 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
         // Carrier 2 (Flash): the page reads the phone's screen with the camera and posts what
         // it sees. See flash/receive.rs.
         "/flash" if get => {
+            // `zone open --flash` comes straight here with the key, as `zone open` does to /.
+            if let Some(offered) = head.query.get("t") {
+                if same_secret(offered, &state.token) {
+                    return redirect_with_session(state, "/flash");
+                }
+                return locked();
+            }
             if has_session(head, state) {
                 html(StatusCode::OK, FLASH_PAGE.replace("__NONCE__", nonce))
             } else {
@@ -371,7 +378,11 @@ fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) -> (bool, b
         Step::Complete { shape, payload } => (shape, payload),
     };
     let outcome = match state.db.lock() {
-        Ok(mut db) => receive::import(&mut db, &payload, paths::now_unix()),
+        Ok(mut db) => {
+            let outcome = receive::import(&mut db, &payload, paths::now_unix());
+            receive::record_events(&db, &outcome, payload.len(), receiver.color_pictures > 0);
+            outcome
+        }
         Err(_) => Outcome::Failed("the library is unavailable".to_string()),
     };
     match &outcome {
@@ -426,10 +437,12 @@ fn locked() -> Reply {
     )
 }
 
-fn redirect_with_session(state: &WebState) -> Reply {
+/// Swaps the key in the address for a cookie and sends the browser on to `to`, one of this
+/// server's own pages.
+fn redirect_with_session(state: &WebState, to: &'static str) -> Reply {
     let mut reply = Response::new(Full::new(Bytes::new()));
     *reply.status_mut() = StatusCode::SEE_OTHER;
-    reply.headers_mut().insert(header::LOCATION, HeaderValue::from_static("/"));
+    reply.headers_mut().insert(header::LOCATION, HeaderValue::from_static(to));
     let cookie = format!("{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000", cookie_name(state.port), state.token);
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         reply.headers_mut().insert(header::SET_COOKIE, value);
@@ -600,9 +613,10 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
 }
 
 fn pair(db: &mut Db, state: &WebState) -> Result<Value> {
-    let offer = pairing::create_offer(db, &state.endpoint_id, &state.computer_name, None)?;
+    let offer = pairing::create_offer(db, &state.endpoint_id, &state.computer_name, None, "page")?;
     let url = offer.link.to_url();
     Ok(json!({
+        "id": offer.id,
         "url": url,
         "svg": pairing::qr_svg(&url)?,
         "expires_in_s": (offer.expires_at - paths::now_unix()).round(),

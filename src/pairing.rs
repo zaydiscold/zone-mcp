@@ -76,12 +76,18 @@ pub struct Offer {
     pub link: PairLink,
     /// Unix seconds.
     pub expires_at: f64,
+    /// The offer's public name: 16 hex characters that say nothing about the secret. `zone
+    /// pair --check <id>` and the feed use it to say what became of the offer.
+    pub id: String,
 }
 
-pub fn create_offer(db: &Db, endpoint_id: &str, name: &str, relay: Option<String>) -> Result<Offer> {
+/// Makes an offer and notes it in the feed. `via` is where it was asked for: `cli` or `page`.
+pub fn create_offer(db: &Db, endpoint_id: &str, name: &str, relay: Option<String>, via: &str) -> Result<Offer> {
     let secret = paths::random_hex32();
     let expires_at = db.create_offer(&secret, paths::now_unix(), OFFER_TTL_SECONDS)?;
-    Ok(Offer { link: PairLink { endpoint_id: endpoint_id.to_string(), secret, name: name.to_string(), relay }, expires_at })
+    let id = crate::db::offer_id(&secret).context("a pairing secret is 64 hexadecimal characters")?;
+    crate::events::record(db, "pair_offered", serde_json::json!({ "offer": id, "expires_at": expires_at.round(), "via": via }));
+    Ok(Offer { link: PairLink { endpoint_id: endpoint_id.to_string(), secret, name: name.to_string(), relay }, expires_at, id })
 }
 
 /// Percent-encodes everything except unreserved characters (RFC 3986).
@@ -233,12 +239,12 @@ mod tests {
     #[test]
     fn offers_are_recorded_by_hash() {
         let db = Db::open_in_memory().unwrap();
-        let offer = create_offer(&db, &"7f".repeat(32), "desk", None).unwrap();
+        let offer = create_offer(&db, &"7f".repeat(32), "desk", None, "cli").unwrap();
         assert_eq!(offer.link.secret.len(), 64);
         let now = paths::now_unix();
         assert!((offer.expires_at - now - OFFER_TTL_SECONDS).abs() < 5.0);
         assert_eq!(db.open_offers(now).unwrap(), 1);
-        let another = create_offer(&db, &"7f".repeat(32), "desk", None).unwrap();
+        let another = create_offer(&db, &"7f".repeat(32), "desk", None, "cli").unwrap();
         assert_ne!(another.link.secret, offer.link.secret);
     }
 

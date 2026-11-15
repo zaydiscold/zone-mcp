@@ -9,12 +9,37 @@ use serde_json::{Value, json};
 use crate::daemon_info::{self, DaemonInfo};
 use crate::db::Db;
 use crate::timeparse::{Clock, human_ago, human_duration};
-use crate::{backup, link, pairing, paths, service, tools};
+use crate::{backup, events, link, pairing, paths, service, tools};
 
 const START_HINT: &str = "Start it with `zone serve`, or run `zone install` once to start it every time you log in.";
 
-/// `zone pair`: a one-use pairing offer, as a link and a QR code.
-pub fn pair(show_qr: Option<bool>, with_relay: bool, as_json: bool) -> Result<()> {
+/// How often a waiting `zone pair` looks at whether a phone has used the code.
+const PAIR_POLL: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Where a pairing offer stands, as JSON: for `zone pair --json --wait` and `zone pair --check`.
+fn offer_json(id: &str, status: Option<&crate::db::OfferStatus>, clock: &Clock) -> Value {
+    let Some(status) = status else {
+        // Never made here, or it ran out long enough ago to have been cleared away.
+        return json!({ "id": id, "state": "unknown", "claimed": false });
+    };
+    json!({
+        "id": status.id,
+        "state": status.state.as_str(),
+        "claimed": status.state == crate::db::OfferState::Claimed,
+        "expires_at": status.expires_at,
+        "expires_local": clock.rfc3339(status.expires_at),
+        "claimed_at": status.claimed_at,
+        "device": status.device_id.as_ref().map(|device_id| json!({
+            "name": status.device.as_ref().and_then(|d| d.name.clone()),
+            "endpoint_id": device_id,
+            "app": status.device.as_ref().and_then(|d| d.app.clone()),
+        })),
+    })
+}
+
+/// `zone pair`: a one-use pairing offer, as a link and a QR code. With `wait`, stays until a
+/// phone has used the code or it has run out, and returns false when it ran out.
+pub fn pair(show_qr: Option<bool>, with_relay: bool, as_json: bool, wait: Option<bool>) -> Result<bool> {
     let dir = paths::data_dir()?;
     let Some(daemon) = DaemonInfo::read_if_running(&dir) else {
         bail!(
@@ -29,29 +54,42 @@ pub fn pair(show_qr: Option<bool>, with_relay: bool, as_json: bool) -> Result<()
         // A relay set by hand is one the phone cannot guess, so it always goes in the link.
         link::custom_relay()?.map(|url| url.to_string())
     };
-    let offer = pairing::create_offer(&db, &daemon.endpoint_id, &name, relay)?;
+    let offer = pairing::create_offer(&db, &daemon.endpoint_id, &name, relay, "cli")?;
     let url = offer.link.to_url();
     let clock = Clock::system();
+    let interactive = std::io::stdout().is_terminal();
+    // A person at a terminal gets told when the phone has paired. A script gets the link and
+    // carries on, unless it asks to wait.
+    let wait = wait.unwrap_or(interactive && !as_json);
     if as_json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "url": url,
-                "endpoint_id": daemon.endpoint_id,
-                "name": name,
-                "expires_at": offer.expires_at,
-                "expires_local": clock.rfc3339(offer.expires_at),
-            }))?
-        );
-        return Ok(());
+        let value = json!({
+            "id": offer.id,
+            "url": url,
+            "endpoint_id": daemon.endpoint_id,
+            "name": name,
+            "expires_at": offer.expires_at,
+            "expires_local": clock.rfc3339(offer.expires_at),
+            "state": "waiting",
+            "claimed": false,
+            "qr_svg": pairing::qr_svg(&url)?,
+        });
+        if !wait {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+            return Ok(true);
+        }
+        // Two lines when waiting: the offer now, what became of it later.
+        println!("{value}");
+        let status = wait_for_offer(&db, &offer.id);
+        println!("{}", offer_json(&offer.id, status.as_ref(), &clock));
+        return Ok(status.is_some_and(|s| s.state == crate::db::OfferState::Claimed));
     }
-    let qr = show_qr.unwrap_or_else(|| std::io::stdout().is_terminal());
+    let qr = show_qr.unwrap_or(interactive);
     println!("Pair your iPhone with {name}");
     println!();
     if qr {
         print!("{}", pairing::qr_terminal(&url)?);
         println!();
-        println!("In Zone on your iPhone, open the Link settings and scan this code.");
+        println!("In Zone on your iPhone, open Settings > Computers and scan this code.");
     }
     println!("Or paste this link into Zone:");
     println!();
@@ -62,7 +100,58 @@ pub fn pair(show_qr: Option<bool>, with_relay: bool, as_json: bool) -> Result<()
         println!();
         println!("Note: zone has not reached an iroh relay yet. Pairing works on the same network. Run `zone doctor` if the phone cannot connect from elsewhere.");
     }
-    Ok(())
+    if !wait {
+        return Ok(true);
+    }
+    println!();
+    println!("Waiting for the phone. Press Ctrl-C to stop waiting: the code stays valid.");
+    match wait_for_offer(&db, &offer.id) {
+        Some(status) if status.state == crate::db::OfferState::Claimed => {
+            let phone = status.device.and_then(|d| d.name).unwrap_or_else(|| "The phone".to_string());
+            println!("{phone} is paired. Its library arrives in a moment: `zone status` shows it, `zone open` shows the page.");
+            Ok(true)
+        }
+        _ => {
+            println!("The code ran out before a phone used it. Run `zone pair` for a new one.");
+            Ok(false)
+        }
+    }
+}
+
+/// Waits until an offer has been used or has run out, and returns where it stands then.
+fn wait_for_offer(db: &Db, id: &str) -> Option<crate::db::OfferStatus> {
+    loop {
+        let status = db.offer_status(id, paths::now_unix()).ok().flatten()?;
+        if status.state != crate::db::OfferState::Waiting {
+            return Some(status);
+        }
+        std::thread::sleep(PAIR_POLL);
+    }
+}
+
+/// `zone pair --check <id>`: whether a phone has used a pairing code. Returns false when the
+/// code was not used (still waiting, run out, or unknown).
+pub fn pair_check(id: &str, as_json: bool) -> Result<bool> {
+    let db = Db::open_default()?;
+    let clock = Clock::system();
+    let status = db.offer_status(id, paths::now_unix())?;
+    let claimed = status.as_ref().is_some_and(|s| s.state == crate::db::OfferState::Claimed);
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&offer_json(id, status.as_ref(), &clock))?);
+        return Ok(claimed);
+    }
+    match status {
+        None => println!("No pairing code with that id is known here. Codes that ran out are forgotten."),
+        Some(status) => match status.state {
+            crate::db::OfferState::Waiting => println!("No phone has used this code yet. It is valid until {}.", clock.zoned(status.expires_at).strftime("%H:%M")),
+            crate::db::OfferState::Expired => println!("This code ran out unused. Run `zone pair` for a new one."),
+            crate::db::OfferState::Claimed => match status.device {
+                Some(device) => println!("{} paired with this code.", device.name.as_deref().unwrap_or("A phone")),
+                None => println!("A phone paired with this code, and has been unpaired since."),
+            },
+        },
+    }
+    Ok(claimed)
 }
 
 /// `zone status`
@@ -218,6 +307,7 @@ pub fn unpair(spec: &str) -> Result<()> {
     let db = Db::open_default()?;
     let device = db.find_device(spec)?;
     db.remove_device(&device.endpoint_id)?;
+    events::record(&db, "unpaired", json!({ "device": device.name, "device_id": device.endpoint_id }));
     println!(
         "Unpaired {}. It can no longer sync to this computer. The items it already sent stay in the library.",
         device.name.as_deref().unwrap_or("the phone")
@@ -228,13 +318,16 @@ pub fn unpair(spec: &str) -> Result<()> {
 /// `zone resync [device]`
 pub fn resync(spec: Option<&str>) -> Result<()> {
     let db = Db::open_default()?;
-    let count = match spec {
+    let (count, name) = match spec {
         Some(spec) => {
             let device = db.find_device(spec)?;
-            db.request_resend(Some(&device.endpoint_id))?
+            (db.request_resend(Some(&device.endpoint_id))?, Some(device.name.unwrap_or_else(|| "iPhone".to_string())))
         }
-        None => db.request_resend(None)?,
+        None => (db.request_resend(None)?, None),
     };
+    if count > 0 {
+        events::record(&db, "resync_requested", json!({ "device": name, "phones": count }));
+    }
     if count == 0 {
         println!("No phone is paired.");
     } else {
@@ -249,6 +342,7 @@ pub fn import(path: &Path) -> Result<()> {
     let reports = backup::import_path(&mut db, path, paths::now_unix())?;
     let clock = Clock::system();
     for report in &reports {
+        report.record_event(&db, "import");
         print_import_report(report, &clock);
     }
     println!("The library now holds {} items.", db.total_items()?);
@@ -336,6 +430,7 @@ pub fn backup_folder(path: Option<&Path>, clear: bool) -> Result<()> {
         match &found.parsed {
             Ok(parsed) => {
                 let report = backup::apply_parsed(&mut db, &found.manifest, parsed, now)?;
+                report.record_event(&db, "backup-folder");
                 print_import_report(&report, &clock);
                 seen.insert(found.key.clone(), found.signature.clone());
             }
@@ -366,20 +461,21 @@ pub fn backup_folder(path: Option<&Path>, clear: bool) -> Result<()> {
     Ok(())
 }
 
-/// `zone open`
-pub fn open(print_only: bool) -> Result<()> {
+/// `zone open`: the history page, or with `flash` the Flash page.
+pub fn open(print_only: bool, flash: bool) -> Result<()> {
     let dir = paths::data_dir()?;
     let Some(daemon) = DaemonInfo::read_if_running(&dir) else {
         bail!("zone is not running, so there is no page to open.\n{START_HINT}");
     };
     let token = std::fs::read_to_string(paths::web_token(&dir)).context("the web token is missing. Restart `zone serve`.")?;
-    let url = format!("http://127.0.0.1:{}/?t={}", daemon.http_port, token.trim());
+    let page = if flash { "flash" } else { "" };
+    let url = format!("http://127.0.0.1:{}/{page}?t={}", daemon.http_port, token.trim());
     if print_only {
         println!("{url}");
         return Ok(());
     }
     open_in_browser(&url)?;
-    println!("Opened http://127.0.0.1:{}/ in your browser.", daemon.http_port);
+    println!("Opened http://127.0.0.1:{}/{page} in your browser.", daemon.http_port);
     Ok(())
 }
 

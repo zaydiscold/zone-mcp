@@ -47,6 +47,47 @@ pub struct Stored {
     pub rejected: usize,
     /// True when this flash also paired the phone (it was sealed with a pairing offer's key).
     pub paired: bool,
+    /// The id of the phone's row among the paired phones.
+    pub device_id: Option<String>,
+    /// The id of the pairing offer this flash used up, when it paired the phone.
+    pub offer: Option<String>,
+    /// Of the inserted, how many arrived already deleted.
+    pub tombstones: usize,
+    /// Of the replaced, how many took an item that was here out of the library.
+    pub removed: usize,
+}
+
+impl Stored {
+    /// What goes in the feed for this flash: names and counts.
+    pub fn event_fields(&self, bytes: usize, color: bool) -> Value {
+        json!({
+            "device": self.phone_name,
+            "device_id": self.device_id,
+            "items": self.items,
+            "new": self.inserted - self.tombstones,
+            "changed": self.replaced - (self.deletions - self.tombstones),
+            "deleted": self.removed,
+            "unchanged": self.unchanged,
+            "rejected": self.rejected,
+            "paired": self.paired,
+            "bytes": bytes,
+            "color": color,
+        })
+    }
+}
+
+/// Puts what became of a completed flash in the feed: the flash itself, and the pairing when
+/// it also paired the phone. `bytes` is the size of the sealed payload.
+pub fn record_events(db: &Db, outcome: &Outcome, bytes: usize, color: bool) {
+    match outcome {
+        Outcome::Stored(stored) => {
+            if stored.paired {
+                crate::events::record(db, "paired", json!({ "device": stored.phone_name, "device_id": stored.device_id, "via": "flash", "offer": stored.offer }));
+            }
+            crate::events::record(db, "flash_received", stored.event_fields(bytes, color));
+        }
+        Outcome::Failed(reason) => crate::events::record(db, "flash_failed", json!({ "reason": reason, "bytes": bytes })),
+    }
 }
 
 impl Outcome {
@@ -302,13 +343,13 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored> {
         );
     };
     let flash = seal::parse(&seal::inflate(&packed)?)?;
-    let (device, paired) = match owner {
+    let (device, paired, offer) = match owner {
         FlashKeyOwner::Device(endpoint_id) => {
             db.touch_device(endpoint_id, &flash.phone, now)?;
-            (endpoint_id.clone(), false)
+            (endpoint_id.clone(), false, None)
         }
         FlashKeyOwner::Offer(hash) => match db.pair_by_flash(hash, &flash.phone, now)? {
-            Some(device) => (device, true),
+            Some(device) => (device, true, Some(crate::db::offer_id_of_hash(hash))),
             None => bail!("The pairing code this flash was made with ran out. Run `zone pair` again."),
         },
     };
@@ -318,6 +359,8 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored> {
         items: flash.items.len(),
         rejected: flash.rejected,
         paired,
+        device_id: Some(device.clone()),
+        offer,
         ..Stored::default()
     };
     // An empty flash still counts as a sync.
@@ -330,6 +373,8 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored> {
         stored.replaced += applied.replaced;
         stored.unchanged += applied.unchanged;
         stored.deletions += applied.deletions;
+        stored.tombstones += applied.tombstones;
+        stored.removed += applied.removed;
         changed += applied.changed();
     }
     db.record_delivery(&device, changed, Some("flash"), now)?;

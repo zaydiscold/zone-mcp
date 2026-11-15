@@ -429,6 +429,16 @@ fn web_page_is_local_and_locked() {
     assert!(cookie_line.contains("HttpOnly") && cookie_line.contains("SameSite=Strict"));
     let cookie = cookie_line.split_once(':').unwrap().1.trim().split(';').next().unwrap().to_string();
 
+    // `zone open --flash --print` leads to the Flash page the same way.
+    let flash_link = sandbox.ok(&["open", "--flash", "--print"]);
+    assert_eq!(flash_link.trim(), format!("http://{host}/flash?t={token}"));
+    let (status, response) = get(&format!("/flash?t={token}"), &host, "");
+    assert_eq!(status, 303);
+    assert!(response.to_ascii_lowercase().contains("location: /flash\r\n") && response.to_ascii_lowercase().contains("set-cookie:"));
+    assert_eq!(get("/flash?t=wrong", &host, "").0, 401);
+    assert_eq!(get("/flash", &host, "").0, 401);
+    assert_eq!(get("/flash", &host, &format!("Cookie: {cookie}\r\n")).0, 200);
+
     // With the cookie: the page, with a strict policy and no CORS headers.
     let with_cookie = format!("Cookie: {cookie}\r\n");
     let (status, response) = get("/", &host, &with_cookie);
@@ -595,6 +605,23 @@ fn flash_pictures_through_the_command_line_and_the_daemon() {
     let again = sandbox.json(&["dev", "flash-decode", frames_text, "--import"]);
     assert_eq!(again["imported"], json!({ "new": 0, "changed": 0, "unchanged": 130, "paired": false }));
     assert_eq!(total_items(&sandbox), 130);
+
+    // The feed: the code, the pairing it led to, both flashes, and the phone that was refused.
+    let events = feed(&sandbox, &[]);
+    assert_eq!(feed_kinds(&events), ["daemon_started", "pair_offered", "paired", "flash_received", "link_refused", "flash_received"], "{events:#?}");
+    let paired = events.iter().find(|e| e["event"] == "paired").unwrap();
+    assert_eq!((paired["device"].as_str(), paired["via"].as_str(), paired["device_id"].as_str()), (Some("Flash phone"), Some("flash"), Some("flash:PHONE-FLASH")), "{paired}");
+    assert_eq!(paired["offer"], events.iter().find(|e| e["event"] == "pair_offered").unwrap()["offer"]);
+    let flashes: Vec<&Value> = events.iter().filter(|e| e["event"] == "flash_received").collect();
+    assert_eq!(
+        (flashes[0]["items"].as_u64(), flashes[0]["new"].as_u64(), flashes[0]["unchanged"].as_u64(), flashes[0]["paired"].as_bool(), flashes[0]["color"].as_bool()),
+        (Some(130), Some(130), Some(0), Some(true), Some(false)),
+        "{}",
+        flashes[0]
+    );
+    assert_eq!(flashes[0]["bytes"].as_u64(), made["sealed_bytes"].as_u64());
+    assert_eq!((flashes[1]["new"].as_u64(), flashes[1]["unchanged"].as_u64(), flashes[1]["paired"].as_bool()), (Some(0), Some(130), Some(false)), "{}", flashes[1]);
+    assert!(sandbox.ok(&["events"]).contains("Flash phone sent a Flash: 130 new, and is now paired"));
 }
 
 fn read_rgb_png(path: &Path) -> (usize, usize, Vec<u8>) {
@@ -652,6 +679,9 @@ fn color_flash_pictures_through_the_command_line_and_the_daemon() {
     assert!(sent * 3 < k + 10, "a third as many pictures: {sent} for k = {k}");
     assert_eq!(last["pictures"]["color"].as_u64(), Some(sent));
     assert_eq!(total_items(&sandbox), 300);
+    let events = feed(&sandbox, &[]);
+    let flash = events.iter().find(|e| e["event"] == "flash_received").unwrap();
+    assert_eq!((flash["color"].as_bool(), flash["new"].as_u64(), flash["device"].as_str()), (Some(true), Some(300), Some("Color phone")), "{flash}");
 }
 
 // ------------------------------------------------------------------------- backup import and queries
@@ -825,6 +855,14 @@ fn backup_folder_is_imported_at_once_and_then_watched() {
     let out = sandbox.ok(&["backup-folder", package.parent().unwrap().to_str().unwrap()]);
     assert!(out.contains("1 new, 0 changed, 43 already in the library") && out.contains("The running zone reads it again"), "{out}");
     assert_eq!(total_items(&sandbox), 45);
+
+    // The feed has each read that brought something: the two by the command, the one by the daemon.
+    let imports: Vec<(String, u64)> = feed(&sandbox, &[])
+        .iter()
+        .filter(|e| e["event"] == "backup_import")
+        .map(|e| (e["trigger"].as_str().unwrap().to_string(), e["new"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(imports, [("backup-folder".to_string(), 43), ("watch".to_string(), 1), ("backup-folder".to_string(), 1)]);
 }
 
 /// The bug from the real install: under launchd, macOS held the daemon's first read of an
@@ -920,6 +958,197 @@ fn a_held_backup_read_is_reported_and_blocks_nothing() {
     assert!(sandbox.daemon_info().unwrap()["backup"]["read_started_at"].is_null());
     let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
     assert!(log.contains("backup folder: it can be read"), "{log}");
+}
+
+// ------------------------------------------------------------------------- the feed
+
+/// What `zone events --json` prints: one JSON object per line.
+fn feed(sandbox: &Sandbox, args: &[&str]) -> Vec<Value> {
+    let mut all = vec!["events", "--json"];
+    all.extend_from_slice(args);
+    let text = sandbox.ok(&all);
+    text.lines().map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("not a JSON line ({e}): {line}"))).collect()
+}
+
+/// The feed without the relay coming and going, which depends on whether this computer is
+/// online while the test runs.
+fn feed_kinds(events: &[Value]) -> Vec<String> {
+    events.iter().filter_map(|e| e["event"].as_str()).filter(|kind| !kind.starts_with("relay_")).map(str::to_string).collect()
+}
+
+/// Everything that happens to a library shows up in `zone events`, in order, as names and
+/// counts: pairing, sessions, refusals, imports, the daemon starting and stopping. A pairing
+/// code can be asked what became of it, and a follower gets new events as they happen.
+#[test]
+fn the_feed_tells_what_happened_and_never_the_words() {
+    let sandbox = Sandbox::new();
+    // Nothing yet, and no daemon needed to say so.
+    assert!(sandbox.ok(&["events"]).contains("Nothing has happened yet."));
+    assert!(feed(&sandbox, &[]).is_empty());
+
+    let daemon = Daemon::start(&sandbox);
+    let addr = loopback_addr(&sandbox);
+    let identity = sandbox.home.join("phone.json");
+    let identity = identity.to_str().unwrap();
+
+    // A code nobody uses: it says so when asked.
+    let unused = sandbox.json(&["pair", "--json"]);
+    let unused_id = unused["id"].as_str().unwrap().to_string();
+    assert_eq!(unused_id.len(), 16);
+    assert_eq!((unused["state"].as_str(), unused["claimed"].as_bool()), (Some("waiting"), Some(false)), "{unused}");
+    assert!(unused["qr_svg"].as_str().unwrap().starts_with("<svg") && unused["expires_local"].is_string());
+    assert!(!unused["url"].as_str().unwrap().contains(&unused_id), "the id is not part of the secret");
+    let check = sandbox.run(&["pair", "--check", &unused_id, "--json"]);
+    assert_eq!(check.status.code(), Some(2), "not claimed");
+    let check: Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!((check["state"].as_str(), check["claimed"].as_bool(), &check["device"]), (Some("waiting"), Some(false), &Value::Null));
+    let unknown = sandbox.run(&["pair", "--check", "0123456789abcdef", "--json"]);
+    assert_eq!(unknown.status.code(), Some(2));
+    assert_eq!(serde_json::from_slice::<Value>(&unknown.stdout).unwrap()["state"], "unknown");
+    assert!(!sandbox.run(&["pair", "--check", "not an id"]).status.success());
+
+    // `zone pair --json --wait` prints the code, then, once a phone has used it, who did.
+    let mut waiting = sandbox.zone().args(["pair", "--json", "--wait"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut lines = BufReader::new(waiting.stdout.take().unwrap()).lines();
+    let offer: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    let url = offer["url"].as_str().unwrap().to_string();
+    let offer_id = offer["id"].as_str().unwrap().to_string();
+    let report = phone(&sandbox, &["--url", &url, "--identity", identity, "--count", "40", "--addr", &addr]);
+    assert_eq!(report["result"], "welcome", "{report}");
+    let claimed: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!((claimed["id"].as_str(), claimed["state"].as_str(), claimed["claimed"].as_bool()), (Some(offer_id.as_str()), Some("claimed"), Some(true)), "{claimed}");
+    assert_eq!(claimed["device"]["name"], "Fake iPhone");
+    assert!(waiting.wait().unwrap().success());
+    let check = sandbox.ok(&["pair", "--check", &offer_id]);
+    assert!(check.contains("Fake iPhone paired with this code."), "{check}");
+
+    // A second session: everything again, two new items and one deletion.
+    let report = phone(&sandbox, &["--identity", identity, "--count", "42", "--delete", "FA4E0000-0000-4000-8000-000000000003", "--addr", &addr]);
+    assert_eq!(report["stored"], 43, "{report}");
+    // A phone that never paired.
+    let stranger = phone(&sandbox, &["--url", &url, "--no-secret", "--count", "5", "--addr", &addr]);
+    assert_eq!(stranger["reason"], "not_paired", "{stranger}");
+    // A backup read by hand, a full resend asked for, and the phone unpaired.
+    let package = write_backup(&sandbox.home);
+    sandbox.ok(&["import", package.to_str().unwrap()]);
+    sandbox.ok(&["resync", "Fake iPhone"]);
+    sandbox.ok(&["unpair", "Fake iPhone"]);
+
+    let events = feed(&sandbox, &[]);
+    let kinds = feed_kinds(&events);
+    assert_eq!(
+        kinds,
+        ["daemon_started", "pair_offered", "pair_offered", "paired", "link_session", "link_session", "link_refused", "backup_import", "resync_requested", "unpaired"],
+        "{events:#?}"
+    );
+    let of = |kind: &str, nth: usize| -> Value { events.iter().filter(|e| e["event"] == kind).nth(nth).cloned().unwrap_or_else(|| panic!("no {kind} number {nth}")) };
+
+    // Every line: a number that only goes up, the moment twice, and the kind, in that order.
+    let mut last_seq = 0;
+    for event in &events {
+        let keys: Vec<&String> = event.as_object().unwrap().keys().collect();
+        assert_eq!(&keys[..4], ["seq", "at", "time", "event"], "{event}");
+        let seq = event["seq"].as_i64().unwrap();
+        assert!(seq > last_seq, "{event}");
+        last_seq = seq;
+        let time = event["time"].as_str().unwrap();
+        assert!(time.len() == 25 && time.as_bytes()[10] == b'T', "{time}");
+        assert!((event["at"].as_f64().unwrap() - 1.79e9).abs() < 1e9);
+    }
+
+    let started = of("daemon_started", 0);
+    assert_eq!(started["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(started["port"], sandbox.daemon_info().unwrap()["http_port"]);
+    assert_eq!((of("pair_offered", 0)["offer"].as_str(), of("pair_offered", 1)["offer"].as_str()), (Some(unused_id.as_str()), Some(offer_id.as_str())));
+    assert_eq!(of("pair_offered", 0)["via"], "cli");
+    let paired = of("paired", 0);
+    assert_eq!((paired["device"].as_str(), paired["via"].as_str(), paired["offer"].as_str()), (Some("Fake iPhone"), Some("link"), Some(offer_id.as_str())));
+    let device_id = paired["device_id"].as_str().unwrap().to_string();
+    assert_eq!(device_id.len(), 64);
+    let first = of("link_session", 0);
+    assert_eq!(
+        (first["items"].as_u64(), first["new"].as_u64(), first["changed"].as_u64(), first["deleted"].as_u64(), first["unchanged"].as_u64()),
+        (Some(40), Some(40), Some(0), Some(0), Some(0)),
+        "{first}"
+    );
+    assert_eq!((first["device"].as_str(), first["device_id"].as_str(), first["paired"].as_bool()), (Some("Fake iPhone"), Some(device_id.as_str()), Some(true)));
+    assert_eq!((first["path"].as_str(), first["end"].as_str(), first["frames"].as_u64(), first["rejected"].as_u64()), (Some("direct"), Some("bye"), Some(1), Some(0)));
+    assert!(first["duration_s"].as_f64().unwrap() >= 0.0);
+    let second = of("link_session", 1);
+    assert_eq!(
+        (second["items"].as_u64(), second["new"].as_u64(), second["changed"].as_u64(), second["deleted"].as_u64(), second["unchanged"].as_u64(), second["paired"].as_bool()),
+        (Some(43), Some(2), Some(0), Some(1), Some(40), Some(false)),
+        "{second}"
+    );
+    let refused = of("link_refused", 0);
+    assert_eq!(refused["reason"], "not_paired");
+    assert_ne!(refused["device_id"], device_id);
+    let import = of("backup_import", 0);
+    assert_eq!((import["trigger"].as_str(), import["items"].as_u64(), import["new"].as_u64()), (Some("import"), Some(43), Some(43)), "{import}");
+    assert_eq!((import["notes"].as_u64(), import["dictations"].as_u64(), import["meetings"].as_u64()), (Some(2), Some(40), Some(1)));
+    assert_eq!(of("resync_requested", 0)["device"], "Fake iPhone");
+    assert_eq!((of("unpaired", 0)["device"].as_str(), of("unpaired", 0)["device_id"].as_str()), (Some("Fake iPhone"), Some(device_id.as_str())));
+
+    // Names and counts, never the words: not as JSON and not as text.
+    let as_json = sandbox.ok(&["events", "--json"]);
+    let as_text = sandbox.ok(&["events"]);
+    for word in ["amber", "basalt", "juniper", "Synthetic", "lighthouse", "synthetic dictation"] {
+        assert!(!as_json.contains(word) && !as_text.contains(word), "the feed contains item text: {word}");
+    }
+    assert!(as_text.contains("Fake iPhone synced over Link: 40 new (direct, ") && as_text.contains("Fake iPhone synced over Link: 2 new, 1 deleted"), "{as_text}");
+    assert!(as_text.contains("A phone was refused") || as_text.contains("Fake iPhone was refused"), "{as_text}");
+    assert!(as_text.contains("Backup folder read: 43 new") && as_text.contains("Fake iPhone was unpaired"), "{as_text}");
+
+    // Asking for part of it.
+    let middle = events[4]["seq"].as_i64().unwrap();
+    let after = feed(&sandbox, &["--after", &middle.to_string()]);
+    assert_eq!(after.len(), events.len() - 5);
+    assert!(after.iter().all(|e| e["seq"].as_i64().unwrap() > middle));
+    let newest = feed(&sandbox, &["--limit", "2"]);
+    assert_eq!(feed_kinds(&newest).last().map(String::as_str), Some("unpaired"));
+    assert_eq!(newest.len(), 2);
+    assert_eq!(feed(&sandbox, &["--since", "1h"]).len(), events.len());
+    assert!(feed(&sandbox, &["--since", "2099-01-01"]).is_empty());
+    assert!(feed(&sandbox, &["--limit", "0"]).is_empty());
+
+    // A follower gets nothing old with --limit 0, and each new event as it happens.
+    let mut follower =
+        sandbox.zone().args(["events", "--json", "--follow", "--limit", "0"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut followed = BufReader::new(follower.stdout.take().unwrap());
+    std::thread::sleep(Duration::from_millis(600));
+    sandbox.ok(&["import", package.to_str().unwrap()]);
+    let mut line = String::new();
+    followed.read_line(&mut line).unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!((event["event"].as_str(), event["new"].as_u64(), event["unchanged"].as_u64()), (Some("backup_import"), Some(0), Some(43)), "{event}");
+    assert!(event["seq"].as_i64().unwrap() > last_seq);
+    // When its reader goes away, the follower notices and ends by itself.
+    drop(followed);
+    #[cfg(unix)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while follower.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the follower kept running after its reader went away");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let _ = follower.kill();
+    let _ = follower.wait();
+
+    // Stopped the ordinary way, the daemon says goodbye in the feed.
+    #[cfg(unix)]
+    {
+        let mut daemon = daemon;
+        let pid = daemon.child.id().to_string();
+        assert!(Command::new("kill").args(["-TERM", &pid]).status().unwrap().success());
+        let _ = daemon.child.wait();
+        let last = feed(&sandbox, &["--limit", "1"]);
+        assert_eq!(last[0]["event"], "daemon_stopped", "{last:?}");
+        assert!(last[0]["uptime_s"].as_f64().unwrap() >= 0.0);
+        assert!(sandbox.ok(&["events", "--limit", "1"]).contains("Zone stopped after"));
+    }
+    #[cfg(not(unix))]
+    drop(daemon);
 }
 
 // ------------------------------------------------------------------------- MCP over stdio
@@ -1398,6 +1627,8 @@ fn a_closed_pipe_is_not_a_crash() {
         &["stats"],
         &["export"],
         &["backup-folder"],
+        &["events"],
+        &["events", "--json"],
         &["import", package.to_str().unwrap()],
         &["dev", "synthetic", "--count", "2000"],
         &["--help"],

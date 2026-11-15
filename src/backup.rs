@@ -34,6 +34,28 @@ pub struct ImportReport {
     pub applied: Applied,
 }
 
+impl ImportReport {
+    /// Puts this import in the feed. `trigger` is what asked for it: `watch` (the daemon saw
+    /// the backup change), `import` or `backup-folder` (the commands).
+    pub fn record_event(&self, db: &Db, trigger: &str) {
+        crate::events::record(
+            db,
+            "backup_import",
+            serde_json::json!({
+                "trigger": trigger,
+                "items": self.applied.stored(),
+                "new": self.applied.new_items(),
+                "changed": self.applied.changed_items(),
+                "unchanged": self.applied.unchanged_items(),
+                "notes": self.notes,
+                "dictations": self.dictations,
+                "meetings": self.meetings,
+                "skipped": self.skipped,
+            }),
+        );
+    }
+}
+
 /// Finds the `library.json` files a path refers to: the file itself, a `.zonebackup` folder,
 /// or a folder that holds one or more `.zonebackup` folders directly inside it.
 pub fn locate(path: &Path) -> Result<Vec<PathBuf>> {

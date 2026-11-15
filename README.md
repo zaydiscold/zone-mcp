@@ -123,9 +123,10 @@ If the web page's usual port (47813) is taken by another program, zone picks a f
 zone pair
 ```
 
-This prints a QR code and a `zone://pair?...` link. Scan the code in Zone's Link settings on the
-phone. The code works once and expires after ten minutes. The same code is available in the web
-page under "Pair a phone".
+This prints a QR code and a `zone://pair?...` link. Scan the code in Zone's Settings > Computers on
+the phone. The code works once and expires after ten minutes. In a terminal, `zone pair` then waits
+and says so when the phone has paired (Ctrl-C stops the waiting, not the code). The same code is
+available in the web page under "Pair a phone".
 
 ```sh
 zone devices            # paired phones and when each last synced
@@ -166,8 +167,7 @@ Flash moves your library from the phone's screen to the computer's camera. Use i
 and the computer cannot reach each other at all: a network that blocks everything, a plane, a
 computer you keep offline. When Link works, Link is easier, because it is automatic.
 
-1. Run `zone open` and choose **Flash** at the top of the page (or go straight to
-   `http://127.0.0.1:47813/flash` once the page is unlocked).
+1. Run `zone open --flash` (or `zone open` and choose **Flash** at the top of the page).
 2. Allow the camera when the browser asks. The pictures never leave your computer: the page hands
    them to zone on the same machine, and nothing is loaded from the internet.
 3. On the iPhone, open Zone and choose Settings > Computers > your computer > Send by Flash, and
@@ -236,6 +236,82 @@ Times can be RFC 3339 (`2026-11-11T12:00:00-08:00`), a date (`2026-11-11`), a da
 (`"2026-11-11 12:00"`, in the computer's time zone, or the one given with `--tz`), an age (`2h`,
 `3d`, `1w`), or `today` / `yesterday`. A bare date as `--until` means through the end of that day.
 Output shows local time with the weekday. Add `--json` to any query for scripts.
+
+## See what zone is doing
+
+```sh
+zone events                 # what happened lately, newest last
+zone events --follow        # and keep printing as things happen
+zone events --since 2h
+```
+
+```
+Sun 2026-11-15 12:00:00  Zone 0.1.0 started
+Sun 2026-11-15 12:00:41  My iPhone paired by Link
+Sun 2026-11-15 12:00:42  My iPhone synced over Link: 600 new (relay then direct, 1.2 s)
+Sun 2026-11-15 12:07:15  My iPhone synced over Link: 2 new, 1 deleted (direct, 0.1 s)
+```
+
+The feed holds names and counts only, never your words. It is kept in the library (the newest
+2000 events), so it survives a restart and works whether or not zone is running.
+
+### For scripts and apps
+
+Every command that reports something takes `--json`, and those shapes are kept stable: new keys
+may be added, existing ones keep their names and meaning.
+
+| Command | What it prints |
+| --- | --- |
+| `zone status --json` | One object: `now`, `computer`, `daemon` (`running`, `pid`, `endpoint_id`, `web_page`, `relay_connected`, `relay_url`), `daemon_running`, `phones`, `last_sync`, `backup_folder`, `backup_folder_state`, `items` (`total`, `by_kind`, `dictations_by_source`, `unprocessed`, `oldest`, `newest`), `data_directory`, `database`. |
+| `zone devices --json` | A list, one object per paired phone: `name`, `phone_id`, `endpoint_id`, `app`, `paired_at`, `last_seen`, `last_sync`, `items_received`, `last_path`. Times are Unix seconds. |
+| `zone pair --json` | A new code: `id`, `url`, `endpoint_id`, `name`, `expires_at`, `expires_local`, `state` (`waiting`), `claimed` (`false`), `qr_svg` (the code as an SVG picture). With `--wait` it prints that on one line and stays until a phone has used the code or it has run out, then prints a second line: what `--check` prints. |
+| `zone pair --check <id> --json` | What became of a code: `id`, `state` (`waiting`, `claimed`, `expired`, or `unknown` once a code that ran out has been forgotten), `claimed`, `expires_at`, `claimed_at`, `device` (`name`, `endpoint_id`, `app`). Exits 0 when claimed, 2 when not. |
+| `zone events --json` | The feed, one object per line. See below. |
+| `zone mcp status --json` | `zone` (this program), `automatic`, and `clients`: one object per place with `client`, `label`, `profile`, `path`, `installed`, `state` (`registered`, `registered_read_only`, `other_copy`, `not_registered`, `removed_by_you`, `unreadable`), `detail`. |
+| `zone doctor --json` | `healthy` and `checks`: a list of `check`, `result` (`ok`, `warn`, `fail`), `detail`, `fix`. Exits 1 when something is broken. |
+| `zone list --json`, `zone search --json` | `total` and `items`: `id`, `kind`, `source`, `created_at`, `updated_at`, `created_local`, `text`, `title`, `duration_s`, `words`, `engine`, `status`, `extra`, `rev`, `processed_at`, `carrier`, `device_id`, `received_at`. |
+| `zone show --json`, `zone stats --json`, `zone open --print` | A list of items in full, counts by day, kind or source, and the page's link. |
+
+#### The feed, line by line
+
+`zone events --json` prints one JSON object per line, oldest first. Four fields are on every
+line, in this order:
+
+| Field | |
+| --- | --- |
+| `seq` | A number that only goes up and is never used twice. |
+| `at` | When, as Unix seconds. |
+| `time` | The same moment as local time, RFC 3339: `2026-11-15T12:00:42-08:00`. |
+| `event` | The kind of event. The rest of the line depends on it. |
+
+| `event` | Its other fields |
+| --- | --- |
+| `daemon_started` | `version`, `pid`, `port` (of the web page) |
+| `daemon_stopped` | `uptime_s`. Missing when zone was killed rather than stopped. |
+| `relay_connected` | `relay_url` |
+| `relay_lost` | none |
+| `pair_offered` | `offer` (the code's `id`), `expires_at`, `via` (`cli` or `page`) |
+| `paired` | `device` (the phone's name), `device_id`, `via` (`link` or `flash`), `offer` |
+| `unpaired` | `device`, `device_id` |
+| `link_session` | `device`, `device_id`, `items` (how many the phone sent), `new`, `changed`, `deleted`, `unchanged` (what they did to the library), `rejected`, `frames`, `path` (`direct`, `relay`, or both as `relay then direct`), `duration_s`, `paired` (this session also paired the phone), `end` (`bye`, `closed`, `idle` or `error`) |
+| `link_refused` | `device`, `device_id`, `reason` (`not_paired`, `bad_secret`, `version`, `busy`) |
+| `flash_received` | `device`, `device_id`, `items`, `new`, `changed`, `deleted`, `unchanged`, `rejected`, `paired`, `bytes`, `color` |
+| `flash_failed` | `reason` (a sentence), `bytes` |
+| `backup_import` | `trigger` (`watch`: zone saw the backup change, or the command: `import`, `backup-folder`), `items`, `new`, `changed`, `unchanged`, `notes`, `dictations`, `meetings`, `skipped` |
+| `resync_requested` | `device` (null for every phone), `phones` |
+
+```json
+{"seq":5,"at":1794772842.9,"time":"2026-11-15T12:00:42-08:00","event":"link_session","device":"My iPhone","device_id":"7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f","items":600,"new":600,"changed":0,"deleted":0,"unchanged":0,"rejected":0,"frames":4,"path":"relay then direct","duration_s":1.2,"paired":true,"end":"bye"}
+```
+
+`device_id` is the phone's `endpoint_id` in `zone devices --json`. A session is one line, written
+when it ends. More kinds and more fields may be added, so skip what you do not know.
+
+`--follow` first prints the newest events (`--limit N`, 50 unless you say otherwise, 0 for none),
+then each new one as it happens. `--after SEQ` prints only events numbered above `SEQ`: a program
+that restarts passes the last `seq` it saw and misses nothing and repeats nothing. `--since TIME`
+takes the same times as `zone list`. On macOS and Linux a follower ends by itself when whatever
+was reading it goes away.
 
 ## Use it from an AI agent
 
@@ -341,7 +417,8 @@ The three kinds of item:
 - **Flash stays in the room.** The camera pictures go from the browser to zone on the same
   computer and are thrown away once read. What the phone shows is encrypted, so someone filming
   the screen gets nothing they can open.
-- **Logs never contain your words.** `zone.log` records events and counts only.
+- **Logs never contain your words.** `zone.log` and the feed (`zone events`) record what happened,
+  with names and counts only.
 
 One limit worth knowing: the page's key is kept in a cookie for `127.0.0.1`, and browsers do not
 separate cookies by port. Another program serving pages on `127.0.0.1` could be sent that cookie if

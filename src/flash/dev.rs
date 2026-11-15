@@ -246,7 +246,9 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
             let now = paths::now_unix();
             if options.import {
                 report["opened_with"] = json!("a key from the library");
-                match receive::import(&mut db, &payload, now) {
+                let outcome = receive::import(&mut db, &payload, now);
+                receive::record_events(&db, &outcome, payload.len(), color_pictures > 0);
+                match outcome {
                     Outcome::Stored(stored) => {
                         report["phone"] = json!({ "name": stored.phone_name });
                         report["items"] = json!(stored.items);

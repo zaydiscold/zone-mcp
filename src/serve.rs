@@ -7,13 +7,14 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use iroh::{Endpoint, Watcher};
+use serde_json::json;
 
 use crate::daemon_info::{self, DaemonInfo};
 use crate::db::Db;
 use crate::link::{self, LinkState};
 use crate::watch::Watcher as BackupWatcher;
 use crate::web::{self, WebState};
-use crate::{info, paths, warn};
+use crate::{events, info, paths, warn};
 
 /// How often the daemon looks at which backup folder is set. Reading the folder itself
 /// happens every half minute (see watch.rs).
@@ -64,6 +65,10 @@ pub async fn run(options: Options) -> Result<()> {
         backup: Default::default(),
     }));
     info.lock().map_err(|_| anyhow!("daemon state is unavailable"))?.write(&dir)?;
+    let started = std::time::Instant::now();
+    if let Ok(db) = db.lock() {
+        events::record(&db, "daemon_started", json!({ "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id(), "port": port }));
+    }
 
     info!("zone {} started for {} (library {database_id})", env!("CARGO_PKG_VERSION"), dir.display());
     info!("link: endpoint id {endpoint_id}");
@@ -83,7 +88,7 @@ pub async fn run(options: Options) -> Result<()> {
     });
     let web_task = tokio::spawn(web::serve(listener, web_state));
     let link_task = tokio::spawn(link::accept_loop(endpoint.clone(), LinkState::new(db.clone(), computer_name)));
-    let info_task = tokio::spawn(keep_info_fresh(endpoint.clone(), info.clone(), dir.clone()));
+    let info_task = tokio::spawn(keep_info_fresh(endpoint.clone(), info.clone(), dir.clone(), db.clone()));
     let backup_task = tokio::spawn(watch_backup_folder(db.clone(), info.clone(), dir.clone()));
     // When `zone install` asked for it: register with AI clients installed since. This only
     // adds zone where it never was; see clients.rs.
@@ -103,6 +108,9 @@ pub async fn run(options: Options) -> Result<()> {
     }
     // Lets open sessions finish their last frame and tells peers the endpoint is gone.
     let _ = tokio::time::timeout(Duration::from_secs(5), endpoint.close()).await;
+    if let Ok(db) = db.lock() {
+        events::record(&db, "daemon_stopped", json!({ "uptime_s": started.elapsed().as_secs_f64().round() }));
+    }
     let _ = std::fs::remove_file(paths::daemon_info(&dir));
     Ok(())
 }
@@ -130,7 +138,7 @@ async fn wait_for_stop() {
 }
 
 /// Keeps `daemon.json` describing how this computer can be reached right now.
-async fn keep_info_fresh(endpoint: Endpoint, info: Arc<Mutex<DaemonInfo>>, dir: PathBuf) {
+async fn keep_info_fresh(endpoint: Endpoint, info: Arc<Mutex<DaemonInfo>>, dir: PathBuf, db: Arc<Mutex<Db>>) {
     let mut was_connected = false;
     let mut polls = 0u32;
     loop {
@@ -145,6 +153,17 @@ async fn keep_info_fresh(endpoint: Endpoint, info: Arc<Mutex<DaemonInfo>>, dir: 
                 (_, false) => warn!("link: no relay connection. Phones on other networks cannot reach this computer until it returns."),
                 (None, true) => {}
             }
+            // In the feed too. Off the async threads: the library may be busy with an import.
+            let (db, url) = (db.clone(), relay_url.clone());
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(db) = db.lock() {
+                    match relay_connected {
+                        true => events::record(&db, "relay_connected", json!({ "relay_url": url })),
+                        false => events::record(&db, "relay_lost", json!({})),
+                    }
+                }
+            })
+            .await;
             was_connected = relay_connected;
         }
         if let Ok(mut current) = info.lock() {

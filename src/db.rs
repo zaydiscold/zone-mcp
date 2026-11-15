@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS events (
+    seq   INTEGER PRIMARY KEY AUTOINCREMENT,
+    at    REAL NOT NULL,
+    event TEXT NOT NULL,
+    data  TEXT NOT NULL DEFAULT '{}'
+);
 "#;
 
 /// What the merge rule says to do with an incoming item.
@@ -139,9 +146,45 @@ pub struct Applied {
     pub kept_newer: usize,
     /// Of the inserted and replaced, how many were deletions.
     pub deletions: usize,
+    /// Of the inserted, how many arrived already deleted: a record that something existed,
+    /// for an item this library never held.
+    pub tombstones: usize,
+    /// Of the replaced, how many took an item that was here out of the library.
+    pub removed: usize,
 }
 
 impl Applied {
+    /// Adds another batch's counts to these.
+    pub fn add(&mut self, other: &Applied) {
+        self.inserted += other.inserted;
+        self.replaced += other.replaced;
+        self.unchanged += other.unchanged;
+        self.kept_newer += other.kept_newer;
+        self.deletions += other.deletions;
+        self.tombstones += other.tombstones;
+        self.removed += other.removed;
+    }
+
+    /// Items that are new to the library and can be read.
+    pub fn new_items(&self) -> usize {
+        self.inserted - self.tombstones
+    }
+
+    /// Items that were here and now read differently (or came back after a deletion).
+    pub fn changed_items(&self) -> usize {
+        self.replaced - (self.deletions - self.tombstones)
+    }
+
+    /// Items that were here and are now gone, because they were deleted on the phone.
+    pub fn deleted_items(&self) -> usize {
+        self.removed
+    }
+
+    /// Items that changed nothing: already the same, or older than what is stored.
+    pub fn unchanged_items(&self) -> usize {
+        self.unchanged + self.kept_newer
+    }
+
     /// Items the database now reflects (or already reflected): everything that was valid.
     pub fn stored(&self) -> usize {
         self.inserted + self.replaced + self.unchanged + self.kept_newer
@@ -990,6 +1033,124 @@ impl Db {
             None => self.conn.execute("UPDATE devices SET resend_all = 1", [])?,
         })
     }
+
+    /// Where a pairing offer stands, by the id `zone pair` printed with it. None when no such
+    /// offer is known: it never existed, or it ran out and was cleared away.
+    pub fn offer_status(&self, offer_id: &str, now: f64) -> Result<Option<OfferStatus>> {
+        let wanted = offer_id.trim().to_ascii_lowercase();
+        if wanted.len() < 8 || !wanted.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("a pairing code's id is the 16 characters `zone pair --json` printed as \"id\"");
+        }
+        let found: Option<(String, f64, Option<f64>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT secret_hash, expires_at, used_at, used_by FROM pairing_offers WHERE secret_hash LIKE ?1 || '%' \
+                 ORDER BY created_at DESC LIMIT 1",
+                params![wanted],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let Some((hash, expires_at, used_at, used_by)) = found else {
+            return Ok(None);
+        };
+        let device = match &used_by {
+            Some(id) => self.device(id)?,
+            None => None,
+        };
+        let state = match (used_at, expires_at > now) {
+            (Some(_), _) => OfferState::Claimed,
+            (None, true) => OfferState::Waiting,
+            (None, false) => OfferState::Expired,
+        };
+        Ok(Some(OfferStatus { id: offer_id_of_hash(&hash), state, expires_at, claimed_at: used_at, device_id: used_by, device }))
+    }
+
+    // ---------------------------------------------------------------- the feed
+
+    /// Appends one event to the feed and drops the ones beyond the newest [`EVENTS_KEPT`].
+    /// `data` is a JSON object of names and counts. Returns the event's number.
+    pub fn add_event(&self, at: f64, event: &str, data: &str) -> Result<i64> {
+        self.conn.execute("INSERT INTO events (at, event, data) VALUES (?1, ?2, ?3)", params![at, event, data])?;
+        let seq = self.conn.last_insert_rowid();
+        self.conn.execute("DELETE FROM events WHERE seq <= ?1", params![seq - EVENTS_KEPT])?;
+        Ok(seq)
+    }
+
+    /// The newest `limit` events that come after `after` and happened at or after `since`,
+    /// oldest first.
+    pub fn events(&self, after: Option<i64>, since: Option<f64>, limit: usize) -> Result<Vec<EventRow>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT seq, at, event, data FROM (SELECT seq, at, event, data FROM events WHERE seq > ?1 AND at >= ?2 \
+             ORDER BY seq DESC LIMIT ?3) ORDER BY seq ASC",
+        )?;
+        let rows = statement
+            .query_map(params![after.unwrap_or(0), since.unwrap_or(f64::MIN), limit.min(i64::MAX as usize) as i64], |row| {
+                Ok(EventRow { seq: row.get(0)?, at: row.get(1)?, event: row.get(2)?, data: row.get(3)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The number of the newest event, or 0 when there is none.
+    pub fn last_event_seq(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT coalesce(max(seq), 0) FROM events", [], |row| row.get(0))?)
+    }
+}
+
+/// How many events the feed keeps. Older ones are dropped as new ones arrive.
+pub const EVENTS_KEPT: i64 = 2000;
+
+/// One stored event (see events.rs).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventRow {
+    pub seq: i64,
+    pub at: f64,
+    pub event: String,
+    /// A JSON object.
+    pub data: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfferState {
+    /// Still valid, and no phone has used it.
+    Waiting,
+    /// A phone paired with it.
+    Claimed,
+    /// It ran out unused.
+    Expired,
+}
+
+impl OfferState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OfferState::Waiting => "waiting",
+            OfferState::Claimed => "claimed",
+            OfferState::Expired => "expired",
+        }
+    }
+}
+
+/// Where a pairing offer stands.
+#[derive(Clone, Debug)]
+pub struct OfferStatus {
+    pub id: String,
+    pub state: OfferState,
+    pub expires_at: f64,
+    pub claimed_at: Option<f64>,
+    /// The id of the row of the phone that used it.
+    pub device_id: Option<String>,
+    /// That phone, while it is still paired.
+    pub device: Option<Device>,
+}
+
+/// The public name of a pairing offer: the beginning of the hash of its secret. It says
+/// nothing about the secret, so it can be printed, logged and put in the feed.
+pub fn offer_id(secret_hex: &str) -> Option<String> {
+    secret_hash(secret_hex).map(|hash| offer_id_of_hash(&hash))
+}
+
+pub fn offer_id_of_hash(hash: &str) -> String {
+    hash.chars().take(16).collect()
 }
 
 fn apply_one(tx: &Transaction<'_>, item: &Item, delivery: &Delivery<'_>, applied: &mut Applied) -> Result<()> {
@@ -1048,6 +1209,7 @@ fn apply_one(tx: &Transaction<'_>, item: &Item, delivery: &Delivery<'_>, applied
             applied.inserted += 1;
             if item.deleted {
                 applied.deletions += 1;
+                applied.tombstones += 1;
             }
         }
         Decision::Replace => {
@@ -1064,6 +1226,9 @@ fn apply_one(tx: &Transaction<'_>, item: &Item, delivery: &Delivery<'_>, applied
                     params![item.id, item.rev, item.updated_at, delivery.device_id, delivery.carrier.as_str(), delivery.received_at],
                 )?;
                 applied.deletions += 1;
+                if !stored.deleted {
+                    applied.removed += 1;
+                }
             } else {
                 // processed_at is the computer's own note about the item and survives.
                 tx.execute(

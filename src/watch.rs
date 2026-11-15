@@ -249,6 +249,7 @@ impl Watcher {
                 match found.parsed {
                     Ok(parsed) => {
                         let report = backup::apply_parsed(&mut db, &found.manifest, &parsed, now)?;
+                        report.record_event(&db, "watch");
                         info!(
                             "backup folder: read {} notes, {} dictations, {} meetings: {} new, {} changed, {} already here",
                             report.notes,

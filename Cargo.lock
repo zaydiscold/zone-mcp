@@ -4548,6 +4548,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "jiff",
+ "libc",
  "miniz_oxide 0.8.9",
  "png",
  "qrcode",
