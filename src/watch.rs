@@ -492,6 +492,12 @@ mod tests {
             watcher.tick(now).unwrap();
             watcher.tick(now + 50.0).unwrap();
         }
+        // The reads start on threads of their own: give a slow computer time to start them all,
+        // then a little more to show that no further one starts.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while starts.load(Ordering::SeqCst) < MAX_ABANDONED + 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(starts.load(Ordering::SeqCst), MAX_ABANDONED + 1);
         assert_eq!(watcher.abandoned(), MAX_ABANDONED);

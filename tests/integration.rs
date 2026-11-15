@@ -16,6 +16,14 @@ use serde_json::{Value, json};
 
 const ZONE: &str = env!("CARGO_BIN_EXE_zone");
 
+/// Where the program under test is, the way zone itself writes its own path: resolved, and on
+/// Windows without the `\\?\` prefix a resolved path starts with.
+fn zone_exe() -> PathBuf {
+    let resolved = std::fs::canonicalize(ZONE).unwrap();
+    let text = resolved.to_string_lossy();
+    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+}
+
 /// A temporary world: a data directory and a home folder that belong to one test.
 struct Sandbox {
     _dir: tempfile::TempDir,
@@ -1017,7 +1025,7 @@ fn install_writes_the_login_item_without_loading_it() {
     let path = sandbox.zone_home.join("zone-serve.vbs");
 
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} was not written", path.display()));
-    let exe = std::fs::canonicalize(ZONE).unwrap();
+    let exe = zone_exe();
     assert!(text.contains(&*exe.to_string_lossy()), "the login item starts this program");
     assert!(text.contains("serve"));
     // ZONE_HOME was overridden, so the login item carries it.
@@ -1043,7 +1051,7 @@ fn install_writes_the_login_item_without_loading_it() {
 #[test]
 fn mcp_install_edits_only_the_sandbox_configs() {
     let sandbox = Sandbox::new();
-    let exe = std::fs::canonicalize(ZONE).unwrap();
+    let exe = zone_exe();
     let exe = exe.to_string_lossy();
 
     // Cursor: a JSON file with other servers already in it.
@@ -1109,7 +1117,7 @@ fn mcp_install_claude_code_calls_claude_mcp_add() {
     let output = sandbox.zone().env("PATH", &bin).args(["mcp", "install", "claude-code"]).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let calls = std::fs::read_to_string(&record).unwrap();
-    let exe = std::fs::canonicalize(ZONE).unwrap();
+    let exe = zone_exe();
     let expected = format!("mcp add --scope user zone --env ZONE_HOME={} -- {} mcp", sandbox.zone_home.display(), exe.display());
     assert!(calls.lines().any(|line| line == expected), "expected:\n{expected}\ngot:\n{calls}");
 
