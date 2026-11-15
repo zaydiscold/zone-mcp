@@ -17,7 +17,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
 use hyper::service::service_fn;
@@ -28,6 +28,9 @@ use tokio::net::TcpListener;
 
 use crate::daemon_info::DaemonInfo;
 use crate::db::{Cursor, Db, Filter, Order, Row};
+use crate::flash::qr::Gray;
+use crate::flash::receive::{self, Outcome, Receiver, Step};
+use crate::info;
 use crate::pairing;
 use crate::paths;
 use crate::timeparse::{Bound, Clock, unix};
@@ -38,6 +41,9 @@ use crate::warn;
 pub const DEFAULT_PORT: u16 = 47813;
 
 const PAGE: &str = include_str!("../assets/index.html");
+const FLASH_PAGE: &str = include_str!("../assets/flash.html");
+/// The largest request body read: one camera picture, a gray byte per pixel.
+const MAX_BODY: usize = 4 * 1024 * 1024;
 const PAGE_LIMIT: usize = 60;
 const SEARCH_LIMIT: usize = 200;
 /// Longer texts are cut in listings. The page fetches the rest when asked.
@@ -51,6 +57,8 @@ pub struct WebState {
     pub computer_name: String,
     /// What the daemon currently knows about its own connectivity.
     pub info: Arc<Mutex<DaemonInfo>>,
+    /// The flash being received through the page, if any.
+    pub flash: Mutex<Receiver>,
 }
 
 /// Loads the web token, creating it the first time.
@@ -107,9 +115,16 @@ type Reply = Response<Full<Bytes>>;
 
 async fn handle(request: Request<Incoming>, state: Arc<WebState>) -> Reply {
     let nonce = paths::hex(&paths::random_bytes::<16>());
+    let mut head = RequestHead::from(&request);
+    // Only the Flash routes take a body: a camera picture or the bytes of one frame.
+    if head.method == Method::POST && head.path.starts_with("/api/flash/") {
+        match Limited::new(request.into_body(), MAX_BODY).collect().await {
+            Ok(body) => head.body = body.to_bytes(),
+            Err(_) => return secure(text(StatusCode::PAYLOAD_TOO_LARGE, "That is too much to send in one request."), &nonce),
+        }
+    }
     let reply = match tokio::task::spawn_blocking({
         let nonce = nonce.clone();
-        let head = RequestHead::from(&request);
         move || route(&head, &state, &nonce)
     })
     .await
@@ -120,7 +135,7 @@ async fn handle(request: Request<Incoming>, state: Arc<WebState>) -> Reply {
     secure(reply, &nonce)
 }
 
-/// The parts of a request the routes need. Bodies are never read: no route takes one.
+/// The parts of a request the routes need. The body is read for the Flash routes only.
 pub struct RequestHead {
     pub method: Method,
     pub path: String,
@@ -129,6 +144,7 @@ pub struct RequestHead {
     pub origin: Option<String>,
     pub fetch_site: Option<String>,
     pub cookie: Option<String>,
+    pub body: Bytes,
 }
 
 impl RequestHead {
@@ -142,6 +158,7 @@ impl RequestHead {
             origin: header(header::ORIGIN),
             fetch_site: request.headers().get("sec-fetch-site").and_then(|v| v.to_str().ok()).map(str::to_string),
             cookie: header(header::COOKIE),
+            body: Bytes::new(),
         }
     }
 }
@@ -226,11 +243,27 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
         "/api/items" if get => guarded(head, state, |db| items(db, &head.query)),
         "/api/item" if get => guarded(head, state, |db| item(db, &head.query)),
         "/api/pair" if post => guarded(head, state, |db| pair(db, state)),
-        // Carrier 2 (Flash) plugs in here: a page that reads QR frames with the camera and an
-        // endpoint that takes the reassembled payload and calls `Db::apply_items` with
-        // `Carrier::Flash`. Neither exists yet.
-        "/flash" | "/api/flash" => text(StatusCode::NOT_IMPLEMENTED, "Flash is not built yet."),
-        "/" | "/api/status" | "/api/items" | "/api/item" | "/api/pair" => text(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed."),
+        // Carrier 2 (Flash): the page reads the phone's screen with the camera and posts what
+        // it sees. See flash/receive.rs.
+        "/flash" if get => {
+            if has_session(head, state) {
+                html(StatusCode::OK, FLASH_PAGE.replace("__NONCE__", nonce))
+            } else {
+                locked()
+            }
+        }
+        "/api/flash/status" if get => flash_guarded(head, state, |_| Ok(())),
+        "/api/flash/picture" if post => flash_guarded(head, state, |receiver| flash_picture(head, state, receiver)),
+        "/api/flash/frame" if post => flash_guarded(head, state, |receiver| {
+            flash_take(state, receiver, &head.body);
+            Ok(())
+        }),
+        "/api/flash/reset" if post => flash_guarded(head, state, |receiver| {
+            receiver.reset();
+            Ok(())
+        }),
+        "/" | "/flash" | "/api/status" | "/api/items" | "/api/item" | "/api/pair" | "/api/flash/status" | "/api/flash/picture"
+        | "/api/flash/frame" | "/api/flash/reset" => text(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed."),
         _ => text(StatusCode::NOT_FOUND, "Not found."),
     }
 }
@@ -246,6 +279,57 @@ fn guarded(head: &RequestHead, state: &WebState, work: impl FnOnce(&mut Db) -> R
         Ok(value) => json_reply(StatusCode::OK, &value),
         Err(error) => json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
     }
+}
+
+/// Runs one Flash request and answers with where the flash stands.
+fn flash_guarded(head: &RequestHead, state: &WebState, work: impl FnOnce(&mut Receiver) -> Result<()>) -> Reply {
+    if !has_session(head, state) {
+        return json_reply(StatusCode::UNAUTHORIZED, &json!({ "error": "locked", "fix": "Run `zone open` to unlock this page." }));
+    }
+    let Ok(mut receiver) = state.flash.lock() else {
+        return json_reply(StatusCode::INTERNAL_SERVER_ERROR, &json!({ "error": "flash is unavailable" }));
+    };
+    match work(&mut receiver) {
+        Ok(()) => json_reply(StatusCode::OK, &receiver.status()),
+        Err(error) => json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
+    }
+}
+
+/// A camera picture: `w` times `h` gray bytes. Every QR code in it is taken as a frame.
+fn flash_picture(head: &RequestHead, state: &WebState, receiver: &mut Receiver) -> Result<()> {
+    let side = |key: &str| -> Result<usize> { head.query.get(key).and_then(|v| v.parse().ok()).with_context(|| format!("{key} is required")) };
+    let gray = Gray::new(side("w")?, side("h")?, head.body.to_vec())?;
+    receiver.pictures += 1;
+    let codes = crate::flash::qr::read_codes(&gray);
+    if !codes.is_empty() {
+        receiver.pictures_with_code += 1;
+    }
+    for code in codes {
+        flash_take(state, receiver, &code);
+    }
+    Ok(())
+}
+
+/// Takes the bytes of one frame. The frame that completes a flash stores it.
+fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) {
+    let Step::Complete { shape, payload } = receiver.add(raw) else {
+        return;
+    };
+    let outcome = match state.db.lock() {
+        Ok(mut db) => receive::import(&mut db, &payload, paths::now_unix()),
+        Err(_) => Outcome::Failed("the library is unavailable".to_string()),
+    };
+    match &outcome {
+        Outcome::Stored(stored) => info!(
+            "flash: {} sent {} items, {} new or changed{}",
+            stored.phone_name.as_deref().unwrap_or("a phone"),
+            stored.items,
+            stored.inserted + stored.replaced,
+            if stored.paired { ", and is now paired" } else { "" }
+        ),
+        Outcome::Failed(reason) => warn!("flash: a complete flash of {} bytes was not stored: {reason}", payload.len()),
+    }
+    receiver.finish(shape, outcome);
 }
 
 // -------------------------------------------------------------------- replies
@@ -301,7 +385,7 @@ fn redirect_with_session(state: &WebState) -> Reply {
 fn secure(mut reply: Reply, nonce: &str) -> Reply {
     let csp = format!(
         "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; img-src data:; \
-         connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+         media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     let headers = reply.headers_mut();
     if let Ok(value) = HeaderValue::from_str(&csp) {
@@ -450,7 +534,12 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
         "backup_folder_state": backup_folder_state,
         "items": { "total": total, "by_kind": by_kind, "dictations_by_source": by_source },
         // Changes whenever anything arrives, so the page knows to refresh.
-        "revision": format!("{total}:{}:{}", link_sync.unwrap_or(0.0), backup_sync.unwrap_or(0.0)),
+        "revision": format!(
+            "{total}:{}:{}:{}",
+            link_sync.unwrap_or(0.0),
+            backup_sync.unwrap_or(0.0),
+            db.meta_f64("last_sync_flash")?.unwrap_or(0.0)
+        ),
     }))
 }
 
@@ -469,7 +558,6 @@ mod tests {
     use super::*;
     use crate::db::Delivery;
     use crate::item::{Carrier, Item};
-    use http_body_util::BodyExt;
 
     const PORT: u16 = 47813;
 
@@ -484,6 +572,7 @@ mod tests {
             endpoint_id: "7f".repeat(32),
             computer_name: "desk".to_string(),
             info: Arc::new(Mutex::new(DaemonInfo::default())),
+            flash: Mutex::new(Receiver::new()),
         }
     }
 
@@ -497,6 +586,7 @@ mod tests {
             origin: None,
             fetch_site: None,
             cookie: None,
+            body: Bytes::new(),
         }
     }
 
@@ -596,21 +686,91 @@ mod tests {
 
     #[test]
     fn the_page_loads_nothing_from_elsewhere() {
-        // Every URL in the page is either the SVG namespace or a relative API path.
-        let mut rest = PAGE;
-        while let Some(at) = rest.find("http") {
-            let tail = &rest[at..];
-            assert!(
-                tail.starts_with("http://www.w3.org/2000/svg") || tail.starts_with("http-equiv") || tail.starts_with("http://127.0.0.1"),
-                "unexpected URL in the page: {}",
-                &tail[..tail.len().min(60)]
-            );
-            rest = &tail[4..];
+        // Every URL in the pages is either the SVG namespace or a relative API path.
+        for page in [PAGE, FLASH_PAGE] {
+            let mut rest = page;
+            while let Some(at) = rest.find("http") {
+                let tail = &rest[at..];
+                assert!(
+                    tail.starts_with("http://www.w3.org/2000/svg") || tail.starts_with("http-equiv") || tail.starts_with("http://127.0.0.1"),
+                    "unexpected URL in the page: {}",
+                    &tail[..tail.len().min(60)]
+                );
+                rest = &tail[4..];
+            }
+            for forbidden in ["<link rel=\"stylesheet\"", "<script src", "@import", "url(http", "fonts.googleapis", "cdn."] {
+                assert!(!page.contains(forbidden), "{forbidden}");
+            }
+            assert!(!page.contains('\u{2014}'), "no em dashes in the page");
         }
-        for forbidden in ["<link rel=\"stylesheet\"", "<script src", "@import", "url(http", "fonts.googleapis", "cdn."] {
-            assert!(!PAGE.contains(forbidden), "{forbidden}");
+        assert!(PAGE.contains("href=\"/flash\""), "the main page links to Flash");
+    }
+
+    #[test]
+    fn flash_through_the_page_routes() {
+        use crate::flash::fountain::Encoder;
+        use crate::flash::{qr, seal};
+
+        let state = state();
+        let secret = "ab".repeat(32);
+        state.db.lock().unwrap().create_offer(&secret, paths::now_unix(), 600.0).unwrap();
+        let cookie = |h: RequestHead| with_cookie(h, &state);
+        let post = |target: &str, body: Vec<u8>| {
+            let mut h = cookie(head(Method::POST, target));
+            h.body = Bytes::from(body);
+            route(&h, &state, "n")
+        };
+
+        // The page and its routes are locked like everything else.
+        assert_eq!(route(&head(Method::GET, "/flash"), &state, "n").status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(route(&head(Method::GET, "/api/flash/status"), &state, "n").status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(route(&head(Method::POST, "/api/flash/frame"), &state, "n").status(), StatusCode::UNAUTHORIZED);
+        let mut foreign = cookie(head(Method::POST, "/api/flash/frame"));
+        foreign.origin = Some("https://evil.example".to_string());
+        assert_eq!(route(&foreign, &state, "n").status(), StatusCode::FORBIDDEN);
+        assert_eq!(route(&cookie(head(Method::GET, "/api/flash/frame")), &state, "n").status(), StatusCode::METHOD_NOT_ALLOWED);
+        let page = body(route(&cookie(head(Method::GET, "/flash")), &state, "abc"));
+        assert!(page.contains("getUserMedia") && page.contains("nonce=\"abc\"") && !page.contains("__NONCE__"));
+        assert_eq!(json_body(route(&cookie(head(Method::GET, "/api/flash/status")), &state, "n"))["state"], "waiting");
+
+        // A phone that only scanned the pairing code flashes 25 items: some frames as camera
+        // pictures, the rest as frame bytes, with frames missing.
+        let key = seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
+        let phone = crate::db::PhoneInfo { id: Some("PHONE-W".into()), name: Some("Web phone".into()), app: None };
+        let items = crate::fakephone::synthetic_items(1000, 25);
+        let sealed = seal::seal(&key, &seal::flash_json(&phone, &items)).unwrap();
+        let encoder = Encoder::new(0xC0FFEE, &sealed, 300).unwrap();
+        let mut last = Value::Null;
+        for index in 0u32..200 {
+            if index % 4 == 2 {
+                continue;
+            }
+            let frame = encoder.frame(index);
+            let reply = if index % 2 == 0 {
+                let picture = qr::draw(&frame, 4, 4).unwrap();
+                post(&format!("/api/flash/picture?w={}&h={}", picture.width, picture.height), picture.pixels)
+            } else {
+                post("/api/flash/frame", frame)
+            };
+            assert_eq!(reply.status(), StatusCode::OK);
+            last = json_body(reply);
+            if last["state"] == "done" {
+                break;
+            }
+            assert_eq!(last["state"], "receiving");
         }
-        assert!(!PAGE.contains('\u{2014}'), "no em dashes in the page");
+        assert_eq!(last["state"], "done", "{last}");
+        assert_eq!((last["result"]["new"].as_u64(), last["result"]["paired"].as_bool()), (Some(25), Some(true)));
+        assert!(last["pictures"]["with_code"].as_u64().unwrap() > 0);
+        assert!(!last.to_string().contains("amber"), "no item text in a status");
+        assert_eq!(state.db.lock().unwrap().total_items().unwrap(), 155);
+
+        // A picture of the wrong size, a picture with nothing in it, and a reset.
+        assert_eq!(post("/api/flash/picture?w=10&h=10", vec![0; 50]).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(post("/api/flash/picture", vec![0; 50]).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(post("/api/flash/picture?w=40&h=30", vec![200; 1200]))["state"], "done");
+        assert_eq!(json_body(post("/api/flash/frame", b"not a frame".to_vec()))["state"], "done");
+        assert_eq!(json_body(post("/api/flash/reset", Vec::new()))["state"], "waiting");
     }
 
     #[test]
@@ -650,8 +810,6 @@ mod tests {
         assert!((offer["expires_in_s"].as_f64().unwrap() - 600.0).abs() < 5.0);
         assert_eq!(state.db.lock().unwrap().open_offers(paths::now_unix()).unwrap(), 1);
 
-        // The Flash seam answers honestly.
-        assert_eq!(route(&with_cookie(head(Method::GET, "/flash"), &state), &state, "n").status(), StatusCode::NOT_IMPLEMENTED);
         assert_eq!(route(&with_cookie(head(Method::GET, "/nope"), &state), &state, "n").status(), StatusCode::NOT_FOUND);
     }
 }

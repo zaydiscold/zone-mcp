@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>Zone Flash</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b5cf6'/%3E%3Cpath d='M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z' fill='%23fff'/%3E%3C/svg%3E">
+<style nonce="__NONCE__">
+:root {
+  --bg: #121214; --surface: #1a1a1e; --raised: #222227; --line: #2d2d34; --text: #e8e7ec; --muted: #a09eab;
+  --faint: #6e6c79; --accent: #a78bfa; --accent-strong: #8b5cf6; --accent-ink: #f4f0ff; --good: #86d3ad; --bad: #f0a3a3;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f4f7; --surface: #ffffff; --raised: #f1f0f5; --line: #dfdde6; --text: #1c1a22; --muted: #5f5c6c;
+    --faint: #8d8a9a; --accent: #6d49e8; --accent-strong: #5b36d6; --accent-ink: #ffffff; --good: #2d8a5f; --bad: #b3261e;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+button, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wrap { max-width: 720px; margin: 0 auto; padding: 0 16px 48px; }
+.top { display: flex; align-items: center; gap: 12px; padding: 16px 0; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 17px; margin-right: auto; }
+.brand svg { width: 24px; height: 24px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-size: 22px; line-height: 1.25; margin: 6px 0 4px; }
+.lead { color: var(--muted); margin: 0 0 16px; max-width: 60ch; }
+.stage { position: relative; background: #000; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; aspect-ratio: 4 / 3; }
+video { width: 100%; height: 100%; object-fit: cover; display: block; transform: scaleX(-1); }
+.aim { position: absolute; inset: 0; margin: auto; width: 62%; aspect-ratio: 1; max-height: 86%; border: 2px solid rgba(255, 255, 255, 0.75); border-radius: 14px; pointer-events: none; }
+.cover { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; background: var(--surface); color: var(--muted); }
+.cover[hidden] { display: none; }
+.btn { border: 1px solid var(--line); background: var(--raised); border-radius: 9px; padding: 8px 14px; min-height: 40px; }
+.btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); font-weight: 600; }
+.panel { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.state { font-weight: 600; font-size: 16px; }
+.state.good { color: var(--good); }
+.state.bad { color: var(--bad); }
+.track { height: 10px; background: var(--raised); border-radius: 6px; overflow: hidden; margin: 10px 0 8px; }
+.fill { height: 100%; width: 0; background: var(--accent-strong); border-radius: 6px; transition: width 0.15s linear; }
+.fill.good { background: var(--good); }
+.numbers { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--muted); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.result { margin-top: 10px; }
+.result[hidden] { display: none; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+select { background: var(--raised); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; min-height: 40px; max-width: 100%; }
+select[hidden] { display: none; }
+ol { color: var(--muted); padding-left: 20px; margin: 18px 0 0; }
+ol li { margin: 4px 0; }
+@media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#8b5cf6"/><path d="M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z" fill="#fff"/></svg>
+      Zone
+    </div>
+    <a href="/">Back to your library</a>
+  </div>
+
+  <h1>Flash: send your library with no network</h1>
+  <p class="lead">Your iPhone shows a fast series of QR codes and this computer's camera reads them. Nothing goes over Wi-Fi or the internet.</p>
+
+  <div class="stage">
+    <video id="video" playsinline muted aria-label="Camera"></video>
+    <div class="aim" id="aim" hidden></div>
+    <div class="cover" id="cover">
+      <div id="coverText">This page needs the camera to read the codes on your phone's screen. The pictures stay on this computer.</div>
+      <button class="btn primary" id="start" type="button">Turn on the camera</button>
+    </div>
+  </div>
+
+  <div class="panel" aria-live="polite">
+    <div class="state" id="state">Waiting for the camera</div>
+    <div class="track" role="progressbar" aria-label="Received" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="track"><div class="fill" id="fill"></div></div>
+    <div class="numbers">
+      <span id="rows">0 of 0 pieces</span>
+      <span id="frames">0 codes read</span>
+      <span id="rate"></span>
+    </div>
+    <div class="result" id="result" hidden></div>
+    <div class="row">
+      <select id="cameras" aria-label="Camera to use" hidden></select>
+      <button class="btn" id="again" type="button" hidden>Start over</button>
+    </div>
+  </div>
+
+  <ol>
+    <li>The phone has to be paired with this computer once. If it is not, open <a href="/">your library</a>, choose Pair a phone, and scan that code first. That works offline too.</li>
+    <li>In Zone on the iPhone, open the computer sync settings and start Flash.</li>
+    <li>Hold the phone so its code fills most of the square, screen brightness up. Keep it steady until this page says it is done.</li>
+  </ol>
+</div>
+
+<script nonce="__NONCE__">
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const video = $("video");
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  const MAX_SIDE = 720;
+  let stream = null;
+  let running = false;
+  let finished = false;
+  let sent = 0;
+  let rateStart = 0;
+  let rateFrames = 0;
+
+  function show(status) {
+    const k = status.k || 0;
+    const rows = status.rows || 0;
+    const percent = k ? Math.floor((rows / k) * 100) : 0;
+    $("fill").style.width = (status.state === "done" ? 100 : percent) + "%";
+    $("fill").classList.toggle("good", status.state === "done");
+    $("track").setAttribute("aria-valuenow", String(percent));
+    $("rows").textContent = rows + " of " + k + " pieces";
+    $("frames").textContent = (status.frames || 0) + " codes read";
+    const state = $("state");
+    state.className = "state";
+    const result = $("result");
+    result.hidden = true;
+    if (status.state === "waiting") {
+      state.textContent = running ? "Looking for a code. Hold the phone up to the camera" : "Waiting for the camera";
+    } else if (status.state === "receiving") {
+      state.textContent = "Receiving, " + percent + "%";
+    } else if (status.state === "storing") {
+      state.textContent = "Storing";
+    } else if (status.state === "done") {
+      const r = status.result || {};
+      state.textContent = "Done. " + r.items + (r.items === 1 ? " item" : " items") + " received";
+      state.classList.add("good");
+      const parts = [r.new + " new", r.changed + " changed", r.unchanged + " already here"];
+      if (r.rejected) parts.push(r.rejected + " could not be read");
+      result.textContent = (r.paired ? "This phone is now paired with this computer. " : "") + parts.join(", ") + ". You can tap Done on the phone.";
+      result.hidden = false;
+    } else if (status.state === "failed") {
+      state.textContent = "The flash arrived but could not be opened";
+      state.classList.add("bad");
+      result.textContent = (status.result && status.result.error) || "";
+      result.hidden = false;
+    }
+    const over = status.state === "done" || status.state === "failed";
+    $("again").hidden = !over;
+    if (over && !finished) { finished = true; }
+    if (!over) finished = false;
+  }
+
+  async function post(path, body) {
+    const response = await fetch(path, { method: "POST", body, headers: body ? { "Content-Type": "application/octet-stream" } : {}, credentials: "same-origin" });
+    if (response.status === 401) { location.href = "/"; throw new Error("locked"); }
+    if (!response.ok) throw new Error("status " + response.status);
+    return response.json();
+  }
+
+  // One picture: the middle square of what the camera sees, as one gray byte per pixel.
+  function grab() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return null;
+    const crop = Math.min(vw, vh);
+    const side = Math.min(crop, MAX_SIDE);
+    if (canvas.width !== side) { canvas.width = side; canvas.height = side; }
+    context.drawImage(video, (vw - crop) / 2, (vh - crop) / 2, crop, crop, 0, 0, side, side);
+    const rgba = context.getImageData(0, 0, side, side).data;
+    const gray = new Uint8Array(side * side);
+    for (let i = 0, j = 0; j < gray.length; i += 4, j++) {
+      gray[j] = (rgba[i] * 77 + rgba[i + 1] * 150 + rgba[i + 2] * 29) >> 8;
+    }
+    return { side, gray };
+  }
+
+  async function loop() {
+    while (running) {
+      const picture = grab();
+      if (!picture) { await new Promise((r) => setTimeout(r, 100)); continue; }
+      try {
+        const status = await post("/api/flash/picture?w=" + picture.side + "&h=" + picture.side, picture.gray);
+        show(status);
+        sent++;
+        rateFrames++;
+        const now = performance.now();
+        if (now - rateStart > 1000) {
+          $("rate").textContent = Math.round((rateFrames * 1000) / (now - rateStart)) + " pictures a second";
+          rateStart = now; rateFrames = 0;
+        }
+      } catch (error) {
+        $("state").textContent = "Lost contact with zone. Check that it is still running";
+        $("state").className = "state bad";
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      // Once a flash is stored there is no hurry: look twice a second for a new one.
+      await new Promise((r) => (finished ? setTimeout(r, 500) : requestAnimationFrame(r)));
+    }
+  }
+
+  async function listCameras(currentId) {
+    try {
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+      const select = $("cameras");
+      select.textContent = "";
+      devices.forEach((device, index) => {
+        const option = document.createElement("option");
+        option.value = device.deviceId;
+        option.textContent = device.label || "Camera " + (index + 1);
+        option.selected = device.deviceId === currentId;
+        select.append(option);
+      });
+      select.hidden = devices.length < 2;
+    } catch (error) { /* the list is optional */ }
+  }
+
+  async function start(deviceId) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      $("coverText").textContent = "This browser cannot use the camera here. Try a current version of Safari, Chrome, Edge or Firefox.";
+      $("start").hidden = true;
+      return;
+    }
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    const wanted = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+    if (deviceId) wanted.deviceId = { exact: deviceId };
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: wanted, audio: false });
+    } catch (error) {
+      const denied = error && (error.name === "NotAllowedError" || error.name === "SecurityError");
+      $("coverText").textContent = denied
+        ? "The camera was not allowed. Allow it for this page in the browser's address bar or settings, then try again."
+        : "No camera could be started. Check that one is connected and not in use by another app, then try again.";
+      $("cover").hidden = false;
+      $("start").textContent = "Try again";
+      return;
+    }
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    $("cover").hidden = true;
+    $("aim").hidden = false;
+    const track = stream.getVideoTracks()[0];
+    listCameras(track && track.getSettings ? track.getSettings().deviceId : null);
+    if (!running) {
+      running = true;
+      rateStart = performance.now();
+      show({ state: "waiting" });
+      loop();
+    }
+  }
+
+  $("start").addEventListener("click", () => start(null));
+  $("cameras").addEventListener("change", (event) => start(event.target.value));
+  $("again").addEventListener("click", async () => {
+    try { show(await post("/api/flash/reset", null)); } catch (error) { /* shown by the loop */ }
+  });
+  document.addEventListener("visibilitychange", () => {
+    // A hidden tab stops reading. Coming back picks up where it was.
+    if (document.hidden) { running = false; } else if (stream && !running) { running = true; loop(); }
+  });
+  window.addEventListener("pagehide", () => { if (stream) stream.getTracks().forEach((track) => track.stop()); });
+
+  // Start at once when the camera was allowed before, otherwise wait for the button.
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({ name: "camera" }).then((p) => { if (p.state === "granted") start(null); }).catch(() => {});
+  }
+  fetch("/api/flash/status", { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null)).then((s) => { if (s && !running) show(s); }).catch(() => {});
+})();
+</script>
+</body>
+</html>

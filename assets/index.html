@@ -81,6 +81,7 @@ header.top {
   display: inline-flex; align-items: center; gap: 8px;
 }
 .btn:hover { border-color: var(--faint); }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.quiet { height: 30px; padding: 0 10px; font-size: 13px; color: var(--muted); background: transparent; }
@@ -212,6 +213,7 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.6 10.6 14 14"/></svg>
       <input id="q" type="search" placeholder="Search what you said" autocomplete="off" spellcheck="false" aria-label="Search">
     </label>
+    <a class="btn" href="/flash" title="Send from the phone's screen to this computer's camera, with no network">Flash</a>
     <button class="btn primary" id="pairOpen" type="button">Pair a phone</button>
   </div>
 </header>
