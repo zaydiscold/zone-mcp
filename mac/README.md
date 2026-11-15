@@ -117,8 +117,11 @@ The app owns the background service.
   and "all but keyboard dictations" as `--exclude-sources keyboard` into that client's
   entry, and zone then never lists, searches or returns anything outside it to that client.
   A view or `--read-only` set from the command line is shown as it is and kept: whenever
-  the app registers a client again it repeats the flags the client already has, because a
-  plain `zone mcp install` would put it back to everything.
+  the app registers a client again it repeats the flags the client already has. (zone
+  itself keeps them too since 2863a45. Before that, a plain `zone mcp install` put a client
+  back to everything, so the app never relies on it.) One case it cannot cover yet: for a
+  client that starts another copy of zone, `zone mcp status --json` does not say what that
+  entry may read, so "Use this app's" registers it with everything and the app says so.
 - **The `zone` command** is offered, never forced: More > zone in the terminal. It is a link
   in the first writable folder on your PATH out of `~/.local/bin`, `~/bin`,
   `/opt/homebrew/bin` and `/usr/local/bin` (the last one asks for your password when it has

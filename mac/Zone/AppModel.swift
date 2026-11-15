@@ -49,6 +49,8 @@ final class AppModel {
     private(set) var agentsLoaded = false
     private(set) var busyAgents: Set<String> = []
     var agentError: String?
+    /// One plain line about the last change to an agent, when there is something to know.
+    private(set) var agentNotice: String?
     private(set) var pairing: PairingState = .idle
     private(set) var syncingUntil = Date.distantPast
     /// One line shown for a few seconds after an action ("Copied").
@@ -492,12 +494,19 @@ final class AppModel {
     /// Connects or disconnects an agent. Connecting one that is already connected (to point
     /// it at this app's zone, or to add its other profiles) keeps what it may read.
     func setAgent(_ agent: Agent, connected: Bool) async {
+        // zone cannot say what an entry that starts another copy of zone may read, so the
+        // app cannot carry a limit over. It says so instead of widening it silently.
+        var unknownView = false
+        if connected, case .otherCopy = agent.standing, agent.view == nil { unknownView = true }
         await changeAgent(agent) { [client] in
             if connected {
                 try await client.connect(agent)
             } else {
                 try await client.disconnect(agent: agent.id)
             }
+        }
+        if unknownView, agentError == nil {
+            agentNotice = "\(agent.title) now starts this app's zone and can read everything. If it was limited before, limit it again under its name."
         }
     }
 
@@ -513,6 +522,7 @@ final class AppModel {
         guard !busyAgents.contains(agent.id) else { return }
         busyAgents.insert(agent.id)
         agentError = nil
+        agentNotice = nil
         do {
             try await work()
         } catch {

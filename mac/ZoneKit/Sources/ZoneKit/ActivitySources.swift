@@ -171,8 +171,9 @@ public final class EventsCommandSource: ActivitySource {
         }
     }
 
+    /// Stops the follower before returning, so quitting the app never leaves one behind.
     public func stop() {
-        queue.async { [self] in
+        queue.sync {
             stopped = true
             process?.terminate()
             process = nil

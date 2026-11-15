@@ -27,9 +27,13 @@ fi
 [ -d "$app" ] || { echo "No Zone.app found. Build it first (mac/scripts/build-app.sh)." >&2; exit 1; }
 zone_binary="$app/Contents/Helpers/zone"
 
-# The sandbox's zone: only these variables, so nothing from this shell leaks in.
+# The sandbox's zone: only these variables, so nothing from this shell leaks in. Once the
+# app has made its own copy in the data folder, that copy is the one run, the same as the
+# app runs (zone registers AI clients with the path of the program that was run).
 zone() {
-    env -i HOME="$box/home" ZONE_HOME="$box/zone-home" ZONE_PORT="$port" ZONE_NAME="Demo Mac" PATH="$box/bin:/usr/bin:/bin" "$zone_binary" "$@"
+    local program="$zone_binary"
+    if [ -x "$box/zone-home/bin/zone" ]; then program="$box/zone-home/bin/zone"; fi
+    env -i HOME="$box/home" ZONE_HOME="$box/zone-home" ZONE_PORT="$port" ZONE_NAME="Demo Mac" PATH="$box/bin:/usr/bin:/bin" "$program" "$@"
 }
 
 # The sandbox app's process, whichever build it was started from.

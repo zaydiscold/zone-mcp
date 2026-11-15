@@ -237,6 +237,11 @@ struct AgentsPanel: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(Zone.alarm)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if let notice = model.agentNotice {
+                Text(notice)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Zone.ink(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "eye")
@@ -313,7 +318,9 @@ private struct AgentRow: View {
                         Task { await model.setAgent(agent, connected: true) }
                     }
                     .buttonStyle(ZonePillButtonStyle())
-                    .help("This agent starts a zone that was installed from the command line. Point it at the one this app keeps up to date. What it may read stays the same.")
+                    .help(agent.view == nil
+                        ? "This agent starts a zone that was installed from the command line. Point it at the one this app keeps up to date. It will be able to read everything until you limit it here."
+                        : "This agent starts a zone that was installed from the command line. Point it at the one this app keeps up to date. What it may read stays the same.")
                 }
                 if case let .partly(places, total) = agent.standing, !busy, !agent.viewsDiffer {
                     Button("Connect all \(total)") {
