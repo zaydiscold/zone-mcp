@@ -742,7 +742,7 @@ fn a_held_backup_read_is_reported_and_blocks_nothing() {
     std::fs::write(&hold, "").unwrap();
 
     // In the foreground a held read is explained, then completes when it is let go.
-    let child = sandbox
+    let mut child = sandbox
         .zone()
         .env("ZONE_TEST_HOLD_BACKUP_READ", &hold_text)
         .args(["backup-folder", &folder])
@@ -751,13 +751,18 @@ fn a_held_backup_read_is_reported_and_blocks_nothing() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(4500));
+    // Wait for the explanation itself, however long a busy computer takes to get there.
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut err = String::new();
+    while !err.contains("Still reading") {
+        assert!(stderr.read_line(&mut err).unwrap() > 0, "the read was never explained: {err}");
+    }
     assert_eq!(total_items(&sandbox), 0, "nothing is imported while the read is held");
     std::fs::remove_file(&hold).unwrap();
+    stderr.read_to_string(&mut err).unwrap();
     let output = child.wait_with_output().unwrap();
-    let (out, err) = (String::from_utf8_lossy(&output.stdout).to_string(), String::from_utf8_lossy(&output.stderr).to_string());
+    let out = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(output.status.success(), "{out}\n{err}");
-    assert!(err.contains("Still reading"), "{err}");
     assert!(out.contains("43 new") && out.contains("Watching "), "{out}");
     assert_eq!(total_items(&sandbox), 43);
 
