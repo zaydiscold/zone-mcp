@@ -29,7 +29,7 @@ use tokio::net::TcpListener;
 use crate::daemon_info::DaemonInfo;
 use crate::db::{Cursor, Db, Filter, Order, Row};
 use crate::flash::qr::Gray;
-use crate::flash::receive::{self, Outcome, Receiver, Step};
+use crate::flash::receive::{self, Outcome, PictureRead, Receiver, Step};
 use crate::info;
 use crate::pairing;
 use crate::paths;
@@ -252,7 +252,7 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
                 locked()
             }
         }
-        "/api/flash/status" if get => flash_guarded(head, state, |_| Ok(())),
+        "/api/flash/status" if get => flash_status(head, state),
         "/api/flash/picture" if post => flash_guarded(head, state, |receiver| flash_picture(head, state, receiver)),
         "/api/flash/frame" if post => flash_guarded(head, state, |receiver| {
             flash_take(state, receiver, &head.body);
@@ -295,6 +295,22 @@ fn flash_guarded(head: &RequestHead, state: &WebState, work: impl FnOnce(&mut Re
     }
 }
 
+/// Where the flash stands, and whether this computer has anything to open one with: the page
+/// says so before anyone holds a phone up.
+fn flash_status(head: &RequestHead, state: &WebState) -> Reply {
+    let reply = flash_guarded(head, state, |_| Ok(()));
+    if reply.status() != StatusCode::OK {
+        return reply;
+    }
+    let mut status = state.flash.lock().map(|r| r.status()).unwrap_or(Value::Null);
+    if let Ok(db) = state.db.lock() {
+        let phones = db.devices().map(|d| d.len()).unwrap_or(0);
+        let codes = db.open_offers(paths::now_unix()).unwrap_or(0);
+        status["setup"] = json!({ "phones": phones, "pairing_codes": codes });
+    }
+    json_reply(StatusCode::OK, &status)
+}
+
 /// A camera picture: `w` times `h` gray bytes. Every QR code in it is taken as a frame.
 fn flash_picture(head: &RequestHead, state: &WebState, receiver: &mut Receiver) -> Result<()> {
     let side = |key: &str| -> Result<usize> { head.query.get(key).and_then(|v| v.parse().ok()).with_context(|| format!("{key} is required")) };
@@ -304,16 +320,24 @@ fn flash_picture(head: &RequestHead, state: &WebState, receiver: &mut Receiver) 
     if !codes.is_empty() {
         receiver.pictures_with_code += 1;
     }
+    let mut read = PictureRead { codes: codes.len(), ..PictureRead::default() };
     for code in codes {
-        flash_take(state, receiver, &code);
+        let (frame, useful) = flash_take(state, receiver, &code);
+        read.frames += usize::from(frame);
+        read.useful += usize::from(useful);
     }
+    receiver.last_picture = Some(read);
     Ok(())
 }
 
-/// Takes the bytes of one frame. The frame that completes a flash stores it.
-fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) {
-    let Step::Complete { shape, payload } = receiver.add(raw) else {
-        return;
+/// Takes the bytes of one frame. The frame that completes a flash stores it. Returns whether
+/// it was a flash frame, and whether it brought a new row.
+fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) -> (bool, bool) {
+    let (shape, payload) = match receiver.add(raw) {
+        Step::Ignored => return (false, false),
+        Step::AlreadyDone => return (true, false),
+        Step::Progress { useful } => return (true, useful),
+        Step::Complete { shape, payload } => (shape, payload),
     };
     let outcome = match state.db.lock() {
         Ok(mut db) => receive::import(&mut db, &payload, paths::now_unix()),
@@ -330,6 +354,7 @@ fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) {
         Outcome::Failed(reason) => warn!("flash: a complete flash of {} bytes was not stored: {reason}", payload.len()),
     }
     receiver.finish(shape, outcome);
+    (true, true)
 }
 
 // -------------------------------------------------------------------- replies
@@ -731,7 +756,10 @@ mod tests {
         assert_eq!(route(&cookie(head(Method::GET, "/api/flash/frame")), &state, "n").status(), StatusCode::METHOD_NOT_ALLOWED);
         let page = body(route(&cookie(head(Method::GET, "/flash")), &state, "abc"));
         assert!(page.contains("getUserMedia") && page.contains("nonce=\"abc\"") && !page.contains("__NONCE__"));
-        assert_eq!(json_body(route(&cookie(head(Method::GET, "/api/flash/status")), &state, "n"))["state"], "waiting");
+        let waiting = json_body(route(&cookie(head(Method::GET, "/api/flash/status")), &state, "n"));
+        assert_eq!(waiting["state"], "waiting");
+        // The page can tell before anything is shown whether a flash could be opened.
+        assert_eq!(waiting["setup"], json!({ "phones": 0, "pairing_codes": 1 }));
 
         // A phone that only scanned the pairing code flashes 25 items: some frames as camera
         // pictures, the rest as frame bytes, with frames missing.
@@ -754,10 +782,19 @@ mod tests {
             };
             assert_eq!(reply.status(), StatusCode::OK);
             last = json_body(reply);
+            if index % 2 == 0 {
+                // What that picture held: one code, a frame of this flash.
+                assert_eq!((last["last"]["codes"].as_u64(), last["last"]["frames"].as_u64()), (Some(1), Some(1)), "{last}");
+            }
             if last["state"] == "done" {
                 break;
             }
             assert_eq!(last["state"], "receiving");
+            // One tile per chunk, and the held ones are exactly the rows.
+            let held = last["blocks"]["held"].as_str().unwrap();
+            assert_eq!(held.len(), encoder.k().div_ceil(8) * 2);
+            let ones: u32 = (0..held.len()).step_by(2).map(|i| u8::from_str_radix(&held[i..i + 2], 16).unwrap().count_ones()).sum();
+            assert_eq!(Some(ones as u64), last["rows"].as_u64());
         }
         assert_eq!(last["state"], "done", "{last}");
         assert_eq!((last["result"]["new"].as_u64(), last["result"]["paired"].as_bool()), (Some(25), Some(true)));
@@ -768,7 +805,14 @@ mod tests {
         // A picture of the wrong size, a picture with nothing in it, and a reset.
         assert_eq!(post("/api/flash/picture?w=10&h=10", vec![0; 50]).status(), StatusCode::BAD_REQUEST);
         assert_eq!(post("/api/flash/picture", vec![0; 50]).status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(post("/api/flash/picture?w=40&h=30", vec![200; 1200]))["state"], "done");
+        let blank = json_body(post("/api/flash/picture?w=40&h=30", vec![200; 1200]));
+        assert_eq!((blank["state"].as_str(), blank["last"]["codes"].as_u64()), (Some("done"), Some(0)));
+        assert_eq!(blank["solved"].as_u64(), Some(encoder.k() as u64));
+        // A QR code that is not a flash is counted as a code, not as a frame.
+        let other = qr::draw(b"https://example.invalid/menu", 4, 4).unwrap();
+        let read = json_body(post(&format!("/api/flash/picture?w={}&h={}", other.width, other.height), other.pixels));
+        assert_eq!((read["last"]["codes"].as_u64(), read["last"]["frames"].as_u64()), (Some(1), Some(0)), "{read}");
+        assert_eq!(json_body(route(&cookie(head(Method::GET, "/api/flash/status")), &state, "n"))["setup"]["phones"], 1);
         assert_eq!(json_body(post("/api/flash/frame", b"not a frame".to_vec()))["state"], "done");
         assert_eq!(json_body(post("/api/flash/reset", Vec::new()))["state"], "waiting");
     }

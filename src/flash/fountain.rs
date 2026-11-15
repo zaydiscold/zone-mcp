@@ -329,6 +329,36 @@ impl Decoder {
         added
     }
 
+    /// Which chunks the decoder holds a row for, and which of those it can already rebuild,
+    /// as bit sets (chunk `n` is bit `n % 64` of word `n / 64`).
+    ///
+    /// Every held row is stored at its highest chunk, so "held" is exactly where the `rank`
+    /// rows sit. A held chunk can be rebuilt once every other chunk its row mentions can be,
+    /// which is how [`Decoder::solve`] goes about it, lowest first. A row that still mentions
+    /// an unknown chunk waits: that is most coded frames until the last few rows arrive, when
+    /// they all resolve at once.
+    pub fn chunk_states(&self) -> (Vec<u64>, Vec<u64>) {
+        let words = words_for(self.k);
+        let mut held = vec![0u64; words];
+        let mut solved = vec![0u64; words];
+        for (pivot, row) in self.rows.iter().enumerate() {
+            let Some(row) = row else { continue };
+            held[pivot / 64] |= 1 << (pivot % 64);
+            // Every chunk the row mentions is at or below its pivot, so already decided.
+            let pending = row.mask.iter().zip(&solved).enumerate().any(|(word, (mask, known))| {
+                let mut open = mask & !known;
+                if word == pivot / 64 {
+                    open &= !(1u64 << (pivot % 64));
+                }
+                open != 0
+            });
+            if !pending {
+                solved[pivot / 64] |= 1 << (pivot % 64);
+            }
+        }
+        (held, solved)
+    }
+
     /// The payload, once `k` independent rows are held.
     pub fn solve(&self) -> Option<Vec<u8>> {
         if !self.is_complete() {
@@ -382,6 +412,72 @@ mod tests {
             }
         }
         decoder?.solve()
+    }
+
+    fn count(bits: &[u64]) -> usize {
+        bits.iter().map(|w| w.count_ones() as usize).sum()
+    }
+
+    fn has(bits: &[u64], n: usize) -> bool {
+        bits[n / 64] >> (n % 64) & 1 == 1
+    }
+
+    #[test]
+    fn chunk_states_follow_the_rows() {
+        // The reference flash: k = 5, frames 5 to 12 have the chunk sets the vector lists.
+        let session = 0x0102_0304;
+        let encoder = Encoder::new(session, &reference_payload(), 300).unwrap();
+        let shape = parse(&encoder.frame(0)).unwrap().shape;
+        let mut decoder = Decoder::new(shape);
+        let add = |decoder: &mut Decoder, i: u32| {
+            let raw = encoder.frame(i);
+            let frame = parse(&raw).unwrap();
+            decoder.add(frame.index, frame.body)
+        };
+        assert_eq!(decoder.chunk_states(), (vec![0], vec![0]));
+        // Frame 1 is plain chunk 1: held and solved at once.
+        add(&mut decoder, 1);
+        assert_eq!(decoder.chunk_states(), (vec![0b00010], vec![0b00010]));
+        // Frame 6 is chunks {0, 3}: held at 3, its pivot, and waiting on 0.
+        add(&mut decoder, 6);
+        assert_eq!(decoder.chunk_states(), (vec![0b01010], vec![0b00010]));
+        // Frame 0 (plain chunk 0) lets the row at 3 resolve too.
+        add(&mut decoder, 0);
+        assert_eq!(decoder.chunk_states(), (vec![0b01011], vec![0b01011]));
+        // Frame 12 is {2, 4}: held at 4, waiting on 2. Frame 2 then finishes everything.
+        add(&mut decoder, 12);
+        assert_eq!(decoder.chunk_states(), (vec![0b11011], vec![0b01011]));
+        add(&mut decoder, 2);
+        assert!(decoder.is_complete());
+        assert_eq!(decoder.chunk_states(), (vec![0b11111], vec![0b11111]));
+    }
+
+    #[test]
+    fn chunk_states_on_a_larger_flash() {
+        // Coded frames only: rows pile up held but unsolved, then all resolve with the last.
+        let payload: Vec<u8> = (0..60_000u32).map(|i| (i % 251) as u8).collect();
+        let encoder = Encoder::new(9, &payload, 300).unwrap();
+        let k = encoder.k();
+        assert!(k > 64, "spans more than one word");
+        let shape = parse(&encoder.frame(0)).unwrap().shape;
+        let mut decoder = Decoder::new(shape);
+        let mut index = k as u32;
+        while !decoder.is_complete() {
+            let raw = encoder.frame(index);
+            let frame = parse(&raw).unwrap();
+            decoder.add(frame.index, frame.body);
+            let (held, solved) = decoder.chunk_states();
+            assert_eq!(count(&held), decoder.rank(), "held is where the rows are");
+            assert!(solved.iter().zip(&held).all(|(s, h)| s & !h == 0), "solved is a part of held");
+            if !decoder.is_complete() && decoder.rank() < k / 2 {
+                assert!(count(&solved) < decoder.rank() / 4 + 2, "dense rows mostly wait");
+            }
+            index += 1;
+        }
+        let (held, solved) = decoder.chunk_states();
+        assert_eq!((count(&held), count(&solved)), (k, k));
+        assert!(has(&solved, k - 1) && !has(&solved, k));
+        assert_eq!(decoder.solve().unwrap(), payload);
     }
 
     /// The vector printed by `scripts/flash_reference.py` and quoted in PROTOCOL.md.

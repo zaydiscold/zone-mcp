@@ -21,6 +21,9 @@ use crate::item::Carrier;
 const MAX_SESSIONS: usize = 3;
 /// Items stored per transaction.
 const BATCH: usize = 500;
+/// The page is told which chunks are known, one tile each, up to this many chunks (about
+/// 4.6 MB of sealed payload). A larger flash reports counts only.
+const MAX_TILES: usize = 16_384;
 
 /// What became of a completed flash.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,17 +74,69 @@ struct Session {
     k: usize,
     rank: usize,
     frames: usize,
+    /// The chunks held and solved, as the page gets them, worked out when the rows change.
+    tiles: Option<Tiles>,
     /// Order of arrival, to tell which session is the current one.
     touched: u64,
     outcome: Option<Outcome>,
+}
+
+/// Which chunks are known, as hexadecimal bit sets: chunk `n` is bit `n % 8` (the lowest
+/// first) of byte `n / 8`.
+#[derive(Clone, Debug)]
+struct Tiles {
+    held: String,
+    solved: String,
+    solved_count: usize,
+}
+
+impl Tiles {
+    fn hex(words: &[u64], k: usize) -> String {
+        let bytes = k.div_ceil(8);
+        (0..bytes).map(|b| format!("{:02x}", (words[b / 8] >> (8 * (b % 8))) & 0xff)).collect()
+    }
+
+    fn of(decoder: &Decoder) -> Option<Tiles> {
+        let k = decoder.k();
+        if k > MAX_TILES {
+            return None;
+        }
+        let (held, solved) = decoder.chunk_states();
+        let solved_count = solved.iter().map(|w| w.count_ones() as usize).sum();
+        Some(Tiles { held: Tiles::hex(&held, k), solved: Tiles::hex(&solved, k), solved_count })
+    }
+
+    /// Every chunk known: a finished flash.
+    fn all(k: usize) -> Option<Tiles> {
+        if k > MAX_TILES {
+            return None;
+        }
+        let mut words = vec![u64::MAX; k.div_ceil(64)];
+        if !k.is_multiple_of(64) {
+            *words.last_mut().expect("k is at least 1") = (1u64 << (k % 64)) - 1;
+        }
+        let hex = Tiles::hex(&words, k);
+        Some(Tiles { held: hex.clone(), solved: hex, solved_count: k })
+    }
+}
+
+/// What the last camera picture held, for the page to react to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PictureRead {
+    /// QR codes found in it, of any kind.
+    pub codes: usize,
+    /// Of those, frames of a flash.
+    pub frames: usize,
+    /// Of those, frames that brought the decoder a new row.
+    pub useful: usize,
 }
 
 /// What one frame did.
 pub enum Step {
     /// Not a flash frame at all (some other QR code), or a damaged one.
     Ignored,
-    /// Taken. The flash is not complete yet.
-    Progress,
+    /// Taken. The flash is not complete yet. `useful` when it brought a new row.
+    Progress { useful: bool },
     /// A frame of a flash that is already finished: the phone is still showing it.
     AlreadyDone,
     /// This frame completed the flash. The payload is ready for [`import`], and the caller
@@ -96,6 +151,11 @@ pub struct Receiver {
     /// Pictures looked at, and how many of them had a code in them.
     pub pictures: u64,
     pub pictures_with_code: u64,
+    /// Frames of a flash read, in any picture, and how many of them were useful.
+    pub frames_read: u64,
+    pub frames_useful: u64,
+    /// What the most recent picture held.
+    pub last_picture: Option<PictureRead>,
 }
 
 impl Receiver {
@@ -118,26 +178,34 @@ impl Receiver {
                 self.sessions.remove(&oldest);
             }
             let decoder = Decoder::new(frame.shape);
+            let tiles = Tiles::of(&decoder);
             self.sessions.insert(
                 frame.shape,
-                Session { k: decoder.k(), decoder: Some(decoder), rank: 0, frames: 0, touched: clock, outcome: None },
+                Session { k: decoder.k(), decoder: Some(decoder), rank: 0, frames: 0, tiles, touched: clock, outcome: None },
             );
         }
+        self.frames_read += 1;
         let session = self.sessions.get_mut(&frame.shape).expect("just inserted");
         session.touched = clock;
         let Some(decoder) = session.decoder.as_mut() else {
             return Step::AlreadyDone;
         };
-        if decoder.add(frame.index, frame.body) == Added::Duplicate {
-            return Step::Progress;
+        let added = decoder.add(frame.index, frame.body);
+        if added == Added::Duplicate {
+            return Step::Progress { useful: false };
         }
         session.rank = decoder.rank();
         session.frames = decoder.frames();
+        if added == Added::Useful {
+            self.frames_useful += 1;
+            session.tiles = Tiles::of(decoder);
+        }
         if !decoder.is_complete() {
-            return Step::Progress;
+            return Step::Progress { useful: added == Added::Useful };
         }
         let payload = decoder.solve().unwrap_or_default();
         session.decoder = None;
+        session.tiles = Tiles::all(session.k);
         Step::Complete { shape: frame.shape, payload }
     }
 
@@ -154,10 +222,20 @@ impl Receiver {
     }
 
     /// Where the most recent flash stands, for the page.
+    ///
+    /// `blocks` has one bit per chunk of the payload (see [`Tiles`]): `held` where the decoder
+    /// has a row, `solved` where it can already rebuild the chunk. It is null for a flash of
+    /// more than 16384 chunks. `last` is what the most recent camera picture held.
     pub fn status(&self) -> Value {
-        let pictures = json!({ "seen": self.pictures, "with_code": self.pictures_with_code });
+        let pictures = json!({
+            "seen": self.pictures,
+            "with_code": self.pictures_with_code,
+            "frames": self.frames_read,
+            "useful": self.frames_useful,
+        });
+        let last = self.last_picture.map(|p| json!({ "codes": p.codes, "frames": p.frames, "useful": p.useful }));
         let Some((shape, session)) = self.sessions.iter().max_by_key(|(_, s)| s.touched) else {
-            return json!({ "state": "waiting", "pictures": pictures });
+            return json!({ "state": "waiting", "pictures": pictures, "last": last });
         };
         let state = match (&session.outcome, session.decoder.is_some()) {
             (Some(Outcome::Stored(_)), _) => "done",
@@ -172,8 +250,11 @@ impl Receiver {
             "rows": session.rank,
             "k": session.k,
             "bytes": shape.total_len,
+            "solved": session.tiles.as_ref().map(|t| t.solved_count),
+            "blocks": session.tiles.as_ref().map(|t| json!({ "held": t.held, "solved": t.solved })),
             "result": session.outcome.as_ref().map(Outcome::to_json),
             "pictures": pictures,
+            "last": last,
         })
     }
 }
@@ -272,7 +353,7 @@ mod tests {
             }
             match receiver.add(&encoder.frame(index)) {
                 Step::Complete { shape, payload } => return (shape, payload),
-                Step::Progress => {}
+                Step::Progress { .. } => {}
                 _ => panic!("unexpected step"),
             }
             assert!(index < 10_000);
@@ -381,15 +462,29 @@ mod tests {
         let payload = sealed(SECRET, "PHONE-A", &synthetic_items(0, 200));
         let encoder = Encoder::new(7, &payload, 300).unwrap();
         assert!(encoder.k() > 10);
-        assert!(matches!(receiver.add(&encoder.frame(2)), Step::Progress));
-        assert!(matches!(receiver.add(&encoder.frame(2)), Step::Progress));
+        assert!(matches!(receiver.add(&encoder.frame(2)), Step::Progress { useful: true }));
+        assert!(matches!(receiver.add(&encoder.frame(2)), Step::Progress { useful: false }));
         let status = receiver.status();
         assert_eq!((status["state"].as_str(), status["rows"].as_u64(), status["frames"].as_u64()), (Some("receiving"), Some(1), Some(1)));
         assert_eq!(status["k"].as_u64(), Some(encoder.k() as u64));
+        // One tile per chunk: chunk 2 is held and solved (bit 2 of the first byte).
+        let k = encoder.k();
+        let held = status["blocks"]["held"].as_str().unwrap();
+        assert_eq!(held.len(), k.div_ceil(8) * 2);
+        assert!(held.starts_with("04") && held[2..].chars().all(|c| c == '0'), "{held}");
+        assert_eq!(status["blocks"]["solved"], held);
+        assert_eq!(status["solved"], 1);
+        assert_eq!((status["pictures"]["frames"].as_u64(), status["pictures"]["useful"].as_u64()), (Some(2), Some(1)));
 
         let (shape, rebuilt) = flash_through(&mut receiver, &payload, 7);
         assert_eq!(rebuilt, payload);
-        assert_eq!(receiver.status()["state"], "storing");
+        let status = receiver.status();
+        assert_eq!(status["state"], "storing");
+        // Every tile is lit once the flash is whole, and no bit past the last chunk is set.
+        assert_eq!(status["solved"].as_u64(), Some(k as u64));
+        let solved = status["blocks"]["solved"].as_str().unwrap();
+        let ones: u32 = (0..solved.len()).step_by(2).map(|i| u8::from_str_radix(&solved[i..i + 2], 16).unwrap().count_ones()).sum();
+        assert_eq!(ones as usize, k);
         let outcome = import(&mut db, &rebuilt, 110.0);
         receiver.finish(shape, outcome);
         let status = receiver.status();

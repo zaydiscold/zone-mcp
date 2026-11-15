@@ -467,7 +467,9 @@ fn http_post(port: u16, path: &str, cookie: &str, body: &[u8]) -> (u16, Value) {
         body.len()
     );
     stream.write_all(head.as_bytes()).unwrap();
-    stream.write_all(body).unwrap();
+    // The daemon may answer (413) and close before a body that is too large is all sent, so a
+    // failed write is not an error here: the answer is what counts.
+    let _ = stream.write_all(body);
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
     let status = response.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -533,7 +535,13 @@ fn flash_pictures_through_the_command_line_and_the_daemon() {
     let mut files: Vec<PathBuf> = std::fs::read_dir(&frames).unwrap().map(|e| e.unwrap().path()).collect();
     files.sort();
     files.reverse();
+    let (code, before) = http(port, &format!("GET /api/flash/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"));
+    assert_eq!(code, 200);
+    let before: Value = serde_json::from_str(before.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!((before["state"].as_str(), before["setup"]["pairing_codes"].as_u64()), (Some("waiting"), Some(1)), "{before}");
+    let ones = |hex: &str| -> u64 { (0..hex.len()).step_by(2).map(|i| u64::from(u8::from_str_radix(&hex[i..i + 2], 16).unwrap().count_ones())).sum() };
     let mut last = Value::Null;
+    let mut most_solved = 0;
     for (n, file) in files.iter().enumerate() {
         if n % 4 == 3 {
             continue;
@@ -542,13 +550,24 @@ fn flash_pictures_through_the_command_line_and_the_daemon() {
         let (status, answer) = http_post(port, &format!("/api/flash/picture?w={width}&h={height}"), &cookie, &pixels);
         assert_eq!(status, 200, "{answer}");
         last = answer;
+        assert_eq!((last["last"]["codes"].as_u64(), last["last"]["frames"].as_u64()), (Some(1), Some(1)), "{last}");
         if last["state"] == "done" {
             break;
         }
         assert_eq!(last["state"], "receiving", "{last}");
+        // The page's mosaic: one bit per chunk, the held ones exactly the rows, the solved
+        // ones among them.
+        let held = last["blocks"]["held"].as_str().unwrap();
+        let solved = last["blocks"]["solved"].as_str().unwrap();
+        assert_eq!(held.len() as u64, k.div_ceil(8) * 2);
+        assert_eq!(Some(ones(held)), last["rows"].as_u64());
+        assert_eq!(Some(ones(solved)), last["solved"].as_u64());
+        most_solved = most_solved.max(ones(solved));
     }
     assert_eq!(last["state"], "done", "{last}");
     assert_eq!(last["k"].as_u64(), Some(k));
+    assert_eq!(ones(last["blocks"]["solved"].as_str().unwrap()), k, "every tile is lit at the end");
+    assert!(most_solved < k, "the last frames resolve the rest at once");
     assert_eq!(last["result"], json!({ "ok": true, "phone": "Flash phone", "items": 130, "new": 130, "changed": 0, "unchanged": 0, "deletions": 0, "rejected": 0, "paired": true }));
     assert_eq!(total_items(&sandbox), 130);
 
