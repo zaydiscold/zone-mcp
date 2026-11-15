@@ -5,8 +5,9 @@ app (dictations, voice notes, meeting transcripts), keeps a copy in SQLite on yo
 serves it to you and to AI agents.
 
 - **For you:** a local web page and a command line to read, search and copy what you said.
-- **For agents:** an MCP server with six tools, so Claude Code, Claude Desktop, Codex or Cursor can
-  answer "what did I say about the lease on Wednesday afternoon" from your own words.
+- **For agents:** an MCP server with six tools, registered with every AI client on the computer
+  (Claude Code, Codex, Cursor, Hermes, Gemini CLI, Zed and fourteen more), so any of them can answer
+  "what did I say about the lease on Wednesday afternoon" from your own words.
 - **No account and no Zone server.** The phone talks to your computer directly, or through an iroh
   relay that only forwards encrypted packets.
 
@@ -37,7 +38,8 @@ cp target/release/zone ~/.local/bin/      # or anywhere on your PATH
 Then start it at login (no admin rights needed) and check it:
 
 ```sh
-zone install     # a launchd user agent on macOS, a systemd user unit on Linux, a per-user Run entry on Windows
+zone install     # a launchd user agent on macOS, a systemd user unit on Linux, a per-user Run entry on Windows,
+                 # then registers zone with the AI clients it finds (--no-mcp to skip that)
 zone doctor      # checks the setup and says how to fix anything that is off
 ```
 
@@ -181,23 +183,68 @@ Output shows local time with the weekday. Add `--json` to any query for scripts.
 
 ## Use it from an AI agent
 
-zone speaks MCP over stdio. Register it with a client:
+zone speaks MCP over stdio. `zone install` registers it with every AI client it finds on the
+computer, so after that an agent can simply use it. To do it yourself, or again later:
 
 ```sh
-zone mcp install claude-code       # runs: claude mcp add --scope user zone -- /path/to/zone mcp
-zone mcp install claude-desktop    # edits claude_desktop_config.json
-zone mcp install codex             # edits ~/.codex/config.toml
-zone mcp install cursor            # edits ~/.cursor/mcp.json
-zone mcp status                    # where it is registered
-zone mcp uninstall cursor
+zone mcp install --all           # every client found here (same as: zone mcp install detected)
+zone mcp install claude-code zed # or name them
+zone mcp status                  # where it is registered, one line per place
+zone mcp uninstall cursor        # take it out of one (zone then leaves that one alone)
+zone mcp uninstall --all         # take it out of every one
 ```
 
-Only the `zone` entry is added or removed. Everything else in those files is kept, and a copy of
-the original is saved beside it as `<file>.before-zone` the first time. Add `--read-only` to
-register a server that cannot flag items. For any other client, the command to run is
-`/path/to/zone mcp`.
+`--all` prints one line per client: registered, already registered, skipped (not installed, or
+you took zone out of it) or failed, with the reason. A client counts as installed when its
+settings folder exists or its command is on your PATH.
+
+| Client | Name | Where zone writes |
+| --- | --- | --- |
+| Claude Code | `claude-code` | Every profile: `~/.claude.json`, and `.claude.json` in each `CLAUDE_CONFIG_DIR` folder (`~/.claude*`). Through `claude mcp add --scope user` when the command is there, else by editing the file the same way. |
+| Claude Desktop | `claude-desktop` | `claude_desktop_config.json` |
+| Codex | `codex` | `config.toml` in `~/.codex`, `CODEX_HOME` and any other `~/.codex*` folder that has one |
+| Cursor | `cursor` | `~/.cursor/mcp.json` (the editor and the `cursor-agent` command) |
+| Hermes | `hermes` | `~/.hermes/config.yaml` (or `HERMES_HOME`) and every profile's `config.yaml` |
+| Gemini CLI | `gemini` | `~/.gemini/settings.json` |
+| Qwen Code | `qwen` | `~/.qwen/settings.json` |
+| opencode | `opencode` | `~/.config/opencode/opencode.json` |
+| Windsurf | `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
+| VS Code | `vscode` | The user `mcp.json` (also Insiders when present) |
+| Zed | `zed` | `settings.json`, under `context_servers` |
+| Kiro | `kiro` | `~/.kiro/settings/mcp.json` |
+| Factory Droid | `droid` | `~/.factory/mcp.json` |
+| Copilot CLI | `copilot` | `~/.copilot/mcp-config.json` (which VS Code's newer agent also reads) |
+| LM Studio | `lm-studio` | `~/.lmstudio/mcp.json` |
+| Goose | `goose` | `~/.config/goose/config.yaml`, under `extensions` |
+| Crush | `crush` | `~/.config/crush/crush.json` |
+| Amp | `amp` | `~/.config/amp/settings.json` |
+| Cline | `cline` | `~/.cline/data/settings/cline_mcp_settings.json` (and the older VS Code extension's file) |
+| Roo Code | `roo` | The VS Code extension's `mcp_settings.json` |
+
+Paths are the macOS and Linux ones; on Windows each client's own folder is used. Registering with
+every profile of Claude Code, Codex and Hermes is also what makes zone available in apps that run
+those agents with their own profiles, such as T3 Code.
+
+Only the `zone` entry is added, changed or removed. Everything else in those files stays exactly as
+it was, comments included (Zed, VS Code and Hermes keep comments in their settings), a link to a
+file kept elsewhere stays a link, and a copy of the original is saved beside it as
+`<file>.before-zone` the first time. Add `--read-only` to register a server that cannot flag
+items. For any other client, the command to run is `/path/to/zone mcp`.
 
 The server opens the database itself, so it works whether or not `zone serve` is running.
+
+### Staying registered
+
+`zone install` turns on one more thing: when zone starts, it registers with clients installed
+since. It only ever adds zone to a client that never had it. It never changes an entry that is
+there, and it never puts zone back where you took it out, whether with `zone mcp uninstall` or
+by deleting the entry by hand. It does this only when it is the same `zone` program that
+`zone install` was run from. `zone install --no-mcp` skips all of it, and `zone uninstall` or
+`zone mcp uninstall --all` turns it off. What zone has registered, and where you took it out, is
+kept in `mcp-clients.json` in the data folder.
+
+`zone doctor` names any installed client that does not have zone yet and gives the one command
+that fixes it.
 
 ### The tools
 
@@ -253,8 +300,9 @@ you visit it in the same browser.
 | Linux | `$XDG_DATA_HOME/zone` or `~/.local/share/zone` |
 
 Set `ZONE_HOME` to use another folder. Inside it: `zone.db` (the library), `endpoint.key` (this
-computer's iroh identity), `web.token` (the web page's key), `zone.log`, and `daemon.json` while
-zone is running.
+computer's iroh identity), `web.token` (the web page's key), `zone.log`, `mcp-clients.json` (which
+AI clients zone registered with, and which you took it out of), and `daemon.json` while zone is
+running.
 
 Other settings, all optional: `ZONE_PORT` (web page port, default 47813), `ZONE_NAME` (the name
 shown to the phone), `ZONE_RELAY_URL` (use your own iroh relay instead of the public ones; it is
@@ -263,7 +311,7 @@ then included in the pairing link).
 ## Uninstall
 
 ```sh
-zone mcp uninstall claude-code    # and any other client you registered
+zone mcp uninstall --all          # takes zone out of every AI client
 zone uninstall                    # stops zone and removes the login item
 ```
 
