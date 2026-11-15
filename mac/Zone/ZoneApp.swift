@@ -293,6 +293,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         case "hide":
             model.state.hideText = argument != "off"
+        case "backup":
+            // backup:/path/to/folder watches a backup folder, backup:off stops. (The folder
+            // chooser is a system window, which a test run does not put on the screen.)
+            model.setBackupFolder(argument == "off" ? nil : argument.map { URL(fileURLWithPath: $0) })
         case "view":
             // view:cursor=notes sets what an agent may read: all, notes or nokeyboard.
             if let argument, let equals = argument.firstIndex(of: "="),

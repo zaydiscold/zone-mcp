@@ -326,7 +326,8 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(Formats.number(1764), "1,764")
         XCTAssertEqual(Formats.number(7), "7")
         XCTAssertEqual(Formats.countdown(600), "10:00")
-        XCTAssertEqual(Formats.countdown(59.2), "1:00")
+        XCTAssertEqual(Formats.countdown(600.7), "10:00")
+        XCTAssertEqual(Formats.countdown(59.2), "0:59")
         XCTAssertEqual(Formats.countdown(5), "0:05")
         XCTAssertEqual(Formats.countdown(-3), "0:00")
     }

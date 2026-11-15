@@ -35,13 +35,19 @@ dot: zone is not running. An exclamation mark: something needs you.
 - What just happened: "3 dictations from Demo iPhone, just now".
 - The latest items. Click one to copy it. **Hide text** covers the words, for when you are
   sharing your screen (it stays on until you turn it off, here and in the floating window).
-- Pair, History, Flash, Agents, and More: ask the phone to resend everything, choose a
+- Agents: every AI app on this Mac with a switch, and under each connected one a line
+  that says what it may read. Click the line to choose: everything, notes and meetings
+  only, or all but keyboard dictations (what you typed by voice into other apps).
+- Pair, History, Flash, and More: ask the phone to resend everything, choose a
   backup folder, start at login, the `zone` command, who runs zone, updates, the setup guide.
 
 <p align="center">
-  <img src="../docs/media/mac-popover.gif" width="372" alt="Three dictations arrive: the window says Receiving, the counts go up and the new items appear">
+  <img src="../docs/media/mac-popover.gif" width="372" alt="Three items arrive: the window says Receiving, the counts go up and the new items appear">
   &nbsp;
   <img src="../docs/media/mac-popover-hidden.png" width="372" alt="The same window with Hide text on: the words are covered">
+</p>
+<p align="center">
+  <img src="../docs/media/mac-agents-choose.png" width="372" alt="The Agents page: five AI apps with switches, and the three choices of what one may read">
 </p>
 
 **The floating window.** "Keep these in a floating window" opens a small window that stays
@@ -61,10 +67,7 @@ skipped, and closing the window half way keeps your place.
   <img src="../docs/media/mac-welcome.png" width="640" alt="The welcome window">
 </p>
 <p align="center">
-  <img src="../docs/media/mac-pairing.gif" width="640" alt="The pairing step: a stand-in phone scans the code and its library arrives">
-</p>
-<p align="center">
-  <img src="../docs/media/mac-welcome-agents.png" width="640" alt="The agents step: Claude Code, Claude Desktop, Codex, Cursor and Gemini CLI, each with a switch">
+  <img src="../docs/media/mac-welcome-flow.gif" width="640" alt="The whole guide: welcome, the App Store code, a stand-in phone scans the pair code and its library arrives, the agents are connected and one is limited to notes and meetings, done">
 </p>
 
 ## Install
@@ -109,14 +112,26 @@ The app owns the background service.
   switch per client (every profile of it). A client that already starts another zone (one
   installed from the command line) is shown as connected, with a button to point it at this
   app's.
+- **What a client may read** is zone's own limit (`zone mcp install --kinds ...
+  --exclude-sources ...`): the app writes "notes and meetings only" as `--kinds note,meeting`
+  and "all but keyboard dictations" as `--exclude-sources keyboard` into that client's
+  entry, and zone then never lists, searches or returns anything outside it to that client.
+  A view or `--read-only` set from the command line is shown as it is and kept: whenever
+  the app registers a client again it repeats the flags the client already has, because a
+  plain `zone mcp install` would put it back to everything.
 - **The `zone` command** is offered, never forced: More > zone in the terminal. It is a link
   in the first writable folder on your PATH out of `~/.local/bin`, `~/bin`,
   `/opt/homebrew/bin` and `/usr/local/bin` (the last one asks for your password when it has
   to). If another `zone` is already on your PATH, the app says where and leaves it alone
   unless you choose to replace it.
-- **What just happened** comes from `zone events --json --follow`. With an older zone that
-  has no `events` command, the app reads `zone.log` instead. Both sit behind one small
-  protocol, `ActivitySource`.
+- **What just happened** comes from `zone events --json --follow` (and if that follower ever
+  ends, it is started again with `--after` the last event seen, so nothing is missed or
+  shown twice). When the app is attached to an older zone that does not write events down,
+  it reads `zone.log` instead. Both sit behind one small protocol, `ActivitySource`, and
+  the app changes from one to the other by itself (after taking over, for example).
+- **Pairing** shows the code from `zone pair --json`, and knows it worked when the `paired`
+  event names that very code (or, with an older zone, when a new phone appears in
+  `zone devices`).
 
 Inside the app the program is at `Zone.app/Contents/Helpers/zone`, not in `Contents/MacOS`:
 on a Mac's usual disk, which ignores case in file names, `zone` there would be the same file
@@ -205,9 +220,11 @@ this file was taken this way.
 
 ## Not done yet
 
-- The app has not been run outside the sandbox, so three things are written but not
+- The app has not been run outside the sandbox, so four things are written but not
   exercised: registering the real login item, taking over from a real `zone install` login
-  item, and the administrator prompt for `/usr/local/bin`.
+  item, the administrator prompt for `/usr/local/bin`, and the folder chooser for the
+  backup folder (watching a folder was exercised, choosing one in the system window was not).
+- Pairing was exercised with zone's stand-in phone, not with a real iPhone.
 - Updates are a check against the latest GitHub release and a link to it. The app does not
   update itself.
 - The disk image has not been opened on a second Mac, and no Developer ID build exists yet

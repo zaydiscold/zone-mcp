@@ -25,9 +25,10 @@ public enum Formats {
         ago(now.timeIntervalSince(date))
     }
 
-    /// Time left on a pair code: "9:41".
+    /// Time left on a pair code: "9:41". Part of a second is not counted, so a code that
+    /// lasts ten minutes starts at 10:00 and never shows 10:01.
     public static func countdown(_ seconds: TimeInterval) -> String {
-        let s = max(0, Int(seconds.rounded(.up)))
+        let s = max(0, Int(seconds.rounded(.down)))
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 

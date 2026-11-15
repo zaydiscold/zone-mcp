@@ -264,7 +264,7 @@ struct AgentsPanel: View {
             }
         }
         .scrollIndicators(.never)
-        .frame(maxHeight: wide ? 330 : 380)
+        .frame(maxHeight: wide ? 410 : 380)
         .fixedSize(horizontal: false, vertical: rows.count <= (wide ? 5 : 6))
         .zoneCard(padding: 4, shadow: wide)
     }
