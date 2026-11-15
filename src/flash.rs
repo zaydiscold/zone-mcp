@@ -1,14 +1,23 @@
-//! Carrier 2 (Flash) is not built. This file holds the one piece of it that cannot wait: the
-//! flash key.
+//! Carrier 2, Flash: the phone shows a rapid sequence of QR codes and the computer's camera
+//! reads them. No network is involved (PROTOCOL.md, "Carrier 2: Flash").
 //!
-//! PROTOCOL.md derives the key from the pairing secret, on both sides, at pairing:
-//! `HKDF-SHA256(ikm = pairing secret bytes, salt = empty, info = "zone-flash/1")`, 32 bytes.
-//! The computer keeps only a hash of the secret, so the key has to be derived while the secret
-//! is still in hand: when the offer is made, and again when a phone presents it. It is stored
-//! beside the offer and the paired phone. Without that, every phone paired before Flash
-//! exists would have to pair again to use it.
+//! - [`fountain`]: the frames and the code that rebuilds the payload from any of them.
+//! - [`seal`]: what is inside: ChaCha20-Poly1305 around raw DEFLATE around JSON.
+//! - [`qr`]: reading QR codes out of camera pictures, and drawing them.
+//! - [`receive`]: the daemon's side: frames in, items in the library out.
+//! - [`dev`]: `zone dev flash-encode` and `flash-decode`, for testing without a phone.
+//!
+//! This file holds the flash key. PROTOCOL.md derives it from the pairing secret, on both
+//! sides, at pairing: `HKDF-SHA256(ikm = pairing secret bytes, salt = empty, info =
+//! "zone-flash/1")`, 32 bytes. The computer keeps only a hash of the secret, so the key is
+//! derived while the secret is still in hand: when the offer is made, and again when a phone
+//! presents it. It is stored beside the offer and the paired phone.
 //!
 //! The key opens flashes. It cannot be turned back into the pairing secret.
+
+pub mod fountain;
+pub mod qr;
+pub mod seal;
 
 use sha2::{Digest, Sha256};
 

@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+chacha20poly1305 = "0.11"
 clap = { version = "4.6", features = ["derive"] }
 getrandom = "0.4"
 http-body-util = "0.1"
@@ -20,7 +21,10 @@ hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 iroh = "1.4.1"
 jiff = "0.2"
+miniz_oxide = "0.8"
+png = "0.18"
 qrcode = { version = "0.14", default-features = false }
+rqrr = { version = "0.11", default-features = false }
 rmcp = { version = "3.10", default-features = false, features = ["server", "transport-io"] }
 rusqlite = { version = "0.42", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -30,6 +34,23 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 
 [dev-dependencies]
 tempfile = "3"
+
+# The image and cipher crates are far too slow unoptimized for the Flash tests, which read
+# QR codes out of pictures. Everything else builds as usual.
+[profile.dev.package.g2p]
+opt-level = 3
+[profile.dev.package.rqrr]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.qrcode]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
 
 [profile.release]
 opt-level = "z"
