@@ -59,7 +59,38 @@ impl Gray {
     }
 }
 
+/// ZXing's reader (through rxing): fast, and steady with the larger, turned codes a camera
+/// sees. The bytes come from the code's byte segments, exactly as encoded, never through text.
+fn read_zxing(gray: &Gray) -> Vec<Vec<u8>> {
+    use rxing::common::HybridBinarizer;
+    use rxing::qrcode::QRCodeReader;
+    use rxing::{BinaryBitmap, DecodeHints, Luma8Source, RXingResultMetadataType, RXingResultMetadataValue, Reader};
+    let Ok(source) = Luma8Source::new_with_slice(&gray.pixels, gray.width as u32, gray.height as u32) else {
+        return Vec::new();
+    };
+    let mut bitmap = BinaryBitmap::new(HybridBinarizer::new(source));
+    let hints = DecodeHints { TryHarder: Some(true), ..DecodeHints::default() };
+    let Ok(result) = QRCodeReader.decode_with_hints(&mut bitmap, &hints) else {
+        return Vec::new();
+    };
+    match result.getRXingResultMetadata().get(&RXingResultMetadataType::BYTE_SEGMENTS) {
+        Some(RXingResultMetadataValue::ByteSegments(segments)) if !segments.is_empty() => vec![segments.concat()],
+        // A code with no byte segment (only digits or letters) is not a flash frame, but it
+        // is still a code the camera saw.
+        _ => vec![result.getText().as_bytes().to_vec()],
+    }
+}
+
 fn read_once(gray: &Gray) -> Vec<Vec<u8>> {
+    let found = read_zxing(gray);
+    if !found.is_empty() {
+        return found;
+    }
+    read_quirc(gray)
+}
+
+/// quirc's reader (through rqrr), the fallback.
+fn read_quirc(gray: &Gray) -> Vec<Vec<u8>> {
     let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(gray.width, gray.height, |x, y| gray.pixels[y * gray.width + x]);
     let mut found = Vec::new();
     for grid in prepared.detect_grids() {
@@ -96,6 +127,21 @@ pub fn read_codes(gray: &Gray) -> Vec<Vec<u8>> {
         smaller = smaller.halved();
     }
     Vec::new()
+}
+
+/// The bytes of every QR code in a camera picture from the page.
+///
+/// The page posts many pictures a second and most of them either hold the code at a
+/// comfortable size or hold none at all, so this is the fast path: ZXing's reader at the size
+/// the picture came in (about 2 ms for 720 pixels), then once more at half the size, which
+/// smooths out sensor noise (a quarter of that). [`read_codes`] also tries another reader and
+/// more sizes, for files.
+pub fn read_camera(gray: &Gray) -> Vec<Vec<u8>> {
+    let found = read_zxing(gray);
+    if !found.is_empty() || gray.width.min(gray.height) < 600 {
+        return found;
+    }
+    read_zxing(&gray.halved())
 }
 
 /// Reads a PNG file as grayscale. Transparent pixels count as white paper.
@@ -225,6 +271,44 @@ mod tests {
         assert!(read_codes(&Gray::new(64, 48, vec![128; 64 * 48]).unwrap()).is_empty());
         assert!(Gray::new(10, 10, vec![0; 99]).is_err());
         assert!(Gray::new(0, 10, vec![]).is_err());
+    }
+
+    #[test]
+    fn zxing_returns_the_exact_bytes() {
+        // The first reader alone, on every byte value: no text decoding may touch them.
+        for (len, scale) in [(317, 3), (717, 4), (917, 5), (2953, 3)] {
+            let bytes = binary(len);
+            assert_eq!(read_zxing(&draw(&bytes, scale, 4).unwrap()), vec![bytes], "{len} bytes");
+        }
+        // A code of only digits has no byte segment; it still counts as a code.
+        let digits = QrCode::with_version(b"0123456789", Version::Normal(1), EcLevel::L).unwrap();
+        let width = digits.width();
+        let side = (width + 8) * 4;
+        let mut pixels = vec![255u8; side * side];
+        for (i, color) in digits.to_colors().iter().enumerate() {
+            if *color == Color::Dark {
+                let (x0, y0) = ((i % width + 4) * 4, (i / width + 4) * 4);
+                for y in y0..y0 + 4 {
+                    pixels[y * side + x0..y * side + x0 + 4].fill(0);
+                }
+            }
+        }
+        assert_eq!(read_codes(&Gray::new(side, side, pixels).unwrap()), vec![b"0123456789".to_vec()]);
+    }
+
+    #[test]
+    fn large_turned_codes_as_a_webcam_sees_them() {
+        // Frames of 700 and 900 bytes (versions 18 and 21), turned 4 degrees, soft and noisy,
+        // about 520 pixels wide in a 720 pixel picture: what the page posts.
+        use crate::flash::dev::{BenchOptions, webcam_picture};
+        for chunk in [700, 900] {
+            let options = BenchOptions { chunk, code_px: 520, picture: 720, frames: 1, tilt: 4.0, blur: 1, noise: 6, sample: None };
+            for seed in 0..3u64 {
+                let bytes: Vec<u8> = (0..chunk + 17).map(|i| (i as u64 * 131 + seed * 7) as u8).collect();
+                let picture = webcam_picture(&draw(&bytes, 1, 4).unwrap(), &options, seed + 1);
+                assert_eq!(read_codes(&picture), vec![bytes], "chunk {chunk}, seed {seed}");
+            }
+        }
     }
 
     #[test]

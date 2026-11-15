@@ -25,6 +25,7 @@ miniz_oxide = "0.8"
 png = "0.18"
 qrcode = { version = "0.14", default-features = false }
 rqrr = { version = "0.11", default-features = false }
+rxing = { version = "0.9", default-features = false, features = ["decoders", "qrcode", "encoding_rs"] }
 rmcp = { version = "3.10", default-features = false, features = ["server", "transport-io"] }
 rusqlite = { version = "0.42", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -40,6 +41,8 @@ tempfile = "3"
 [profile.dev.package.g2p]
 opt-level = 3
 [profile.dev.package.rqrr]
+opt-level = 3
+[profile.dev.package.rxing]
 opt-level = 3
 [profile.dev.package.png]
 opt-level = 3

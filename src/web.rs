@@ -253,7 +253,7 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
             }
         }
         "/api/flash/status" if get => flash_status(head, state),
-        "/api/flash/picture" if post => flash_guarded(head, state, |receiver| flash_picture(head, state, receiver)),
+        "/api/flash/picture" if post => flash_picture(head, state),
         "/api/flash/frame" if post => flash_guarded(head, state, |receiver| {
             flash_take(state, receiver, &head.body);
             Ok(())
@@ -312,22 +312,32 @@ fn flash_status(head: &RequestHead, state: &WebState) -> Reply {
 }
 
 /// A camera picture: `w` times `h` gray bytes. Every QR code in it is taken as a frame.
-fn flash_picture(head: &RequestHead, state: &WebState, receiver: &mut Receiver) -> Result<()> {
+///
+/// The codes are read before the flash is locked, so the pictures the page sends at once are
+/// read side by side, one per processor; only taking their frames is one at a time.
+fn flash_picture(head: &RequestHead, state: &WebState) -> Reply {
+    if !has_session(head, state) {
+        return json_reply(StatusCode::UNAUTHORIZED, &json!({ "error": "locked", "fix": "Run `zone open` to unlock this page." }));
+    }
     let side = |key: &str| -> Result<usize> { head.query.get(key).and_then(|v| v.parse().ok()).with_context(|| format!("{key} is required")) };
-    let gray = Gray::new(side("w")?, side("h")?, head.body.to_vec())?;
-    receiver.pictures += 1;
-    let codes = crate::flash::qr::read_codes(&gray);
-    if !codes.is_empty() {
-        receiver.pictures_with_code += 1;
-    }
-    let mut read = PictureRead { codes: codes.len(), ..PictureRead::default() };
-    for code in codes {
-        let (frame, useful) = flash_take(state, receiver, &code);
-        read.frames += usize::from(frame);
-        read.useful += usize::from(useful);
-    }
-    receiver.last_picture = Some(read);
-    Ok(())
+    let codes = match side("w").and_then(|w| Ok((w, side("h")?))).and_then(|(w, h)| Gray::new(w, h, head.body.to_vec())) {
+        Ok(gray) => crate::flash::qr::read_camera(&gray),
+        Err(error) => return json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
+    };
+    flash_guarded(head, state, |receiver| {
+        receiver.pictures += 1;
+        if !codes.is_empty() {
+            receiver.pictures_with_code += 1;
+        }
+        let mut read = PictureRead { codes: codes.len(), ..PictureRead::default() };
+        for code in &codes {
+            let (frame, useful) = flash_take(state, receiver, code);
+            read.frames += usize::from(frame);
+            read.useful += usize::from(useful);
+        }
+        receiver.last_picture = Some(read);
+        Ok(())
+    })
 }
 
 /// Takes the bytes of one frame. The frame that completes a flash stores it. Returns whether
@@ -815,6 +825,40 @@ mod tests {
         assert_eq!(json_body(route(&cookie(head(Method::GET, "/api/flash/status")), &state, "n"))["setup"]["phones"], 1);
         assert_eq!(json_body(post("/api/flash/frame", b"not a frame".to_vec()))["state"], "done");
         assert_eq!(json_body(post("/api/flash/reset", Vec::new()))["state"], "waiting");
+    }
+
+    #[test]
+    fn pictures_posted_together_are_read_side_by_side() {
+        use crate::flash::fountain::Encoder;
+        use crate::flash::{qr, seal};
+
+        let state = state();
+        let secret = "cd".repeat(32);
+        state.db.lock().unwrap().create_offer(&secret, paths::now_unix(), 600.0).unwrap();
+        let key = seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
+        let phone = crate::db::PhoneInfo { id: Some("PHONE-P".into()), name: Some("Parallel phone".into()), app: None };
+        let sealed = seal::seal(&key, &seal::flash_json(&phone, &crate::fakephone::synthetic_items(3000, 40))).unwrap();
+        // Larger frames, as a phone may choose: 900 bytes each (version 21 codes).
+        let encoder = Encoder::new(0xBEEF, &sealed, 900).unwrap();
+        let pictures: Vec<qr::Gray> = (0..encoder.k() as u32 + 12).map(|i| qr::draw(&encoder.frame(i), 3, 4).unwrap()).collect();
+        // Four senders at once, as the page keeps pictures in flight.
+        std::thread::scope(|scope| {
+            for lane in 0..4 {
+                let (state, pictures) = (&state, &pictures);
+                scope.spawn(move || {
+                    for picture in pictures.iter().skip(lane).step_by(4) {
+                        let mut h = with_cookie(head(Method::POST, &format!("/api/flash/picture?w={}&h={}", picture.width, picture.height)), state);
+                        h.body = Bytes::from(picture.pixels.clone());
+                        assert_eq!(route(&h, state, "n").status(), StatusCode::OK);
+                    }
+                });
+            }
+        });
+        let status = json_body(route(&with_cookie(head(Method::GET, "/api/flash/status"), &state), &state, "n"));
+        assert_eq!(status["state"], "done", "{status}");
+        assert_eq!(status["result"]["new"], 40);
+        assert_eq!(status["pictures"]["seen"].as_u64(), Some(pictures.len() as u64));
+        assert_eq!(status["pictures"]["with_code"].as_u64(), Some(pictures.len() as u64));
     }
 
     #[test]

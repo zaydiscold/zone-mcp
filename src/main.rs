@@ -371,6 +371,33 @@ enum DevAction {
         #[arg(long)]
         import: bool,
     },
+    /// Time the QR reader on webcam-like pictures of flash frames of a given size
+    FlashBench {
+        /// Bytes per frame body
+        #[arg(long, default_value_t = flash::fountain::DEFAULT_CHUNK)]
+        chunk: usize,
+        /// Width of the code in the picture, in pixels, quiet zone included
+        #[arg(long, default_value_t = 520)]
+        code_px: usize,
+        /// Side of the square picture, as the page posts it
+        #[arg(long, default_value_t = 720)]
+        picture: usize,
+        /// Frames to read
+        #[arg(long, default_value_t = 90)]
+        frames: usize,
+        /// Degrees the phone is turned
+        #[arg(long, default_value_t = 4.0)]
+        tilt: f64,
+        /// Blur radius in pixels
+        #[arg(long, default_value_t = 1)]
+        blur: usize,
+        /// Sensor noise (plus or minus, per pixel)
+        #[arg(long, default_value_t = 6)]
+        noise: u8,
+        /// Write the first picture as a PNG here
+        #[arg(long)]
+        sample: Option<PathBuf>,
+    },
     /// Print synthetic items as JSON Lines
     Synthetic {
         #[arg(long, default_value_t = 100)]
@@ -477,6 +504,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 };
                 let options = flash::dev::EncodeOptions { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name };
                 println!("{}", serde_json::to_string_pretty(&flash::dev::encode(&options)?)?);
+            }
+            DevAction::FlashBench { chunk, code_px, picture, frames, tilt, blur, noise, sample } => {
+                let options = flash::dev::BenchOptions { chunk, code_px, picture, frames, tilt, blur, noise, sample };
+                println!("{}", serde_json::to_string_pretty(&flash::dev::bench(&options)?)?);
             }
             DevAction::FlashDecode { dir, secret, import } => {
                 let report = flash::dev::decode(&flash::dev::DecodeOptions { dir, secret, import })?;

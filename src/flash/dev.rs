@@ -230,6 +230,189 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
     Ok(report)
 }
 
+// -------------------------------------------------------------------- flash-bench
+
+pub struct BenchOptions {
+    /// Bytes per frame body: what the phone chooses.
+    pub chunk: usize,
+    /// How wide the code is in the picture, in pixels, quiet zone included.
+    pub code_px: usize,
+    /// The side of the square picture the page posts.
+    pub picture: usize,
+    pub frames: usize,
+    /// Degrees the phone is turned.
+    pub tilt: f64,
+    /// Box blur radius in pixels: a camera slightly out of focus.
+    pub blur: usize,
+    /// Sensor noise, plus or minus this much on each pixel.
+    pub noise: u8,
+    /// Writes the first picture here, to look at.
+    pub sample: Option<PathBuf>,
+}
+
+/// A frame as a camera sees it: the code on a phone's lit screen, turned a little, in a dim
+/// room, slightly soft and noisy, scaled to `code_px` with smooth (not whole pixel) steps.
+pub fn webcam_picture(code: &qr::Gray, options: &BenchOptions, seed: u64) -> qr::Gray {
+    let side = options.picture;
+    let center = side as f64 / 2.0;
+    let scale = code.width as f64 / options.code_px as f64;
+    let (sin, cos) = options.tilt.to_radians().sin_cos();
+    // The phone's body reaches a little past the screen.
+    let body = options.code_px as f64 * 0.62;
+    let mut pixels = vec![0u8; side * side];
+    for y in 0..side {
+        for x in 0..side {
+            let (dx, dy) = (x as f64 - center, y as f64 - center);
+            // Into the phone's own frame of reference.
+            let (u, v) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+            let room = 38.0 + 30.0 * (y as f64 / side as f64);
+            let half = options.code_px as f64 / 2.0;
+            let value = if u.abs() <= half && v.abs() <= half {
+                // The share of this pixel the dark modules cover (three by three samples),
+                // on a screen where white is 228 and black 32.
+                let mut ink = 0.0;
+                for sy in 0..3 {
+                    for sx in 0..3 {
+                        let (ou, ov) = ((sx as f64 - 1.0) / 3.0, (sy as f64 - 1.0) / 3.0);
+                        let (pu, pv) = (u + ou * cos - ov * sin, v + ou * sin + ov * cos);
+                        let (mx, my) = (((pu + half) * scale) as usize, ((pv + half) * scale) as usize);
+                        ink += code.pixels[my.min(code.height - 1) * code.width + mx.min(code.width - 1)] as f64 / 255.0;
+                    }
+                }
+                32.0 + ink / 9.0 * 196.0
+            } else if u.abs() <= body && v.abs() <= body * 1.6 {
+                14.0
+            } else {
+                room
+            };
+            pixels[y * side + x] = value as u8;
+        }
+    }
+    let mut picture = qr::Gray { width: side, height: side, pixels };
+    if options.blur > 0 {
+        picture = box_blur(&picture, options.blur);
+    }
+    if options.noise > 0 {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let span = 2 * options.noise as u64 + 1;
+        for pixel in picture.pixels.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let delta = (state % span) as i32 - options.noise as i32;
+            *pixel = (*pixel as i32 + delta).clamp(0, 255) as u8;
+        }
+    }
+    picture
+}
+
+fn box_blur(picture: &qr::Gray, radius: usize) -> qr::Gray {
+    let (w, h) = (picture.width, picture.height);
+    let pass = |source: &[u8], horizontal: bool| -> Vec<u8> {
+        let mut out = vec![0u8; w * h];
+        for a in 0..(if horizontal { h } else { w }) {
+            for b in 0..(if horizontal { w } else { h }) {
+                let (lo, hi) = (b.saturating_sub(radius), (b + radius).min(if horizontal { w } else { h } - 1));
+                let sum: u32 = (lo..=hi).map(|c| source[if horizontal { a * w + c } else { c * w + a }] as u32).sum();
+                out[if horizontal { a * w + b } else { b * w + a }] = (sum / (hi - lo + 1) as u32) as u8;
+            }
+        }
+        out
+    };
+    let pixels = pass(&pass(&picture.pixels, true), false);
+    qr::Gray { width: w, height: h, pixels }
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    sorted[((sorted.len() - 1) as f64 * p).round() as usize]
+}
+
+/// Times the page's QR reader on webcam-like pictures of frames of a given size.
+pub fn bench(options: &BenchOptions) -> Result<Value> {
+    if options.code_px + 8 > options.picture {
+        bail!("the code ({} px) must fit inside the picture ({} px)", options.code_px, options.picture);
+    }
+    let frames = options.frames.max(4);
+    // A payload of about two thirds as many chunks as frames, so the flash completes.
+    let k = (frames * 2 / 3).max(2);
+    let payload: Vec<u8> = (0..k * options.chunk).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+    let encoder = Encoder::new(0x5EED_0001, &payload, options.chunk).map_err(|e| anyhow!(e))?;
+    let first = encoder.frame(0);
+    let modules = qr::modules(&first)?.len();
+    let shape = fountain::parse(&first).map_err(|e| anyhow!("{e}"))?.shape;
+    let mut decoder = Decoder::new(shape);
+    let mut times = Vec::with_capacity(frames);
+    let mut read = 0usize;
+    let mut complete_after = None;
+    for index in 0..frames as u32 {
+        let bytes = encoder.frame(index);
+        let code = qr::draw(&bytes, 1, 4)?;
+        let picture = webcam_picture(&code, options, index as u64 + 1);
+        if index == 0
+            && let Some(path) = &options.sample
+        {
+            qr::write_png(path, &picture)?;
+        }
+        let started = std::time::Instant::now();
+        let codes = qr::read_camera(&picture);
+        times.push(started.elapsed().as_secs_f64() * 1000.0);
+        if codes.contains(&bytes) {
+            read += 1;
+            let frame = fountain::parse(&bytes).map_err(|e| anyhow!("{e}"))?;
+            decoder.add(frame.index, frame.body);
+            if decoder.is_complete() && complete_after.is_none() {
+                complete_after = Some(index as usize + 1);
+            }
+        }
+    }
+    // A picture with no code at all: what every picture costs while the phone is not up yet.
+    let empty = qr::Gray { width: options.picture, height: options.picture, pixels: vec![60; options.picture * options.picture] };
+    let mut empty_times: Vec<f64> = (0..10)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            let _ = qr::read_camera(&empty);
+            started.elapsed().as_secs_f64() * 1000.0
+        })
+        .collect();
+    empty_times.sort_by(f64::total_cmp);
+    let mut sorted = times.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median = percentile(&sorted, 0.5);
+    let success = read as f64 / frames as f64;
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let rate = |fps: f64| (fps * options.chunk as f64 * success).round();
+    Ok(json!({
+        "chunk": options.chunk,
+        "frame_bytes": first.len(),
+        "qr_version": (modules - 17) / 4,
+        "modules": modules,
+        "picture_px": options.picture,
+        "code_px": options.code_px,
+        "px_per_module": ((options.code_px as f64 / (modules + 8) as f64) * 100.0).round() / 100.0,
+        "tilt_degrees": options.tilt,
+        "blur_px": options.blur,
+        "noise": options.noise,
+        "frames": frames,
+        "read": read,
+        "read_rate": (success * 1000.0).round() / 1000.0,
+        "complete_after_frames": complete_after,
+        "k": k,
+        "decode_ms": {
+            "min": (sorted[0] * 10.0).round() / 10.0,
+            "median": (median * 10.0).round() / 10.0,
+            "p95": (percentile(&sorted, 0.95) * 10.0).round() / 10.0,
+            "max": (sorted[sorted.len() - 1] * 10.0).round() / 10.0,
+        },
+        "decode_ms_without_a_code": (percentile(&empty_times, 0.5) * 10.0).round() / 10.0,
+        "pictures_per_second_one_core": (1000.0 / median).round(),
+        "cores": cores,
+        "bytes_per_second_if_every_shown_frame_is_read": { "12_fps": rate(12.0), "20_fps": rate(20.0), "30_fps": rate(30.0) },
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

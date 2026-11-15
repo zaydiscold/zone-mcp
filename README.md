@@ -147,12 +147,15 @@ both sides get at pairing. Pairing does not need a network either: scanning the 
 `zone pair` (or "Pair a phone" on the page) is enough, and the first flash then completes the
 pairing.
 
-How fast: the phone shows 12 codes a second, each carrying 300 bytes of compressed, encrypted
-data. That is about 3.6 kilobytes a second, which for ordinary speech is over a thousand words a
-second. A day of dictation takes a few seconds and a library of a thousand items a minute or two.
-Those figures come from the code sizes, not from a stopwatch: with a real camera some codes will
-be missed, so expect it to take somewhat longer. Reading the codes is not the slow part: zone
-reads a camera picture in about a fiftieth of a second.
+How fast: that is up to the phone, which chooses how much each code carries and how many it shows
+a second. At 900 bytes a code and 20 codes a second it is about 18 kilobytes of compressed,
+encrypted data a second; at 300 bytes and 12 a second, 3.6. Ordinary speech compresses to well
+under half its size, so even the slower one is over a thousand words a second. The page sends
+every picture the camera takes (up to 1080 pixels square, two at a time) and zone reads one in
+about 2 milliseconds, so the computer keeps up with the camera. Those figures come from code
+sizes and from pictures made to look like a webcam's (`zone dev flash-bench`, and the table in
+[PROTOCOL.md](PROTOCOL.md#carrier-2-flash)), not from a stopwatch with a real phone: glare, blur
+and distance will cost some codes, so expect it to take longer.
 
 ## See your transcriptions
 
@@ -343,6 +346,16 @@ ZONE_HOME=$(mktemp -d) zone dev flash-decode /tmp/frames --secret <...> --import
 
 Without `--secret`, flash-decode tries the keys of the phones paired with this library, the way
 the page does. `scripts/flash_reference.py` is the reference for how the codes are made.
+
+`zone dev flash-bench` times the page's QR reader on pictures made to look like a webcam's: a
+code of the chosen size, scaled to a given width, turned, blurred and noisy. It prints the read
+time and how many codes were read:
+
+```sh
+zone dev flash-bench --chunk 900 --code-px 450                   # 900 byte codes, 450 pixels wide
+zone dev flash-bench --chunk 700 --tilt 10 --blur 2 --noise 10   # a harder picture
+zone dev flash-bench --chunk 900 --sample /tmp/look.png          # and save one picture to look at
+```
 
 iroh is pinned to the 1.4 line, the same one the phone's Swift binding (`iroh-ffi` 1.2.0) uses.
 Endpoint ids are written the way iroh 1.x prints them: 64 lowercase hexadecimal characters.
