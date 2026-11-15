@@ -10,6 +10,7 @@ use crate::daemon_info::DaemonInfo;
 use crate::db::{Cursor, Db, Filter, Order, Row, SearchCursor};
 use crate::item::preview;
 use crate::paths;
+use crate::scope::Scope;
 use crate::timeparse::{Bound, Clock, format_offset, unix};
 
 pub const DEFAULT_LIST_LIMIT: usize = 50;
@@ -21,6 +22,23 @@ pub const MAX_MAX_CHARS: usize = 200_000;
 pub const MAX_GET_IDS: usize = 50;
 pub const MAX_MARK_IDS: usize = 500;
 const PREVIEW_CHARS: usize = 200;
+
+/// What a server lets its agent do: whether it may flag items, and which items it sees.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Access {
+    /// Leaves out `mark_processed`, the one tool that writes.
+    pub read_only: bool,
+    pub scope: Scope,
+}
+
+/// What an agent is told once, when it connects: [`INSTRUCTIONS`], and for a server with a
+/// limited view, what that view leaves out.
+pub fn instructions(scope: &Scope) -> String {
+    match scope.for_agents() {
+        Some(limit) => format!("{INSTRUCTIONS}\n\n{limit}"),
+        None => INSTRUCTIONS.to_string(),
+    }
+}
 
 /// What every agent is told once, when it connects.
 pub const INSTRUCTIONS: &str = "\
@@ -54,7 +72,7 @@ This is private speech. Quote it only as far as the task needs.";
 pub struct ToolDef {
     pub name: &'static str,
     pub title: &'static str,
-    pub description: &'static str,
+    pub description: String,
     pub input_schema: Value,
     pub read_only: bool,
 }
@@ -70,16 +88,17 @@ fn time_property(which: &str) -> Value {
     json!({ "type": "string", "description": format!("{meaning} {TIME_HELP}") })
 }
 
-fn common_filters() -> Map<String, Value> {
+fn common_filters(scope: &Scope) -> Map<String, Value> {
     let mut properties = Map::new();
     properties.insert("start".into(), time_property("start"));
     properties.insert("end".into(), time_property("end"));
+    let all = if scope.kinds.is_empty() { "Leave out for all three." } else { "Leave out for every kind this server shows." };
     properties.insert(
         "kinds".into(),
         json!({
             "type": "array",
-            "items": { "type": "string", "enum": ["dictation", "note", "meeting"] },
-            "description": "Which kinds to include. Leave out for all three. dictation = text typed by voice (mostly messages in other apps), note = saved voice notes, meeting = meeting transcripts."
+            "items": { "type": "string", "enum": scope.visible_kinds() },
+            "description": format!("Which kinds to include. {all} dictation = text typed by voice (mostly messages in other apps), note = saved voice notes, meeting = meeting transcripts.")
         }),
     );
     properties.insert(
@@ -100,9 +119,17 @@ fn common_filters() -> Map<String, Value> {
     properties
 }
 
-/// The tools on offer. `read_only` leaves out the one tool that writes.
-pub fn definitions(read_only: bool) -> Vec<ToolDef> {
-    let mut list_properties = common_filters();
+/// The tools on offer. A read-only server leaves out the one tool that writes, and a server
+/// with a limited view says so in the tools that list and search.
+pub fn definitions(access: &Access) -> Vec<ToolDef> {
+    let read_only = access.read_only;
+    let scope = &access.scope;
+    // Said again where the agent reads it right before use.
+    let limit = match scope.short() {
+        Some(short) => format!(" This server has a limited view ({short}): nothing else in the library can be reached from here."),
+        None => String::new(),
+    };
+    let mut list_properties = common_filters(scope);
     list_properties.insert(
         "order".into(),
         json!({ "type": "string", "enum": ["newest", "oldest"], "default": "newest", "description": "newest first (default) or oldest first." }),
@@ -128,7 +155,7 @@ pub fn definitions(read_only: bool) -> Vec<ToolDef> {
             "description": "Words to find. Every word must appear. Use \"double quotes\" for an exact phrase, OR between alternatives, and a trailing * for the beginning of a word (transcri*). Case and accents do not matter."
         }),
     );
-    search_properties.extend(common_filters());
+    search_properties.extend(common_filters(scope));
     search_properties.insert(
         "limit".into(),
         json!({ "type": "integer", "minimum": 1, "maximum": MAX_SEARCH_LIMIT, "default": DEFAULT_SEARCH_LIMIT, "description": "How many matches to return, best match first." }),
@@ -138,7 +165,7 @@ pub fn definitions(read_only: bool) -> Vec<ToolDef> {
         json!({ "type": "string", "description": "next_cursor from the previous call, for the matches after it. Keep the other arguments the same." }),
     );
 
-    let mut stats_properties = common_filters();
+    let mut stats_properties = common_filters(scope);
     stats_properties.insert(
         "group_by".into(),
         json!({ "type": "string", "enum": ["day", "kind", "source"], "default": "day", "description": "day (local calendar days), kind, or source." }),
@@ -148,21 +175,21 @@ pub fn definitions(read_only: bool) -> Vec<ToolDef> {
         ToolDef {
             name: "list_items",
             title: "List dictations, notes and meetings",
-            description: "List the person's spoken items in a time range as short cards (id, kind, source, local time with weekday and UTC offset, duration, word count, first 200 characters, processed flag), with the total number that match and a cursor for the next page. Use it for requests like \"everything from Wednesday 12pm to 5pm\" (start \"2026-11-11 12:00\", end \"2026-11-11 17:00\") or to work through the library newest to oldest. Kinds: dictation items with source keyboard are messages and text the person typed by voice in other apps; note items are voice notes they saved; meeting items are meeting transcripts. Cards are previews: call get_items for full text.",
+            description: format!("{}{limit}", "List the person's spoken items in a time range as short cards (id, kind, source, local time with weekday and UTC offset, duration, word count, first 200 characters, processed flag), with the total number that match and a cursor for the next page. Use it for requests like \"everything from Wednesday 12pm to 5pm\" (start \"2026-11-11 12:00\", end \"2026-11-11 17:00\") or to work through the library newest to oldest. Kinds: dictation items with source keyboard are messages and text the person typed by voice in other apps; note items are voice notes they saved; meeting items are meeting transcripts. Cards are previews: call get_items for full text."),
             input_schema: json!({ "type": "object", "properties": list_properties, "additionalProperties": false }),
             read_only: true,
         },
         ToolDef {
             name: "search_items",
             title: "Search the spoken library",
-            description: "Full-text search over everything the person dictated: dictations (mostly messages typed by voice in other apps), voice notes, and meeting transcripts and titles. Returns the best matches with a snippet around the matching words (matches are wrapped in [brackets]), plus the total number of matches and a truncated flag when there are more than were returned. Narrow with start, end, kinds or sources.",
+            description: format!("{}{limit}", "Full-text search over everything the person dictated: dictations (mostly messages typed by voice in other apps), voice notes, and meeting transcripts and titles. Returns the best matches with a snippet around the matching words (matches are wrapped in [brackets]), plus the total number of matches and a truncated flag when there are more than were returned. Narrow with start, end, kinds or sources."),
             input_schema: json!({ "type": "object", "properties": search_properties, "required": ["query"], "additionalProperties": false }),
             read_only: true,
         },
         ToolDef {
             name: "get_items",
             title: "Read full items",
-            description: "Return the full text of items by id (ids come from list_items or search_items). Long texts such as meeting transcripts are cut at max_chars and marked truncated, with next_offset to continue reading. For a meeting, text is the transcript with one \"Speaker: words\" line per turn.",
+            description: "Return the full text of items by id (ids come from list_items or search_items). Long texts such as meeting transcripts are cut at max_chars and marked truncated, with next_offset to continue reading. For a meeting, text is the transcript with one \"Speaker: words\" line per turn.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -179,14 +206,14 @@ pub fn definitions(read_only: bool) -> Vec<ToolDef> {
         ToolDef {
             name: "library_stats",
             title: "Count items by day, kind or source",
-            description: "Counts, word totals and recorded seconds for the library or a time range, grouped by local calendar day, by kind (dictation, note, meeting) or by source (keyboard, app, note). Use it to see how much there is before listing, or to find the busy days.",
+            description: format!("{}{limit}", "Counts, word totals and recorded seconds for the library or a time range, grouped by local calendar day, by kind (dictation, note, meeting) or by source (keyboard, app, note). Use it to see how much there is before listing, or to find the busy days."),
             input_schema: json!({ "type": "object", "properties": stats_properties, "additionalProperties": false }),
             read_only: true,
         },
         ToolDef {
             name: "sync_status",
             title: "Current time and sync state",
-            description: "The computer's current local date, weekday, time and time zone (use it to resolve words like \"Wednesday\" or \"yesterday\" into dates), which phones are paired, when each carrier last delivered items, and how many items of each kind the library holds. Call it first when a request depends on what day it is or on how fresh the library is.",
+            description: "The computer's current local date, weekday, time and time zone (use it to resolve words like \"Wednesday\" or \"yesterday\" into dates), which phones are paired, when each carrier last delivered items, and how many items of each kind the library holds. Call it first when a request depends on what day it is or on how fresh the library is.".to_string(),
             input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
             read_only: true,
         },
@@ -195,7 +222,7 @@ pub fn definitions(read_only: bool) -> Vec<ToolDef> {
         tools.push(ToolDef {
             name: "mark_processed",
             title: "Flag items as processed",
-            description: "Set or clear the processed flag on items, so a later list_items call with unprocessed_only skips them. This is the only tool that writes, and it writes only this flag: it never changes or deletes an item's text.",
+            description: "Set or clear the processed flag on items, so a later list_items call with unprocessed_only skips them. This is the only tool that writes, and it writes only this flag: it never changes or deletes an item's text.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -212,14 +239,18 @@ pub fn definitions(read_only: bool) -> Vec<ToolDef> {
 }
 
 /// Runs a tool. Errors are sentences an agent can act on.
-pub fn call(db: &mut Db, name: &str, args: &Map<String, Value>, read_only: bool) -> Result<Value> {
+///
+/// Every tool works inside `access.scope`: an item outside it is not listed, found, read,
+/// counted or flagged, and asking for it by id answers as if it did not exist.
+pub fn call(db: &mut Db, name: &str, args: &Map<String, Value>, access: &Access) -> Result<Value> {
+    let scope = &access.scope;
     match name {
-        "list_items" => list_items(db, args),
-        "search_items" => search_items(db, args),
-        "get_items" => get_items(db, args),
-        "library_stats" => library_stats(db, args),
-        "sync_status" => sync_status(db),
-        "mark_processed" if !read_only => mark_processed(db, args),
+        "list_items" => list_items(db, args, scope),
+        "search_items" => search_items(db, args, scope),
+        "get_items" => get_items(db, args, scope),
+        "library_stats" => library_stats(db, args, scope),
+        "sync_status" => sync_status(db, scope),
+        "mark_processed" if !access.read_only => mark_processed(db, args, scope),
         "mark_processed" => bail!("this server was started with --read-only, so mark_processed is not available"),
         other => bail!("unknown tool \"{other}\""),
     }
@@ -284,7 +315,9 @@ fn clock(args: &Map<String, Value>) -> Result<Clock> {
 }
 
 /// The filter shared by list, search and stats, plus a description of the range it covers.
-fn filter(args: &Map<String, Value>, clock: &Clock) -> Result<(Filter, Value)> {
+/// Asking by name for a kind or a source the server does not show is an error, so the agent
+/// learns why instead of concluding there is nothing.
+fn filter(args: &Map<String, Value>, clock: &Clock, scope: &Scope) -> Result<(Filter, Value)> {
     let start = match opt_string(args, "start")? {
         Some(text) => Some(clock.parse(&text, Bound::Start).map_err(|e| anyhow!("start: {e}"))?),
         None => None,
@@ -297,14 +330,26 @@ fn filter(args: &Map<String, Value>, clock: &Clock) -> Result<(Filter, Value)> {
         && s >= e {
             bail!("start ({}) is not before end ({})", clock.full(s), clock.full(e));
         }
-    let kinds = string_list(args, "kinds")?.into_iter().map(|k| normalize_kind(&k)).collect();
+    let kinds: Vec<String> = string_list(args, "kinds")?.into_iter().map(|k| normalize_kind(&k)).collect();
     let sources = string_list(args, "sources")?;
+    if let Some(hidden) = kinds.iter().find(|k| crate::scope::KINDS.contains(&k.as_str()) && !scope.allows_kind(k)) {
+        bail!(
+            "this server does not show {hidden} items: it has a limited view ({}). Leave kinds out, or tell the person this connection does not include them.",
+            scope.short().unwrap_or_default()
+        );
+    }
+    if let Some(hidden) = sources.iter().find(|s| scope.hides_source(s)) {
+        bail!(
+            "this server does not show dictations with source {hidden}: it has a limited view ({}). Tell the person this connection does not include them.",
+            scope.short().unwrap_or_default()
+        );
+    }
     let range = json!({
         "start": start.map(|t| clock.full(t)),
         "end": end.map(|t| clock.full(t)),
         "timezone": clock.zone_name(),
     });
-    Ok((Filter { start, end, kinds, sources, unprocessed_only: false }, range))
+    Ok((Filter { start, end, kinds, sources, unprocessed_only: false, scope: scope.clone() }, range))
 }
 
 /// Agents say "dictations", "notes", "meetings". The stored kinds are singular.
@@ -351,9 +396,9 @@ fn kind_counts(rows: &[(String, i64)]) -> Value {
 
 // -------------------------------------------------------------------- tools
 
-fn list_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
+fn list_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
     let clock = clock(args)?;
-    let (mut filter, range) = filter(args, &clock)?;
+    let (mut filter, range) = filter(args, &clock, scope)?;
     filter.unprocessed_only = opt_bool(args, "unprocessed_only")?.unwrap_or(false);
     let order = match opt_string(args, "order")? {
         Some(text) => Order::parse(&text)?,
@@ -385,12 +430,12 @@ fn list_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
     }))
 }
 
-fn search_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
+fn search_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
     let Some(query) = opt_string(args, "query")? else {
         bail!("query is required: the words to look for");
     };
     let clock = clock(args)?;
-    let (filter, range) = filter(args, &clock)?;
+    let (filter, range) = filter(args, &clock, scope)?;
     let limit = opt_usize(args, "limit")?.unwrap_or(DEFAULT_SEARCH_LIMIT).clamp(1, MAX_SEARCH_LIMIT);
     let offset = match opt_string(args, "cursor")? {
         Some(text) => SearchCursor::decode(&text)?.0,
@@ -448,7 +493,7 @@ fn search_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
     Ok(Value::Object(out))
 }
 
-fn get_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
+fn get_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
     let ids = string_list(args, "ids")?;
     if ids.is_empty() {
         bail!("ids is required: one or more item ids from list_items or search_items");
@@ -467,7 +512,8 @@ fn get_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
             not_found.push(id.clone());
             continue;
         };
-        if row.deleted {
+        // An item outside this server's view answers exactly like one that does not exist.
+        if row.deleted || !scope.allows(&row.kind, row.source.as_deref()) {
             not_found.push(id.clone());
             continue;
         }
@@ -506,9 +552,9 @@ fn get_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
     Ok(json!({ "items": items, "not_found": not_found }))
 }
 
-fn library_stats(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
+fn library_stats(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
     let clock = clock(args)?;
-    let (filter, range) = filter(args, &clock)?;
+    let (filter, range) = filter(args, &clock, scope)?;
     let group_by = opt_string(args, "group_by")?.unwrap_or_else(|| "day".to_string()).to_ascii_lowercase();
     if !matches!(group_by.as_str(), "day" | "kind" | "source") {
         bail!("group_by must be day, kind or source, not \"{group_by}\"");
@@ -609,7 +655,9 @@ pub fn backup_folder_state(daemon: Option<&DaemonInfo>, folder: Option<&str>, no
     }
 }
 
-pub fn sync_status(db: &mut Db) -> Result<Value> {
+/// `scope` is what the asker may see: the item counts cover that and nothing else, and a
+/// limited view is named so the numbers are not mistaken for the whole library.
+pub fn sync_status(db: &mut Db, scope: &Scope) -> Result<Value> {
     let clock = Clock::system();
     let now = clock.now_zoned();
     let now_unix = unix(clock.now);
@@ -639,17 +687,18 @@ pub fn sync_status(db: &mut Db) -> Result<Value> {
             None => Value::Null,
         })
     };
+    let counts = db.counts_in(scope)?;
     let mut by_source = Map::new();
-    for (kind, source, count) in db.counts_by_kind_and_source()? {
+    for (kind, source, count) in &counts.by_kind_and_source {
         if kind == "dictation" {
-            by_source.insert(source.unwrap_or_else(|| "(none)".to_string()), json!(count));
+            by_source.insert(source.clone().unwrap_or_else(|| "(none)".to_string()), json!(count));
         }
     }
-    let span = db.time_span()?;
+    let span = counts.span;
     let backup_folder = db.meta_get("backup_folder")?;
     let backup_folder_state = backup_folder_state(daemon.as_ref(), backup_folder.as_deref(), now_unix);
 
-    Ok(json!({
+    let mut status = json!({
         "now": {
             "local": clock.full(now_unix),
             "date": now.strftime("%Y-%m-%d").to_string(),
@@ -673,18 +722,22 @@ pub fn sync_status(db: &mut Db) -> Result<Value> {
         "backup_folder": backup_folder,
         "backup_folder_state": backup_folder_state,
         "items": {
-            "total": db.total_items()?,
-            "by_kind": kind_counts(&db.counts_by_kind()?),
+            "total": counts.total,
+            "by_kind": kind_counts(&counts.by_kind),
             "dictations_by_source": by_source,
-            "unprocessed": db.unprocessed_items()?,
-            "deleted_on_phone": db.deleted_items()?,
+            "unprocessed": counts.unprocessed,
+            "deleted_on_phone": counts.deleted,
             "oldest": span.map(|(oldest, _)| clock.full(oldest)),
             "newest": span.map(|(_, newest)| clock.full(newest)),
         },
-    }))
+    });
+    if let Some(note) = scope.for_agents() {
+        status["scope"] = json!({ "kinds": scope.visible_kinds(), "excluded_sources": scope.exclude_sources, "note": note });
+    }
+    Ok(status)
 }
 
-fn mark_processed(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
+fn mark_processed(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
     let ids = string_list(args, "ids")?;
     if ids.is_empty() {
         bail!("ids is required: the items to flag");
@@ -693,12 +746,21 @@ fn mark_processed(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
         bail!("at most {MAX_MARK_IDS} ids per call (got {})", ids.len());
     }
     let processed = opt_bool(args, "processed")?.unwrap_or(true);
-    let (found, missing) = db.mark_processed(&ids, processed, paths::now_unix())?;
+    // Only what this server can see can be flagged through it.
+    let (mut visible, mut hidden) = (Vec::new(), Vec::new());
+    for id in ids {
+        match db.get(&id)? {
+            Some(row) if !scope.allows(&row.kind, row.source.as_deref()) => hidden.push(id.trim().to_ascii_uppercase()),
+            _ => visible.push(id),
+        }
+    }
+    let (found, mut missing) = db.mark_processed(&visible, processed, paths::now_unix())?;
+    missing.extend(hidden);
     Ok(json!({
         "processed": processed,
         "updated": found.len(),
         "not_found": missing,
-        "unprocessed_remaining": db.unprocessed_items()?,
+        "unprocessed_remaining": db.counts_in(scope)?.unprocessed,
     }))
 }
 
@@ -711,6 +773,15 @@ mod tests {
 
     fn args(value: Value) -> Map<String, Value> {
         value.as_object().unwrap().clone()
+    }
+
+    /// The tools of a server that shows everything, as most of these tests want them.
+    fn call(db: &mut Db, name: &str, args: &Map<String, Value>, read_only: bool) -> Result<Value> {
+        super::call(db, name, args, &Access { read_only, scope: Scope::default() })
+    }
+
+    fn definitions(read_only: bool) -> Vec<ToolDef> {
+        super::definitions(&Access { read_only, scope: Scope::default() })
     }
 
     fn at(text: &str) -> f64 {
@@ -903,6 +974,100 @@ mod tests {
         assert_eq!(out["groups"][0]["items"], 4);
         let out = call(&mut db, "library_stats", &args(json!({ "group_by": "source" })), false).unwrap();
         assert_eq!(out["groups"][0], json!({ "source": "keyboard", "items": 3, "words": 12, "recorded_s": 13.0 }));
+    }
+
+    fn limited(kinds: &[&str], hidden: &[&str]) -> Access {
+        let list = |items: &[&str]| -> Vec<String> { items.iter().map(|s| s.to_string()).collect() };
+        Access { read_only: false, scope: Scope::new(&list(kinds), &list(hidden)).unwrap() }
+    }
+
+    /// The library has 3 keyboard dictations, 1 app dictation, 1 note and 1 meeting.
+    #[test]
+    fn a_limited_view_holds_in_every_tool() {
+        let mut db = library();
+        let no_keyboard = limited(&[], &["keyboard"]);
+        let notes_and_meetings = limited(&["note", "meeting"], &[]);
+        let ask = |db: &mut Db, access: &Access, name: &str, a: Value| super::call(db, name, &args(a), access);
+
+        // list_items: the hidden items are not listed and not counted.
+        let out = ask(&mut db, &no_keyboard, "list_items", json!({})).unwrap();
+        assert_eq!(out["total"], 3);
+        assert_eq!(ids(&out), ["F-MEET", "D-APP", "C-NOTE"]);
+        assert_eq!(out["total_by_kind"], json!({ "dictation": 1, "meeting": 1, "note": 1 }));
+        let out = ask(&mut db, &notes_and_meetings, "list_items", json!({ "order": "oldest" })).unwrap();
+        assert_eq!((ids(&out), out["total"].as_i64()), (vec!["C-NOTE".to_string(), "F-MEET".to_string()], Some(2)));
+        // Asking for a visible kind works. Asking by name for a hidden one says why.
+        assert_eq!(ask(&mut db, &notes_and_meetings, "list_items", json!({ "kinds": ["notes"] })).unwrap()["total"], 1);
+        let refused = ask(&mut db, &notes_and_meetings, "list_items", json!({ "kinds": ["dictation"] })).unwrap_err().to_string();
+        assert!(refused.contains("does not show dictation items") && refused.contains("limited view"), "{refused}");
+        let refused = ask(&mut db, &no_keyboard, "list_items", json!({ "sources": ["Keyboard"] })).unwrap_err().to_string();
+        assert!(refused.contains("source Keyboard"), "{refused}");
+        assert_eq!(ask(&mut db, &no_keyboard, "list_items", json!({ "sources": ["app"] })).unwrap()["total"], 1);
+
+        // search_items: "harbor" is in a keyboard dictation and in a note.
+        let out = ask(&mut db, &no_keyboard, "search_items", json!({ "query": "harbor" })).unwrap();
+        assert_eq!((ids(&out), out["total"].as_i64()), (vec!["C-NOTE".to_string()], Some(1)));
+        assert_eq!(ask(&mut db, &no_keyboard, "search_items", json!({ "query": "exactly" })).unwrap()["total"], 0);
+        // A query with no searchable words takes another path through the library. Same view.
+        assert_eq!(ask(&mut db, &no_keyboard, "search_items", json!({ "query": "..." })).unwrap()["total"], 0);
+        assert_eq!(ask(&mut db, &notes_and_meetings, "search_items", json!({ "query": "noon" })).unwrap()["total"], 0);
+
+        // get_items: a hidden id answers like one that does not exist.
+        let out = ask(&mut db, &no_keyboard, "get_items", json!({ "ids": ["B-NOON", "C-NOTE", "D-APP", "NOPE"] })).unwrap();
+        assert_eq!((ids(&out), out["not_found"].clone()), (vec!["C-NOTE".to_string(), "D-APP".to_string()], json!(["B-NOON", "NOPE"])));
+        assert!(!out.to_string().contains("exactly at noon"));
+        let out = ask(&mut db, &notes_and_meetings, "get_items", json!({ "ids": ["D-APP", "F-MEET"] })).unwrap();
+        assert_eq!((ids(&out), out["not_found"].clone()), (vec!["F-MEET".to_string()], json!(["D-APP"])));
+
+        // library_stats: counts and words of the visible items only.
+        let out = ask(&mut db, &no_keyboard, "library_stats", json!({ "group_by": "source" })).unwrap();
+        assert_eq!(out["total"]["items"], 3);
+        assert!(out["groups"].as_array().unwrap().iter().all(|g| g["source"] != "keyboard"), "{out}");
+        let out = ask(&mut db, &notes_and_meetings, "library_stats", json!({ "group_by": "kind" })).unwrap();
+        assert_eq!((out["total"]["items"].as_i64(), out["groups"].as_array().unwrap().len()), (Some(2), 2));
+
+        // sync_status: the totals are the view's, and it says that it is one.
+        let out = ask(&mut db, &no_keyboard, "sync_status", json!({})).unwrap();
+        assert_eq!((out["items"]["total"].as_i64(), out["items"]["unprocessed"].as_i64()), (Some(3), Some(3)));
+        assert_eq!(out["items"]["by_kind"], json!({ "dictation": 1, "meeting": 1, "note": 1 }));
+        assert_eq!(out["items"]["dictations_by_source"], json!({ "app": 1 }));
+        assert_eq!(out["scope"]["excluded_sources"], json!(["keyboard"]));
+        assert!(out["scope"]["note"].as_str().unwrap().contains("limited view"));
+        // The oldest visible item is the note, not the keyboard dictation before it.
+        assert!(out["items"]["oldest"].as_str().unwrap().contains("2026-11-11"));
+        let out = ask(&mut db, &notes_and_meetings, "sync_status", json!({})).unwrap();
+        assert_eq!((out["items"]["total"].as_i64(), &out["items"]["dictations_by_source"]), (Some(2), &json!({})));
+        assert_eq!(out["scope"]["kinds"], json!(["note", "meeting"]));
+        // Without a limit nothing is said about one.
+        let out = super::sync_status(&mut db, &Scope::default()).unwrap();
+        assert_eq!((out["items"]["total"].as_i64(), out.get("scope")), (Some(6), None));
+
+        // mark_processed: a hidden item cannot be flagged, and is not counted as remaining.
+        let out = ask(&mut db, &no_keyboard, "mark_processed", json!({ "ids": ["b-noon", "C-NOTE"] })).unwrap();
+        assert_eq!((out["updated"].as_i64(), out["not_found"].clone(), out["unprocessed_remaining"].as_i64()), (Some(1), json!(["B-NOON"]), Some(2)));
+        assert_eq!(db.unprocessed_items().unwrap(), 5, "only the note was flagged");
+        let out = ask(&mut db, &no_keyboard, "list_items", json!({ "unprocessed_only": true })).unwrap();
+        assert_eq!(out["total"], 2);
+    }
+
+    #[test]
+    fn a_limited_view_is_told_to_the_agent() {
+        let access = limited(&["note", "meeting"], &["keyboard"]);
+        let told = instructions(&access.scope);
+        assert!(told.starts_with(INSTRUCTIONS) && told.contains("limited view") && told.contains("only voice notes and meeting transcripts"), "{told}");
+        assert_eq!(instructions(&Scope::default()), INSTRUCTIONS);
+        let tools = super::definitions(&access);
+        let list = tools.iter().find(|t| t.name == "list_items").unwrap();
+        assert_eq!(list.input_schema["properties"]["kinds"]["items"]["enum"], json!(["note", "meeting"]));
+        assert!(list.description.contains("limited view (only voice notes and meeting transcripts, hides keyboard)"), "{}", list.description);
+        for name in ["search_items", "library_stats"] {
+            assert!(tools.iter().find(|t| t.name == name).unwrap().description.contains("limited view"), "{name}");
+        }
+        // The default says nothing of the kind and offers all three.
+        let plain = definitions(false);
+        assert!(plain.iter().all(|t| !t.description.contains("limited view")));
+        assert_eq!(plain[0].input_schema["properties"]["kinds"]["items"]["enum"], json!(["dictation", "note", "meeting"]));
+        assert!(!told.contains('\u{2014}'));
     }
 
     #[test]

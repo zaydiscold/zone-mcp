@@ -56,6 +56,7 @@ impl FilterArgs {
             kinds: split(&self.kind).iter().map(|k| normalize_kind(k)).collect(),
             sources: split(&self.source),
             unprocessed_only: self.unprocessed,
+            scope: Default::default(),
         })
     }
 }

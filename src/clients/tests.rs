@@ -206,7 +206,7 @@ fn claude_code_profiles_are_found_and_written_without_the_command() {
     let rows = survey(&env, &state, &launch());
     let claude: Vec<&Row> = rows.iter().filter(|r| r.target.client == Client::ClaudeCode).collect();
     assert_eq!(claude.len(), 4);
-    assert!(claude.iter().all(|r| r.standing == Standing::Registered { read_only: false }));
+    assert!(claude.iter().all(|r| r.standing == Standing::Registered { read_only: false, scope: Some(Scope::default()) }));
 
     // Taking zone out of one profile leaves the others.
     assert_eq!(unregister(&targets[3], &env, &mut state, true), Outcome::Removed);
@@ -342,7 +342,7 @@ fn all_skips_opt_outs_and_leaves_read_only_entries_alone() {
 
     let rows = survey(&env, &state, &launch());
     let standing = |client: Client| rows.iter().find(|r| r.target.client == client).unwrap().standing.clone();
-    assert_eq!(standing(Client::Cursor), Standing::Registered { read_only: false });
+    assert_eq!(standing(Client::Cursor), Standing::Registered { read_only: false, scope: Some(Scope::default()) });
     assert_eq!(standing(Client::Gemini), Standing::OptedOut);
     assert_eq!(standing(Client::Zed), Standing::NotRegistered);
 }
@@ -430,4 +430,61 @@ fn settings_moved_by_environment_variables_and_pointers() {
     assert_eq!(Client::ClaudeCode.targets(&env)[0].path, home.join(".claude").join(".config.json"));
     write(&home.join(".claude").join(".config.json"), "");
     assert_eq!(Client::ClaudeCode.targets(&env)[0].path, home.join(".claude.json"));
+}
+
+/// A server registered with a narrower view: the flags are written in every format, read
+/// back as the same view, and `--all` with a view named makes every entry match it.
+#[test]
+fn a_narrower_view_is_written_read_back_and_applied_to_all_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = env(dir.path());
+    let home = dir.path();
+    for folder in [".cursor", ".codex", ".hermes", ".gemini"] {
+        std::fs::create_dir_all(home.join(folder)).unwrap();
+    }
+    write(&home.join(".hermes").join("config.yaml"), "model:\n  default: some-model\n");
+    write(&env.goose_config(), "extensions: {}\n");
+    let view = Scope::new(&["note".to_string(), "meeting".to_string()], &["keyboard".to_string()]).unwrap();
+    let mut args = vec!["mcp".to_string(), "--read-only".to_string()];
+    args.extend(view.to_args());
+    assert_eq!(args, ["mcp", "--read-only", "--kinds", "note,meeting", "--exclude-sources", "keyboard"]);
+    let narrow = Launch { args, ..launch() };
+    assert_eq!((narrow.read_only(), narrow.scope()), (true, Some(view.clone())));
+    assert_eq!(launch().scope(), Some(Scope::default()));
+
+    // JSON, TOML and both YAML shapes hold the flags and give them back.
+    let mut state = State::default();
+    for client in [Client::Cursor, Client::Codex, Client::Hermes, Client::Goose] {
+        let target = only(client, &env);
+        assert_eq!(register(&target, &narrow, &env, &mut state, Mode::Explicit), Outcome::Registered, "{client:?}");
+        assert_eq!(read_entry(&target, &env), Found::Present(narrow.clone()), "{client:?}");
+    }
+    let rows = survey(&env, &state, &launch());
+    let standing = |client: Client| rows.iter().find(|r| r.target.client == client).unwrap().standing.clone();
+    assert_eq!(standing(Client::Codex), Standing::Registered { read_only: true, scope: Some(view.clone()) });
+
+    // Plain --all leaves a narrowed entry as it is: it is that way on purpose.
+    let gemini = only(Client::Gemini, &env);
+    let cursor = only(Client::Cursor, &env);
+    assert_eq!(register_many(&[Client::Cursor, Client::Gemini], &launch(), Mode::All, &env, &mut state, true), 0);
+    assert_eq!(read_entry(&cursor, &env), Found::Present(narrow.clone()));
+    assert_eq!(read_entry(&gemini, &env), Found::Present(launch()));
+
+    // --all with a view named: every entry becomes exactly that, the ones already there too.
+    let no_keyboard = Launch { args: vec!["mcp".into(), "--exclude-sources".into(), "keyboard".into()], ..launch() };
+    assert_eq!(register_with(&cursor, &no_keyboard, &env, &mut state, Mode::All, true), Outcome::Updated);
+    assert_eq!(register_with(&gemini, &no_keyboard, &env, &mut state, Mode::All, true), Outcome::Updated);
+    assert_eq!(register_with(&gemini, &no_keyboard, &env, &mut state, Mode::All, true), Outcome::Already);
+    assert_eq!(read_entry(&cursor, &env), Found::Present(no_keyboard.clone()));
+    // Still never where the person took zone out, and never by the daemon.
+    unregister(&gemini, &env, &mut state, true);
+    assert_eq!(register_with(&gemini, &no_keyboard, &env, &mut state, Mode::All, true), Outcome::OptedOut);
+    assert_eq!(register_with(&cursor, &launch(), &env, &mut state, Mode::Automatic, true), Outcome::Already);
+    assert_eq!(read_entry(&cursor, &env), Found::Present(no_keyboard));
+
+    // Arguments someone wrote by hand that zone would refuse to start with.
+    let odd = Launch { args: vec!["mcp".into(), "--kinds".into(), "songs".into()], ..launch() };
+    register(&cursor, &odd, &env, &mut state, Mode::Explicit);
+    let rows = survey(&env, &state, &launch());
+    assert_eq!(rows.iter().find(|r| r.target.client == Client::Cursor).unwrap().standing, Standing::Registered { read_only: false, scope: None });
 }

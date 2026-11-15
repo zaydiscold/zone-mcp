@@ -17,20 +17,21 @@ use rmcp::{
 };
 
 use crate::db::Db;
-use crate::tools;
+use crate::tools::{self, Access};
 
 pub struct ZoneServer {
     db: Mutex<Db>,
-    read_only: bool,
+    /// Whether this server may flag items, and which items it shows (see scope.rs).
+    access: Access,
 }
 
 impl ZoneServer {
-    pub fn new(db: Db, read_only: bool) -> Self {
-        Self { db: Mutex::new(db), read_only }
+    pub fn new(db: Db, access: Access) -> Self {
+        Self { db: Mutex::new(db), access }
     }
 
     fn tool_list(&self) -> Vec<Tool> {
-        tools::definitions(self.read_only)
+        tools::definitions(&self.access)
             .into_iter()
             .map(|def| {
                 let schema: JsonObject = def.input_schema.as_object().cloned().unwrap_or_default();
@@ -54,7 +55,7 @@ impl ServerHandler for ZoneServer {
                     .with_title("Zone")
                     .with_description("The person's dictations, voice notes and meeting transcripts from the Zone iPhone app, kept on this computer."),
             )
-            .with_instructions(tools::INSTRUCTIONS)
+            .with_instructions(tools::instructions(&self.access.scope))
     }
 
     async fn list_tools(
@@ -75,13 +76,13 @@ impl ServerHandler for ZoneServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.as_ref();
-        if !tools::definitions(self.read_only).iter().any(|def| def.name == name) {
+        if !tools::definitions(&self.access).iter().any(|def| def.name == name) {
             return Err(ErrorData::invalid_params(format!("unknown tool: {name}"), None));
         }
         let arguments = request.arguments.unwrap_or_default();
         let outcome = {
             let mut db = self.db.lock().map_err(|_| ErrorData::internal_error("the library is unavailable", None))?;
-            tools::call(&mut db, name, &arguments, self.read_only)
+            tools::call(&mut db, name, &arguments, &self.access)
         };
         let result = match outcome {
             Ok(value) => CallToolResult::success(vec![ContentBlock::text(value.to_string())]),
@@ -93,9 +94,9 @@ impl ServerHandler for ZoneServer {
 }
 
 /// Serves until the client closes stdin.
-pub async fn serve(read_only: bool) -> Result<()> {
+pub async fn serve(access: Access) -> Result<()> {
     let db = Db::open_default()?;
-    let server = ZoneServer::new(db, read_only);
+    let server = ZoneServer::new(db, access);
     let running = server.serve(stdio()).await.map_err(|e| anyhow!("the MCP client did not complete the handshake: {e}"))?;
     running.waiting().await.map_err(|e| anyhow!("the MCP server stopped unexpectedly: {e}"))?;
     Ok(())

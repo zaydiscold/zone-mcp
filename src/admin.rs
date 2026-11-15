@@ -159,7 +159,7 @@ pub fn status(as_json: bool) -> Result<()> {
     let dir = paths::data_dir()?;
     let mut db = Db::open_default()?;
     let daemon = DaemonInfo::read_if_running(&dir);
-    let mut value = tools::sync_status(&mut db)?;
+    let mut value = tools::sync_status(&mut db, &Default::default())?;
     value["data_directory"] = json!(dir);
     value["database"] = json!(paths::database(&dir));
     value["daemon"] = match &daemon {

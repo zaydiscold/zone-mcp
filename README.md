@@ -267,7 +267,7 @@ may be added, existing ones keep their names and meaning.
 | `zone pair --json` | A new code: `id`, `url`, `endpoint_id`, `name`, `expires_at`, `expires_local`, `state` (`waiting`), `claimed` (`false`), `qr_svg` (the code as an SVG picture). With `--wait` it prints that on one line and stays until a phone has used the code or it has run out, then prints a second line: what `--check` prints. |
 | `zone pair --check <id> --json` | What became of a code: `id`, `state` (`waiting`, `claimed`, `expired`, or `unknown` once a code that ran out has been forgotten), `claimed`, `expires_at`, `claimed_at`, `device` (`name`, `endpoint_id`, `app`). Exits 0 when claimed, 2 when not. |
 | `zone events --json` | The feed, one object per line. See below. |
-| `zone mcp status --json` | `zone` (this program), `automatic`, and `clients`: one object per place with `client`, `label`, `profile`, `path`, `installed`, `state` (`registered`, `registered_read_only`, `other_copy`, `not_registered`, `removed_by_you`, `unreadable`), `detail`. |
+| `zone mcp status --json` | `zone` (this program), `automatic`, and `clients`: one object per place with `client`, `label`, `profile`, `path`, `installed`, `state` (`registered`, `registered_read_only`, `other_copy`, `not_registered`, `removed_by_you`, `unreadable`), `detail`, and for a registered place `read_only` and `scope` (`limited`, `kinds`, `exclude_sources`: what its agents can see). |
 | `zone doctor --json` | `healthy` and `checks`: a list of `check`, `result` (`ok`, `warn`, `fail`), `detail`, `fix`. Exits 1 when something is broken. |
 | `zone list --json`, `zone search --json` | `total` and `items`: `id`, `kind`, `source`, `created_at`, `updated_at`, `created_local`, `text`, `title`, `duration_s`, `words`, `engine`, `status`, `extra`, `rev`, `processed_at`, `carrier`, `device_id`, `received_at`. |
 | `zone show --json`, `zone stats --json`, `zone open --print` | A list of items in full, counts by day, kind or source, and the page's link. |
@@ -365,6 +365,36 @@ items. For any other client, the command to run is `/path/to/zone mcp`.
 
 The server opens the database itself, so it works whether or not `zone serve` is running.
 
+### Choosing what an agent can see
+
+By default an agent with zone registered can read the whole library. Most of a library is
+dictations typed by voice into other apps, which means messages you sent to people. You can show
+a client less:
+
+```sh
+zone mcp install claude-desktop --notes-only           # only your voice notes
+zone mcp install cursor --kinds note,meeting           # notes and meeting transcripts, no dictations
+zone mcp install codex --no-keyboard                   # everything except what you typed into other apps
+zone mcp install --all --no-keyboard                   # the same, for every client
+zone mcp install --all --kinds all                     # back to everything, for every client
+zone mcp status                                        # says what each client sees
+```
+
+| Flag | What the client's agents see |
+| --- | --- |
+| `--kinds <list>` | Only these kinds: `dictation`, `note`, `meeting` (comma separated), or `all`. |
+| `--exclude-sources <list>` | Not the dictations spoken in these places: `keyboard` (typed by voice in other apps), `app` (dictated inside Zone), `note` (the raw dictation behind a voice note). |
+| `--notes-only` | Short for `--kinds note`. |
+| `--no-keyboard` | Short for `--exclude-sources keyboard`. |
+| `--read-only` | Everything it would otherwise see, but it cannot flag items as processed. |
+
+The flags work on `zone mcp` itself too, which is what the client ends up running
+(`zone mcp --kinds note,meeting`). The limit holds in every tool: a hidden item is not listed,
+not found by search, not returned by its id, and not counted, and the server tells the agent that
+its view is limited so it does not mistake what it sees for everything. `zone mcp install <client>`
+without a flag sets that client back to everything, and `zone mcp install --all` without a flag
+leaves each client's view as it is. A mistyped kind is an error, never "everything".
+
 ### Staying registered
 
 `zone install` turns on one more thing: when zone starts, it registers with clients installed
@@ -412,8 +442,13 @@ The three kinds of item:
 - **The web page is local.** It listens on 127.0.0.1 only, needs a random key that `zone open`
   passes to your browser, refuses requests under any other host name, and loads nothing from the
   internet.
-- **Agents read what you let them.** An MCP client that has zone registered can read the whole
-  library. The one thing it can change is the processed flag.
+- **Agents read what you let them, and what they read leaves your computer.** An MCP client that
+  has zone registered can read the whole library unless you narrow it: `zone mcp install <client>
+  --notes-only`, `--kinds note,meeting` or `--no-keyboard` (see [Choosing what an agent can
+  see](#choosing-what-an-agent-can-see)). Whatever an agent does read is sent to the company that
+  runs its model, as part of the conversation, under that company's terms, not zone's. The one
+  thing an agent can change is the processed flag. The limit is on what zone hands to an agent: it
+  does not stop another program running as you from opening the library file itself.
 - **Flash stays in the room.** The camera pictures go from the browser to zone on the same
   computer and are thrown away once read. What the phone shows is encrypted, so someone filming
   the screen gets nothing they can open.

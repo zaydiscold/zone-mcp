@@ -488,6 +488,7 @@ fn filter_from(query: &HashMap<String, String>, clock: &Clock) -> Result<Filter>
         kinds: list_param(query, "kinds").iter().map(|k| normalize_kind(k)).collect(),
         sources: list_param(query, "sources"),
         unprocessed_only: false,
+        scope: Default::default(),
     })
 }
 

@@ -1159,6 +1159,8 @@ struct Mcp {
     stdin: std::process::ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
     next_id: u64,
+    /// What the server told the agent when it connected.
+    instructions: String,
 }
 
 impl Mcp {
@@ -1166,7 +1168,7 @@ impl Mcp {
         let mut child = sandbox.zone().arg("mcp").args(extra).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut mcp = Mcp { child, stdin, stdout, next_id: 1 };
+        let mut mcp = Mcp { child, stdin, stdout, next_id: 1, instructions: String::new() };
         let init = mcp.request(
             "initialize",
             json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "integration-test", "version": "1" } }),
@@ -1175,6 +1177,7 @@ impl Mcp {
         assert!(init["result"]["capabilities"]["tools"].is_object());
         let instructions = init["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("typed by voice") && instructions.contains("voice note") && instructions.contains("meeting"));
+        mcp.instructions = instructions.to_string();
         mcp.notify("notifications/initialized", json!({}));
         mcp
     }
@@ -1330,6 +1333,74 @@ fn mcp_round_trip_over_stdio() {
     assert_eq!(read_only.tool("list_items", json!({ "unprocessed_only": true, "limit": 1 }))["total"], 43);
 }
 
+/// A server started with a narrower view, over the real protocol. The synthetic backup holds
+/// 32 dictations typed by voice in other apps (source keyboard), 8 dictated in Zone (app), 2
+/// notes and 1 meeting. What a view hides cannot be listed, searched, read, counted or
+/// flagged, and the agent is told what it is not seeing.
+#[test]
+fn mcp_with_a_limited_view_over_stdio() {
+    let sandbox = Sandbox::new();
+    let package = write_backup(&sandbox.home);
+    sandbox.ok(&["import", package.to_str().unwrap()]);
+    let keyboard_id = "D0000000-0000-4000-8000-000000000001";
+    let app_id = "D0000000-0000-4000-8000-000000000000";
+    let note_id = "A0000000-0000-4000-8000-000000000001";
+
+    // Without the private messages.
+    let mut mcp = Mcp::start(&sandbox, &["--no-keyboard"]);
+    assert!(mcp.instructions.contains("limited view") && mcp.instructions.contains("`keyboard` (what they typed by voice into other apps)"), "{}", mcp.instructions);
+    let tools = mcp.request("tools/list", json!({}));
+    let list_tool = &tools["result"]["tools"][0];
+    assert!(list_tool["description"].as_str().unwrap().contains("limited view (hides keyboard)"), "{list_tool}");
+    let status = mcp.tool("sync_status", json!({}));
+    assert_eq!(status["items"]["total"], 11);
+    assert_eq!(status["items"]["by_kind"], json!({ "dictation": 8, "note": 2, "meeting": 1 }));
+    assert_eq!(status["items"]["dictations_by_source"], json!({ "app": 8 }));
+    assert_eq!(status["scope"]["excluded_sources"], json!(["keyboard"]));
+    let listed = mcp.tool("list_items", json!({ "limit": 200 }));
+    assert_eq!((listed["total"].as_i64(), listed["returned"].as_i64()), (Some(11), Some(11)));
+    assert!(listed["items"].as_array().unwrap().iter().all(|item| item["source"] != "keyboard"));
+    assert!(mcp.tool_error("list_items", json!({ "sources": ["keyboard"] })).contains("limited view"));
+    assert_eq!(mcp.tool("search_items", json!({ "query": "lighthouse", "limit": 100 }))["total"], 9, "8 dictated in Zone and the meeting");
+    let got = mcp.tool("get_items", json!({ "ids": [keyboard_id, app_id] }));
+    assert_eq!((got["items"].as_array().unwrap().len(), got["items"][0]["id"].as_str(), got["not_found"].clone()), (1, Some(app_id), json!([keyboard_id])));
+    let stats = mcp.tool("library_stats", json!({ "group_by": "source" }));
+    assert_eq!(stats["total"]["items"], 11);
+    assert!(stats["groups"].as_array().unwrap().iter().all(|g| g["source"] != "keyboard"), "{stats}");
+    let marked = mcp.tool("mark_processed", json!({ "ids": [keyboard_id, app_id] }));
+    assert_eq!((marked["updated"].as_i64(), marked["not_found"].clone(), marked["unprocessed_remaining"].as_i64()), (Some(1), json!([keyboard_id]), Some(10)));
+    drop(mcp);
+    assert_eq!(sandbox.json(&["show", keyboard_id, "--json"])[0]["processed_at"], Value::Null, "the hidden item was not flagged");
+
+    // Notes and meetings only.
+    let mut mcp = Mcp::start(&sandbox, &["--kinds", "meeting,note"]);
+    assert!(mcp.instructions.contains("only voice notes and meeting transcripts (dictations are hidden)"), "{}", mcp.instructions);
+    let tools = mcp.request("tools/list", json!({}));
+    assert_eq!(tools["result"]["tools"][0]["inputSchema"]["properties"]["kinds"]["items"]["enum"], json!(["note", "meeting"]));
+    let listed = mcp.tool("list_items", json!({}));
+    assert_eq!((listed["total"].as_i64(), listed["total_by_kind"].clone()), (Some(3), json!({ "note": 2, "meeting": 1 })));
+    assert_eq!(mcp.tool("search_items", json!({ "query": "lighthouse" }))["total"], 1, "only the meeting");
+    assert!(mcp.tool_error("list_items", json!({ "kinds": ["dictation"] })).contains("does not show dictation items"));
+    let got = mcp.tool("get_items", json!({ "ids": [app_id, note_id] }));
+    assert_eq!((got["items"][0]["id"].as_str(), got["not_found"].clone()), (Some(note_id), json!([app_id])));
+    assert_eq!(mcp.tool("sync_status", json!({}))["items"]["total"], 3);
+    drop(mcp);
+
+    // The short spelling, and both limits at once with read-only.
+    let mut mcp = Mcp::start(&sandbox, &["--notes-only"]);
+    assert_eq!(mcp.tool("list_items", json!({}))["total"], 2);
+    drop(mcp);
+    let mut mcp = Mcp::start(&sandbox, &["--read-only", "--kinds", "dictation", "--exclude-sources", "keyboard"]);
+    assert_eq!(mcp.tool("list_items", json!({}))["total"], 8);
+    assert_eq!(mcp.request("tools/list", json!({}))["result"]["tools"].as_array().unwrap().len(), 5);
+    drop(mcp);
+
+    // A mistyped limit is refused, never read as no limit.
+    let typo = sandbox.zone().args(["mcp", "--kinds", "notse"]).stdin(Stdio::null()).output().unwrap();
+    assert!(!typo.status.success() && typo.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&typo.stderr).contains("notse"));
+}
+
 // ------------------------------------------------------------------------- install and client registration
 
 #[test]
@@ -1429,6 +1500,67 @@ fn mcp_install_edits_only_the_sandbox_configs() {
     let nothing = sandbox.run(&["mcp", "install"]);
     assert!(!nothing.status.success());
     assert!(String::from_utf8_lossy(&nothing.stderr).contains("--all"));
+}
+
+/// One client can be registered with a narrower view than another. `--all` leaves such an
+/// entry alone unless a view is named, and then every client gets exactly that view.
+#[test]
+fn mcp_install_gives_each_client_its_own_view() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.home.join(".cursor")).unwrap();
+    std::fs::create_dir_all(sandbox.home.join(".gemini")).unwrap();
+    let cursor = sandbox.home.join(".cursor").join("mcp.json");
+    let gemini = sandbox.home.join(".gemini").join("settings.json");
+    let args_of = |path: &Path| -> Value { serde_json::from_str::<Value>(&std::fs::read_to_string(path).unwrap()).unwrap()["mcpServers"]["zone"]["args"].clone() };
+
+    let out = sandbox.ok(&["mcp", "install", "cursor", "--notes-only"]);
+    assert!(out.contains("Limited view for agents there: only voice notes."), "{out}");
+    assert_eq!(args_of(&cursor), json!(["mcp", "--kinds", "note"]));
+    sandbox.ok(&["mcp", "install", "gemini"]);
+    assert_eq!(args_of(&gemini), json!(["mcp"]));
+
+    let status = sandbox.json(&["mcp", "status", "--json"]);
+    let client = |status: &Value, name: &str| -> Value { status["clients"].as_array().unwrap().iter().find(|c| c["client"] == name).unwrap().clone() };
+    assert_eq!(client(&status, "cursor")["scope"], json!({ "limited": true, "kinds": ["note"], "exclude_sources": [] }));
+    assert_eq!((client(&status, "cursor")["state"].as_str(), client(&status, "cursor")["read_only"].as_bool()), (Some("registered"), Some(false)));
+    assert_eq!(client(&status, "gemini")["scope"], json!({ "limited": false, "kinds": ["dictation", "note", "meeting"], "exclude_sources": [] }));
+    assert_eq!((&client(&status, "zed")["scope"], &client(&status, "zed")["read_only"]), (&Value::Null, &Value::Null), "not registered: nothing to say");
+    let text = sandbox.ok(&["mcp", "status"]);
+    assert!(line_for(&text, "Cursor").contains("registered, only voice notes"), "{text}");
+    assert!(!line_for(&text, "Gemini CLI").contains("only"), "{text}");
+
+    // --all on its own leaves the narrower entry as it is.
+    sandbox.ok(&["mcp", "install", "--all"]);
+    assert_eq!(args_of(&cursor), json!(["mcp", "--kinds", "note"]));
+    // --all with a view: every client gets exactly it.
+    let out = sandbox.ok(&["mcp", "install", "--all", "--no-keyboard"]);
+    assert!(line_for(&out, "Cursor").contains("changed the entry") && line_for(&out, "Gemini CLI").contains("changed the entry"), "{out}");
+    assert!(out.contains("Limited view for agents there: hides keyboard."), "{out}");
+    assert_eq!(args_of(&cursor), json!(["mcp", "--exclude-sources", "keyboard"]));
+    assert_eq!(args_of(&gemini), json!(["mcp", "--exclude-sources", "keyboard"]));
+    // And back to everything.
+    sandbox.ok(&["mcp", "install", "--all", "--kinds", "all"]);
+    assert_eq!((args_of(&cursor), args_of(&gemini)), (json!(["mcp"]), json!(["mcp"])));
+
+    // The flags may come before `install`, and combine with --read-only.
+    sandbox.ok(&["mcp", "--read-only", "--no-keyboard", "install", "cursor"]);
+    assert_eq!(args_of(&cursor), json!(["mcp", "--read-only", "--exclude-sources", "keyboard"]));
+    let status = sandbox.json(&["mcp", "status", "--json"]);
+    assert_eq!((client(&status, "cursor")["state"].as_str(), client(&status, "cursor")["read_only"].as_bool()), (Some("registered_read_only"), Some(true)));
+    assert_eq!(client(&status, "cursor")["scope"]["exclude_sources"], json!(["keyboard"]));
+
+    // A mistyped view changes nothing.
+    let typo = sandbox.run(&["mcp", "install", "cursor", "--kinds", "notse"]);
+    assert!(!typo.status.success() && String::from_utf8_lossy(&typo.stderr).contains("notse"));
+    assert_eq!(args_of(&cursor), json!(["mcp", "--read-only", "--exclude-sources", "keyboard"]));
+
+    // What was registered really starts a server with that view.
+    let package = write_backup(&sandbox.home);
+    sandbox.ok(&["import", package.to_str().unwrap()]);
+    let registered: Vec<String> = args_of(&cursor).as_array().unwrap().iter().skip(1).map(|a| a.as_str().unwrap().to_string()).collect();
+    let registered: Vec<&str> = registered.iter().map(String::as_str).collect();
+    let mut mcp = Mcp::start(&sandbox, &registered);
+    assert_eq!(mcp.tool("list_items", json!({}))["total"], 11);
 }
 
 /// The places a sandbox has clients in, the way they look on a real computer: a Claude Code

@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::item::{Carrier, Item, word_count};
 use crate::paths;
+use crate::scope::Scope;
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -254,6 +255,9 @@ pub struct Filter {
     pub kinds: Vec<String>,
     pub sources: Vec<String>,
     pub unprocessed_only: bool,
+    /// What the asker may see at all. Everything, unless an MCP server was started with a
+    /// narrower view (see scope.rs).
+    pub scope: Scope,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -392,6 +396,21 @@ pub enum Admission {
     NotPaired,
     /// A pairing secret was presented but it is unknown, expired or already used.
     BadSecret,
+}
+
+/// What a scope can see, in numbers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopedCounts {
+    /// Items that are not deleted.
+    pub total: i64,
+    pub unprocessed: i64,
+    /// Items deleted on the phone, of which only the record is kept.
+    pub deleted: i64,
+    /// `(kind, count)`, largest first.
+    pub by_kind: Vec<(String, i64)>,
+    pub by_kind_and_source: Vec<(String, Option<String>, i64)>,
+    /// Created times of the oldest and newest.
+    pub span: Option<(f64, f64)>,
 }
 
 /// One row of the numbers behind `stats`.
@@ -724,10 +743,12 @@ impl Db {
         Ok(self.conn.query_row("SELECT count(*) FROM items WHERE deleted = 0", [], |row| row.get(0))?)
     }
 
+    #[cfg(test)]
     pub fn deleted_items(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT count(*) FROM items WHERE deleted = 1", [], |row| row.get(0))?)
     }
 
+    #[cfg(test)]
     pub fn unprocessed_items(&self) -> Result<i64> {
         Ok(self.conn.query_row("SELECT count(*) FROM items WHERE deleted = 0 AND processed_at IS NULL", [], |row| row.get(0))?)
     }
@@ -739,6 +760,37 @@ impl Db {
                 Ok((row.get(0)?, row.get(1)?))
             })?;
         Ok(span.0.zip(span.1))
+    }
+
+    /// The numbers `sync_status` reports about the items a scope can see.
+    pub fn counts_in(&self, scope: &Scope) -> Result<ScopedCounts> {
+        let mut clause = String::from("1 = 1");
+        let mut args = Vec::new();
+        scope_sql(scope, &mut clause, &mut args);
+        let (total, unprocessed, deleted, oldest, newest): (i64, i64, i64, Option<f64>, Option<f64>) = self.conn.query_row(
+            &format!(
+                "SELECT coalesce(sum(i.deleted = 0), 0), coalesce(sum(i.deleted = 0 AND i.processed_at IS NULL), 0), \
+                 coalesce(sum(i.deleted = 1), 0), min(CASE WHEN i.deleted = 0 THEN i.created_at END), \
+                 max(CASE WHEN i.deleted = 0 THEN i.created_at END) FROM items i WHERE {clause}"
+            ),
+            params_from_iter(args.iter().cloned()),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT i.kind, i.source, count(*) FROM items i WHERE i.deleted = 0 AND {clause} GROUP BY i.kind, i.source \
+             ORDER BY count(*) DESC, i.kind, i.source"
+        ))?;
+        let by_kind_and_source: Vec<(String, Option<String>, i64)> =
+            statement.query_map(params_from_iter(args), |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut by_kind: Vec<(String, i64)> = Vec::new();
+        for (kind, _, count) in &by_kind_and_source {
+            match by_kind.iter_mut().find(|(k, _)| k == kind) {
+                Some(entry) => entry.1 += count,
+                None => by_kind.push((kind.clone(), *count)),
+            }
+        }
+        by_kind.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(ScopedCounts { total, unprocessed, deleted, by_kind, by_kind_and_source, span: oldest.zip(newest) })
     }
 
     /// The only change agents can make: a flag beside the item, never its content.
@@ -1322,7 +1374,21 @@ fn filter_sql(filter: &Filter) -> (String, Vec<Sql>) {
     if filter.unprocessed_only {
         clause.push_str(" AND i.processed_at IS NULL");
     }
+    scope_sql(&filter.scope, &mut clause, &mut args);
     (clause, args)
+}
+
+/// Adds a scope's limits to a WHERE clause over `items i`.
+fn scope_sql(scope: &Scope, clause: &mut String, args: &mut Vec<Sql>) {
+    if !scope.kinds.is_empty() {
+        clause.push_str(&format!(" AND i.kind IN ({})", placeholders(scope.kinds.len())));
+        args.extend(scope.kinds.iter().map(|k| Sql::Text(k.clone())));
+    }
+    if !scope.exclude_sources.is_empty() {
+        // Notes and meetings have no source and are never hidden by one.
+        clause.push_str(&format!(" AND (i.source IS NULL OR lower(trim(i.source)) NOT IN ({}))", placeholders(scope.exclude_sources.len())));
+        args.extend(scope.exclude_sources.iter().map(|s| Sql::Text(s.clone())));
+    }
 }
 
 fn placeholders(count: usize) -> String {

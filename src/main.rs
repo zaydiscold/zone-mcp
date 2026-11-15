@@ -37,6 +37,7 @@ mod mcp;
 mod out;
 mod pairing;
 mod paths;
+mod scope;
 mod serve;
 mod service;
 mod timeparse;
@@ -236,10 +237,14 @@ enum Command {
         clear: bool,
     },
     /// Serve the library to an AI client over MCP (stdio), or register zone with a client
+    #[command(long_about = "Serve the library to an AI client over MCP (stdio), or register zone with a client.\n\n\
+                            By default an agent can read everything. To show it less: --kinds note,meeting shows only \
+                            those kinds, --exclude-sources keyboard hides what you typed by voice into other apps \
+                            (--notes-only and --no-keyboard are short for the usual two). `zone mcp install <client>` \
+                            takes the same flags, so each client can have its own view.")]
     Mcp {
-        /// Leave out mark_processed, the one tool that writes
-        #[arg(long)]
-        read_only: bool,
+        #[command(flatten)]
+        view: scope::ViewArgs,
         #[command(subcommand)]
         action: Option<McpAction>,
     },
@@ -291,9 +296,10 @@ enum McpAction {
         /// Every client found on this computer, except ones you removed zone from
         #[arg(long)]
         all: bool,
-        /// Register the read-only server (no mark_processed)
-        #[arg(long)]
-        read_only: bool,
+        /// What the client's agents may do and see. With --all, giving one of the view flags
+        /// (--kinds, --exclude-sources, --notes-only, --no-keyboard) applies it to every client
+        #[command(flatten)]
+        view: scope::ViewArgs,
     },
     /// Remove zone from clients: name them, or --all for every one
     Uninstall {
@@ -502,9 +508,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Export { filter, format, output } => cli::export(&Db::open_default()?, &filter, &format, output.as_deref())?,
         Command::Import { path } => admin::import(&path)?,
         Command::BackupFolder { path, clear } => admin::backup_folder(path.as_deref(), clear)?,
-        Command::Mcp { read_only, action } => match action {
-            None => runtime()?.block_on(mcp::serve(read_only))?,
-            Some(McpAction::Install { clients, all, read_only: install_read_only }) => clients::install(&clients, all, read_only || install_read_only)?,
+        Command::Mcp { view, action } => match action {
+            None => runtime()?.block_on(mcp::serve(tools::Access { read_only: view.read_only, scope: view.scope()? }))?,
+            Some(McpAction::Install { clients, all, view: install_view }) => {
+                let view = install_view.or(&view);
+                clients::install(&clients, all, view.read_only, &view.scope()?, view.names_a_view())?
+            }
             Some(McpAction::Uninstall { clients, all }) => clients::uninstall(&clients, all)?,
             Some(McpAction::Status { json }) => clients::status(json)?,
         },

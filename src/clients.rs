@@ -24,6 +24,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::paths;
+use crate::scope::Scope;
 use state::State;
 use yaml::Yaml;
 
@@ -611,12 +612,15 @@ pub struct Launch {
 }
 
 impl Launch {
-    pub fn current(read_only: bool) -> Result<Launch> {
+    /// How to start this program as a server: read-only or not, with a view of the library
+    /// (everything, by default).
+    pub fn current(read_only: bool, scope: &Scope) -> Result<Launch> {
         let exe = paths::current_exe()?;
         let mut args = vec!["mcp".to_string()];
         if read_only {
             args.push("--read-only".to_string());
         }
+        args.extend(scope.to_args());
         let env = match paths::env_path(paths::ENV_HOME) {
             Some(home) => vec![(paths::ENV_HOME.to_string(), home.to_string_lossy().to_string())],
             None => Vec::new(),
@@ -626,6 +630,12 @@ impl Launch {
 
     pub fn read_only(&self) -> bool {
         self.args.iter().any(|a| a == "--read-only")
+    }
+
+    /// The view of the library this entry gives its client. None when its arguments cannot be
+    /// read (someone edited them by hand into something zone would not start with).
+    pub fn scope(&self) -> Option<Scope> {
+        Scope::from_launch_args(&self.args)
     }
 
     fn env_object(&self) -> Value {
@@ -961,7 +971,7 @@ impl Outcome {
     fn words(&self, target: &Target) -> String {
         match self {
             Outcome::Registered => "registered".to_string(),
-            Outcome::Updated => "registered (replaced an older entry)".to_string(),
+            Outcome::Updated => "registered (changed the entry)".to_string(),
             Outcome::Already => "already registered".to_string(),
             Outcome::NotInstalled => "skipped: not installed".to_string(),
             Outcome::OptedOut => format!("skipped: you removed zone here (`zone mcp install {}` adds it back)", target.client.name()),
@@ -979,6 +989,12 @@ impl Outcome {
 
 /// Registers with one target, following the mode and updating the state.
 pub fn register(target: &Target, launch: &Launch, env: &Env, state: &mut State, mode: Mode) -> Outcome {
+    register_with(target, launch, env, state, mode, false)
+}
+
+/// [`register`], and with `exactly`, an entry that already starts this program is rewritten
+/// when its arguments differ: `zone mcp install --all --no-keyboard` means every client.
+pub fn register_with(target: &Target, launch: &Launch, env: &Env, state: &mut State, mode: Mode, exactly: bool) -> Outcome {
     let id = target.id();
     let existing = read_entry(target, env);
     if let Found::Unreadable(why) = &existing {
@@ -989,7 +1005,7 @@ pub fn register(target: &Target, launch: &Launch, env: &Env, state: &mut State, 
             return Outcome::OptedOut;
         }
         match &existing {
-            Found::Present(found) if found.command == launch.command => {
+            Found::Present(found) if found.command == launch.command && !(exactly && mode == Mode::All) => {
                 state.added(&id);
                 return Outcome::Already;
             }
@@ -1057,6 +1073,12 @@ fn report_line(env: &Env, target: &Target, outcome: &Outcome, width: usize) -> S
 /// Registers with every installed client, or with the given ones. Prints one line per place.
 /// Returns how many places failed.
 pub fn register_many(clients: &[Client], launch: &Launch, mode: Mode, env: &Env, state: &mut State, quiet_when_missing: bool) -> usize {
+    register_many_with(clients, launch, mode, env, state, quiet_when_missing, false)
+}
+
+/// [`register_many`], and with `exactly`, entries that already start this program are made to
+/// match `launch` (see [`register_with`]).
+pub fn register_many_with(clients: &[Client], launch: &Launch, mode: Mode, env: &Env, state: &mut State, quiet_when_missing: bool, exactly: bool) -> usize {
     let mut rows: Vec<(Target, Outcome)> = Vec::new();
     for &client in clients {
         if mode != Mode::Explicit && !client.installed(env) {
@@ -1067,7 +1089,7 @@ pub fn register_many(clients: &[Client], launch: &Launch, mode: Mode, env: &Env,
             continue;
         }
         for target in client.targets(env) {
-            let outcome = register(&target, launch, env, state, mode);
+            let outcome = register_with(&target, launch, env, state, mode, exactly);
             rows.push((target, outcome));
         }
     }
@@ -1116,20 +1138,25 @@ fn closing_lines(launch: &Launch) {
     if launch.read_only() {
         println!("Read-only: agents cannot flag items as processed.");
     }
+    if let Some(limit) = launch.scope().and_then(|scope| scope.for_people()) {
+        println!("{limit}");
+    }
     println!("New agent sessions have it. Apps that were already open (Claude Desktop, Cursor, an editor) need a restart.");
 }
 
-/// `zone mcp install`.
-pub fn install(names: &[String], all: bool, read_only: bool) -> Result<()> {
+/// `zone mcp install`. `scope` is the view of the library the clients get. With `--all`,
+/// `view_named` says a view was asked for by name, and then every client gets exactly it,
+/// also the ones that have zone already.
+pub fn install(names: &[String], all: bool, read_only: bool, scope: &Scope, view_named: bool) -> Result<()> {
     let (clients, all) = chosen(names, all)?;
-    let launch = Launch::current(read_only)?;
+    let launch = Launch::current(read_only, scope)?;
     let env = Env::from_system()?;
     let mut state = data_dir().map(|d| State::load(&d)).unwrap_or_default();
     if all {
         println!("Registering zone with every AI client on this computer:");
         println!();
     }
-    let failed = register_many(&clients, &launch, if all { Mode::All } else { Mode::Explicit }, &env, &mut state, false);
+    let failed = register_many_with(&clients, &launch, if all { Mode::All } else { Mode::Explicit }, &env, &mut state, false, view_named);
     save_state(&state);
     closing_lines(&launch);
     if failed > 0 {
@@ -1180,7 +1207,8 @@ pub fn uninstall(names: &[String], all: bool) -> Result<()> {
 /// Where zone stands with one target, for `status` and `doctor`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Standing {
-    Registered { read_only: bool },
+    /// `scope` is the view the entry gives, or None when its arguments cannot be read.
+    Registered { read_only: bool, scope: Option<Scope> },
     OtherCopy(String),
     NotRegistered,
     OptedOut,
@@ -1200,7 +1228,7 @@ pub fn survey(env: &Env, state: &State, current: &Launch) -> Vec<Row> {
         let installed = client.installed(env);
         for target in client.targets(env) {
             let standing = match read_entry(&target, env) {
-                Found::Present(found) if found.command == current.command => Standing::Registered { read_only: found.read_only() },
+                Found::Present(found) if found.command == current.command => Standing::Registered { read_only: found.read_only(), scope: found.scope() },
                 Found::Present(found) => Standing::OtherCopy(found.command),
                 Found::Absent if state.removed.contains(&target.id()) || state.registered.contains(&target.id()) => Standing::OptedOut,
                 Found::Absent => Standing::NotRegistered,
@@ -1214,7 +1242,7 @@ pub fn survey(env: &Env, state: &State, current: &Launch) -> Vec<Row> {
 
 /// `zone mcp status`.
 pub fn status(as_json: bool) -> Result<()> {
-    let current = Launch::current(false)?;
+    let current = Launch::current(false, &Scope::default())?;
     let env = Env::from_system()?;
     let state = data_dir().map(|d| State::load(&d)).unwrap_or_default();
     let rows = survey(&env, &state, &current);
@@ -1222,8 +1250,19 @@ pub fn status(as_json: bool) -> Result<()> {
         let list: Vec<Value> = rows
             .iter()
             .map(|row| {
+                // For a registered place: whether agents there can flag items, and what they see.
+                let (read_only, scope) = match &row.standing {
+                    Standing::Registered { read_only, scope } => (
+                        Some(*read_only),
+                        Some(match scope {
+                            Some(scope) => json!({ "limited": !scope.is_everything(), "kinds": scope.visible_kinds(), "exclude_sources": scope.exclude_sources }),
+                            None => json!({ "limited": true, "kinds": null, "exclude_sources": null }),
+                        }),
+                    ),
+                    _ => (None, None),
+                };
                 let (standing, detail) = match &row.standing {
-                    Standing::Registered { read_only } => (if *read_only { "registered_read_only" } else { "registered" }, None),
+                    Standing::Registered { read_only, .. } => (if *read_only { "registered_read_only" } else { "registered" }, None),
                     Standing::OtherCopy(command) => ("other_copy", Some(command.clone())),
                     Standing::NotRegistered => ("not_registered", None),
                     Standing::OptedOut => ("removed_by_you", None),
@@ -1237,6 +1276,8 @@ pub fn status(as_json: bool) -> Result<()> {
                     "installed": row.installed,
                     "state": standing,
                     "detail": detail,
+                    "read_only": read_only,
+                    "scope": scope,
                 })
             })
             .collect();
@@ -1252,8 +1293,20 @@ pub fn status(as_json: bool) -> Result<()> {
         let name = row.target.client.name();
         let path = env.show(&row.target.path);
         match &row.standing {
-            Standing::Registered { read_only } => {
-                println!("{label:width$}  {:22}  {path}", if *read_only { "registered, read-only" } else { "registered" })
+            Standing::Registered { read_only, scope } => {
+                let mut words = String::from("registered");
+                if *read_only {
+                    words.push_str(", read-only");
+                }
+                match scope {
+                    Some(scope) => {
+                        if let Some(short) = scope.short() {
+                            words.push_str(&format!(", {short}"));
+                        }
+                    }
+                    None => words.push_str(", with arguments zone cannot read"),
+                }
+                println!("{label:width$}  {words:22}  {path}")
             }
             Standing::OtherCopy(command) => println!("{label:width$}  registered, but it starts another copy: {command} (`zone mcp install {name}` points it here)"),
             Standing::NotRegistered => println!("{label:width$}  not registered          (`zone mcp install {name}`)"),
@@ -1281,7 +1334,7 @@ pub fn status(as_json: bool) -> Result<()> {
 /// `zone install`: registers with every installed client and lets `zone serve` do the same
 /// for clients installed later.
 pub fn register_on_install() -> Result<()> {
-    let launch = Launch::current(false)?;
+    let launch = Launch::current(false, &Scope::default())?;
     let env = Env::from_system()?;
     let dir = paths::ensure_data_dir()?;
     let mut state = State::load(&dir);
@@ -1322,7 +1375,7 @@ pub fn register_on_start(dir: &Path) -> Vec<String> {
     if !state.auto {
         return Vec::new();
     }
-    let Ok(launch) = Launch::current(false) else { return Vec::new() };
+    let Ok(launch) = Launch::current(false, &Scope::default()) else { return Vec::new() };
     if state.exe.as_deref() != Some(launch.command.as_str()) {
         return vec![format!("not registering with new clients: this is {}, and zone install was run from {}", launch.command, state.exe.as_deref().unwrap_or("another copy"))];
     }
@@ -1363,7 +1416,7 @@ pub struct Summary {
 }
 
 pub fn doctor_summary() -> Option<Summary> {
-    let current = Launch::current(false).ok()?;
+    let current = Launch::current(false, &Scope::default()).ok()?;
     let env = Env::from_system().ok()?;
     let state = data_dir().map(|d| State::load(&d)).unwrap_or_default();
     let rows = survey(&env, &state, &current);
