@@ -182,7 +182,9 @@ computer you keep offline. When Link works, Link is easier, because it is automa
 The phone can also flash in color: each picture is three codes at once, one in each of red,
 green and blue, so the same pictures carry three times as much. The page reads color pictures
 on its own, says "Color Flash: 3 codes a picture" while it does, and undoes the way a camera
-blurs the three colors into each other before reading them.
+blurs the three colors into each other before reading them. The colors need not be the pure
+ones: the phone can draw its pictures in a palette of its own, and zone works the palette out
+from each picture.
 
 The page guides you as it goes. It says when the camera is not allowed and how to allow it,
 suggests moving closer, turning the brightness up or tilting away a glare when it sees no code
@@ -204,9 +206,9 @@ a second. At 900 bytes a code and 20 codes a second it is about 18 kilobytes of 
 encrypted data a second; at 300 bytes and 12 a second, 3.6. Ordinary speech compresses to well
 under half its size, so even the slower one is over a thousand words a second. The page sends
 every picture the camera takes (up to 1080 pixels square, two at a time) and zone reads one in
-about 2.5 milliseconds, so the computer keeps up with the camera. In color, each picture carries
-three codes, so the same rate moves three times as much. Those figures come from code
-sizes and from pictures made to look like a webcam's (`zone dev flash-bench`, and the table in
+about 2.5 milliseconds (a color one in about 17), so the computer keeps up with the camera. In
+color, each picture carries three codes, so the same rate moves three times as much. Those
+figures come from code sizes and from pictures made to look like a webcam's (`zone dev flash-bench`, and the table in
 [PROTOCOL.md](PROTOCOL.md#carrier-2-flash)), not from a stopwatch with a real phone: glare, blur
 and distance will cost some codes, so expect it to take longer.
 
@@ -513,8 +515,11 @@ Without `--secret`, flash-decode tries the keys of the phones paired with this l
 the page does. `scripts/flash_reference.py` is the reference for how the codes are made.
 
 `--color` draws color pictures instead, three frames to a picture, and flash-decode reads them
-just the same. `zone dev flash-read <folder>` prints the codes found in each picture, as
-hexadecimal (flash frames are encrypted, so this shows no words).
+just the same. `--levels r0,r1,g0,g1,b0,b1` draws them in a palette: the dark then the light level
+of red, green and blue (`--levels 60,255,0,200,90,255`), the way the phone can for a designed look.
+The reader is never told the palette: it works it out from each picture. `zone dev flash-read
+<folder>` prints the codes found in each picture, as hexadecimal (flash frames are encrypted, so
+this shows no words).
 
 `zone dev flash-bench` times the page's QR reader on pictures made to look like a webcam's: a
 code of the chosen size, scaled to a given width, turned, blurred and noisy (and with `--color`,
@@ -526,7 +531,14 @@ zone dev flash-bench --chunk 900 --code-px 450                   # 900 byte code
 zone dev flash-bench --chunk 700 --tilt 10 --blur 2 --noise 10   # a harder picture
 zone dev flash-bench --color --crosstalk 0.3 --code-px 550 --picture 770   # color Flash
 zone dev flash-bench --chunk 900 --sample /tmp/look.png          # and save one picture to look at
+zone dev flash-bench --color --camera harsh --levels 60,255,0,200,90,255 --code-px 550 --picture 770
+zone dev flash-sweep --table                                     # the palette table in PROTOCOL.md
 ```
+
+`--camera normal`, `harsh` or `blurred` picks one of the made-up cameras the tables in
+[PROTOCOL.md](PROTOCOL.md#the-palette) are measured with. `zone dev flash-sweep` reads color
+pictures for each contrast span (`--spans 255,200,170,150,120`), code width (`--widths
+450,550,700`) and camera (`--cameras normal,harsh`), and prints how many codes were read in each.
 
 iroh is pinned to the 1.4 line, the same one the phone's Swift binding (`iroh-ffi` 1.2.0) uses.
 Endpoint ids are written the way iroh 1.x prints them: 64 lowercase hexadecimal characters.

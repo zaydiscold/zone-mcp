@@ -37,6 +37,8 @@ pub struct EncodeOptions {
     pub name: Option<String>,
     /// Color Flash: three frames to a picture, one per channel.
     pub color: bool,
+    /// The palette of the color pictures. None is dark 0 and light 255 in every channel.
+    pub levels: Option<color::Levels>,
 }
 
 fn key_for_secret(secret: &str) -> Result<[u8; 32]> {
@@ -70,7 +72,7 @@ pub fn encode(options: &EncodeOptions) -> Result<Value> {
             // Frames first, first + 1 and first + 2 in red, green and blue.
             let three: Vec<Vec<u8>> = (0..3).map(|c| encoder.frame(first + c)).collect();
             let refs: Vec<&[u8]> = three.iter().map(|f| f.as_slice()).collect();
-            color::write_png(&path, &color::draw(&refs, options.scale, options.quiet)?)?;
+            color::write_png(&path, &color::draw_with(&refs, options.scale, options.quiet, &options.levels.unwrap_or(color::Levels::FULL))?)?;
         } else {
             qr::write_png(&path, &qr::draw(&encoder.frame(first), options.scale, options.quiet)?)?;
         }
@@ -80,6 +82,7 @@ pub fn encode(options: &EncodeOptions) -> Result<Value> {
         "frames": pictures * per_picture,
         "pictures": pictures,
         "color": options.color,
+        "levels": options.levels.filter(|_| options.color).map(|levels| levels.text()),
         "first_frame": options.first_frame,
         "k": k,
         "chunk": options.chunk,
@@ -297,12 +300,55 @@ pub struct BenchOptions {
     pub color: bool,
     /// How much of each channel's light the camera sees in its neighbours (color only).
     pub crosstalk: f64,
+    /// The palette of the color pictures (color only).
+    pub levels: color::Levels,
+    /// Uneven brightness: how much darker the picture gets, as a share, from its brightest
+    /// part to its far corner (a lens that darkens toward the edges, a screen seen at an angle).
+    pub shade: f64,
+}
+
+/// The cameras the tables in PROTOCOL.md are measured with: how far the phone is turned, how
+/// soft and noisy the picture is, and how much the colors leak into each other.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera {
+    pub name: &'static str,
+    pub tilt: f64,
+    pub blur: usize,
+    pub noise: u8,
+    pub crosstalk: f64,
+    pub shade: f64,
+}
+
+pub const CAMERAS: [Camera; 3] = [
+    // A decent laptop camera, the phone held fairly straight.
+    Camera { name: "normal", tilt: 3.0, blur: 1, noise: 6, crosstalk: 0.15, shade: 0.1 },
+    // A cheap one: twice the leak between colors, more noise, the phone turned further, and
+    // a quarter darker toward one corner.
+    Camera { name: "harsh", tilt: 6.0, blur: 1, noise: 10, crosstalk: 0.3, shade: 0.25 },
+    // The harsh one, out of focus as well.
+    Camera { name: "blurred", tilt: 6.0, blur: 2, noise: 10, crosstalk: 0.3, shade: 0.25 },
+];
+
+impl Camera {
+    pub fn named(name: &str) -> Result<Camera> {
+        CAMERAS.into_iter().find(|camera| camera.name == name.trim()).with_context(|| {
+            format!("the cameras are {}, not \"{name}\"", CAMERAS.iter().map(|c| c.name).collect::<Vec<_>>().join(", "))
+        })
+    }
 }
 
 /// A frame as a camera sees it: the code on a phone's lit screen, turned a little, in a dim
 /// room, slightly soft and noisy, scaled to `code_px` with smooth (not whole pixel) steps.
 pub fn webcam_picture(code: &qr::Gray, options: &BenchOptions, seed: u64) -> qr::Gray {
+    webcam_layer(code, options, seed, (0, 255))
+}
+
+/// [`webcam_picture`] for a code whose dark and light modules are drawn at the given levels
+/// (0 and 255 for a black and white code): one channel of a color picture in a palette.
+fn webcam_layer(code: &qr::Gray, options: &BenchOptions, seed: u64, (dark, light): (u8, u8)) -> qr::Gray {
     let side = options.picture;
+    // What the screen shows for a level, as the camera exposes it: black 32, white 228.
+    let (dark, light) = (32.0 + dark as f64 / 255.0 * 196.0, 32.0 + light as f64 / 255.0 * 196.0);
     let center = side as f64 / 2.0;
     let scale = code.width as f64 / options.code_px as f64;
     let (sin, cos) = options.tilt.to_radians().sin_cos();
@@ -317,8 +363,8 @@ pub fn webcam_picture(code: &qr::Gray, options: &BenchOptions, seed: u64) -> qr:
             let room = 38.0 + 30.0 * (y as f64 / side as f64);
             let half = options.code_px as f64 / 2.0;
             let value = if u.abs() <= half && v.abs() <= half {
-                // The share of this pixel the dark modules cover (three by three samples),
-                // on a screen where white is 228 and black 32.
+                // The share of this pixel the light modules cover (three by three samples),
+                // between the screen's dark and light levels.
                 let mut ink = 0.0;
                 for sy in 0..3 {
                     for sx in 0..3 {
@@ -328,11 +374,20 @@ pub fn webcam_picture(code: &qr::Gray, options: &BenchOptions, seed: u64) -> qr:
                         ink += code.pixels[my.min(code.height - 1) * code.width + mx.min(code.width - 1)] as f64 / 255.0;
                     }
                 }
-                32.0 + ink / 9.0 * 196.0
+                dark + ink / 9.0 * (light - dark)
             } else if u.abs() <= body && v.abs() <= body * 1.6 {
                 14.0
             } else {
                 room
+            };
+            // Uneven brightness: darker toward the edges, and toward the far corner.
+            let value = if options.shade > 0.0 {
+                let (rx, ry) = (dx / center, dy / center);
+                let edge = ((rx * rx + ry * ry) / 2.0).min(1.0);
+                let corner = (x + y) as f64 / (2 * side) as f64;
+                value * (1.0 - options.shade * (0.5 * edge + 0.5 * corner))
+            } else {
+                value
             };
             pixels[y * side + x] = value as u8;
         }
@@ -361,7 +416,11 @@ pub fn webcam_picture(code: &qr::Gray, options: &BenchOptions, seed: u64) -> qr:
 /// as webcams and their video formats do.
 pub fn webcam_color_picture(frames: &[Vec<u8>], options: &BenchOptions, seed: u64) -> Result<color::Rgb> {
     let clean = BenchOptions { blur: 0, noise: 0, sample: None, ..*options };
-    let layers: Vec<qr::Gray> = frames.iter().map(|f| qr::draw(f, 1, 4).map(|code| webcam_picture(&code, &clean, seed))).collect::<Result<_>>()?;
+    let layers: Vec<qr::Gray> = frames
+        .iter()
+        .enumerate()
+        .map(|(c, f)| qr::draw(f, 1, 4).map(|code| webcam_layer(&code, &clean, seed, (options.levels.dark[c.min(2)], options.levels.light[c.min(2)]))))
+        .collect::<Result<_>>()?;
     let side = options.picture;
     let x = options.crosstalk as f32;
     let mix = [[1.0, x, x * 0.5], [x, 1.0, x], [x * 0.5, x, 1.0]];
@@ -377,8 +436,12 @@ pub fn webcam_color_picture(frames: &[Vec<u8>], options: &BenchOptions, seed: u6
                 .collect()
         })
         .collect();
+    // The lens blurs, then the sensor adds its noise: in that order, as in the gray picture.
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     for channel in channels.iter_mut() {
+        if options.blur > 0 {
+            *channel = box_blur(&qr::Gray { width: side, height: side, pixels: std::mem::take(channel) }, options.blur).pixels;
+        }
         if options.noise > 0 {
             let span = 2 * options.noise as u64 + 1;
             for pixel in channel.iter_mut() {
@@ -387,9 +450,6 @@ pub fn webcam_color_picture(frames: &[Vec<u8>], options: &BenchOptions, seed: u6
                 state ^= state << 17;
                 *pixel = (*pixel as i32 + (state % span) as i32 - options.noise as i32).clamp(0, 255) as u8;
             }
-        }
-        if options.blur > 0 {
-            *channel = box_blur(&qr::Gray { width: side, height: side, pixels: std::mem::take(channel) }, options.blur).pixels;
         }
     }
     // 4:2:0: brightness at full resolution, the two color differences averaged over 2 by 2.
@@ -544,8 +604,11 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
         "tilt_degrees": options.tilt,
         "blur_px": options.blur,
         "noise": options.noise,
+        "shade": options.shade,
         "color": options.color,
         "crosstalk": if options.color { Some(options.crosstalk) } else { None },
+        "levels": if options.color { Some(options.levels.text()) } else { None },
+        "span": if options.color { Some(options.levels.min_span()) } else { None },
         "pictures": pictures,
         "frames": frames,
         "read": read,
@@ -563,6 +626,134 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
         "cores": cores,
         "bytes_per_second_at_pictures_a_second": { "12": rate(12.0), "20": rate(20.0), "30": rate(30.0) },
     }))
+}
+
+// -------------------------------------------------------------------- flash-sweep
+
+pub struct SweepOptions {
+    /// Light minus dark, the same in every channel. One row of pictures for each.
+    pub spans: Vec<u8>,
+    /// Where a span sits between 0 and 255: `light` (the light level is 255), `dark` (the dark
+    /// level is 0) or `middle`.
+    pub anchor: String,
+    /// Palettes to measure as well, each as `r0,r1,g0,g1,b0,b1`.
+    pub palettes: Vec<color::Levels>,
+    /// Widths of the code in the picture, in pixels. The picture is 1.4 times as wide.
+    pub widths: Vec<usize>,
+    pub cameras: Vec<Camera>,
+    pub chunk: usize,
+    /// Frames read in each cell (three to a picture).
+    pub frames: usize,
+}
+
+fn anchored(span: u8, anchor: &str) -> Result<color::Levels> {
+    let dark = match anchor {
+        "light" => 255 - span,
+        "dark" => 0,
+        "middle" => (255 - span) / 2,
+        other => bail!("--anchor is light, dark or middle, not {other}"),
+    };
+    Ok(color::Levels { dark: [dark; 3], light: [dark + span; 3] })
+}
+
+/// `zone dev flash-sweep`: how many codes of a color picture are read, for each contrast span,
+/// code width and camera. This is the measurement behind the palette table in PROTOCOL.md.
+pub fn sweep(options: &SweepOptions) -> Result<Value> {
+    let mut palettes: Vec<color::Levels> = options.spans.iter().map(|span| anchored(*span, &options.anchor)).collect::<Result<_>>()?;
+    palettes.extend(options.palettes.iter().copied());
+    // Every cell is independent, so they are measured side by side.
+    let mut cells: Vec<(color::Levels, Camera, usize)> = Vec::new();
+    for levels in &palettes {
+        for camera in &options.cameras {
+            for width in &options.widths {
+                cells.push((*levels, *camera, *width));
+            }
+        }
+    }
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(cells.len().max(1));
+    let per = cells.len().div_ceil(threads).max(1);
+    let measured: Vec<Result<Value>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = cells
+            .chunks(per)
+            .map(|part| {
+                scope.spawn(move || {
+                    part.iter()
+                        .map(|(levels, camera, width)| {
+                            let bench = bench(&BenchOptions {
+                                chunk: options.chunk,
+                                code_px: *width,
+                                picture: (*width as f64 * 1.4).round() as usize,
+                                frames: options.frames,
+                                tilt: camera.tilt,
+                                blur: camera.blur,
+                                noise: camera.noise,
+                                sample: None,
+                                color: true,
+                                crosstalk: camera.crosstalk,
+                                levels: *levels,
+                                shade: camera.shade,
+                            })?;
+                            Ok(json!({
+                                "levels": levels.text(),
+                                "span": levels.min_span(),
+                                "camera": camera.name,
+                                "code_px": width,
+                                "read": bench["read"],
+                                "frames": bench["frames"],
+                                "read_rate": bench["read_rate"],
+                                "decode_ms": bench["decode_ms"]["median"],
+                            }))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|handle| handle.join().unwrap_or_default()).collect()
+    });
+    let rows: Vec<Value> = measured.into_iter().collect::<Result<_>>()?;
+    Ok(json!({
+        "chunk": options.chunk,
+        "frames_per_cell": options.frames,
+        "cameras": options.cameras.iter().map(|c| json!({ "name": c.name, "tilt_degrees": c.tilt, "blur_px": c.blur, "noise": c.noise, "crosstalk": c.crosstalk, "shade": c.shade })).collect::<Vec<_>>(),
+        "rows": rows,
+    }))
+}
+
+/// The sweep as a table for PROTOCOL.md: one line per palette, one column per camera and
+/// width, each cell the codes read out of those shown.
+pub fn sweep_table(report: &Value) -> String {
+    let rows = report["rows"].as_array().cloned().unwrap_or_default();
+    let mut columns: Vec<(String, u64)> = Vec::new();
+    let mut palettes: Vec<String> = Vec::new();
+    for row in &rows {
+        let column = (row["camera"].as_str().unwrap_or("").to_string(), row["code_px"].as_u64().unwrap_or(0));
+        if !columns.contains(&column) {
+            columns.push(column);
+        }
+        let palette = row["levels"].as_str().unwrap_or("").to_string();
+        if !palettes.contains(&palette) {
+            palettes.push(palette);
+        }
+    }
+    let mut out = String::from("| Span | Levels (r0,r1,g0,g1,b0,b1) |");
+    for (camera, width) in &columns {
+        out.push_str(&format!(" {camera}, {width} px |"));
+    }
+    out.push_str("\n| --- | --- |");
+    out.push_str(&" --- |".repeat(columns.len()));
+    for palette in &palettes {
+        let span = rows.iter().find(|r| r["levels"] == palette.as_str()).map(|r| r["span"].as_u64().unwrap_or(0)).unwrap_or(0);
+        out.push_str(&format!("\n| {span} | {palette} |"));
+        for (camera, width) in &columns {
+            let cell = rows.iter().find(|r| r["levels"] == palette.as_str() && r["camera"] == camera.as_str() && r["code_px"] == *width);
+            match cell {
+                Some(cell) => out.push_str(&format!(" {} of {} |", cell["read"], cell["frames"])),
+                None => out.push_str(" |"),
+            }
+        }
+    }
+    out.push('\n');
+    out
 }
 
 #[cfg(test)]
@@ -587,6 +778,7 @@ mod tests {
             phone_id: None,
             name: None,
             color: false,
+            levels: None,
         }
     }
 
@@ -621,6 +813,56 @@ mod tests {
         encode(&gray).unwrap();
         let report = decode(&DecodeOptions { dir: out, secret: Some(SECRET.to_string()), import: false }).unwrap();
         assert_eq!((report["complete"].as_bool(), report["color_pictures"].as_u64()), (Some(true), Some(pictures as u64)));
+    }
+
+    #[test]
+    fn color_pictures_in_a_palette_open_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("palette");
+        let mut options = encode_options(&out);
+        options.color = true;
+        options.count = 120;
+        options.levels = Some(color::Levels::parse("60,255,0,200,90,255").unwrap());
+        let made = encode(&options).unwrap();
+        assert_eq!(made["levels"], "60,255,0,200,90,255");
+        // The pictures really are in the palette: the corner is the all-light color.
+        let first = color::read_png(&png_files(&out).unwrap()[0]).unwrap();
+        assert_eq!(&first.pixels[..3], &[255, 200, 255]);
+        let report = decode(&DecodeOptions { dir: out, secret: Some(SECRET.to_string()), import: false }).unwrap();
+        assert_eq!((report["complete"].as_bool(), report["items"].as_u64()), (Some(true), Some(120)), "{report}");
+        assert_eq!(report["color_pictures"], made["pictures"]);
+        // Black and white pictures say nothing of a palette.
+        assert_eq!(encode(&encode_options(&dir.path().join("gray"))).unwrap()["levels"], Value::Null);
+    }
+
+    #[test]
+    fn the_sweep_measures_each_palette_camera_and_width() {
+        assert_eq!(Camera::named("harsh").unwrap().crosstalk, 0.3);
+        assert!(Camera::named("perfect").is_err());
+        assert_eq!(anchored(150, "light").unwrap().text(), "105,255,105,255,105,255");
+        assert_eq!(anchored(150, "dark").unwrap().text(), "0,150,0,150,0,150");
+        assert_eq!(anchored(150, "middle").unwrap().text(), "52,202,52,202,52,202");
+        assert!(anchored(150, "left").is_err());
+        let report = sweep(&SweepOptions {
+            spans: vec![150],
+            anchor: "light".to_string(),
+            palettes: vec![color::Levels::parse("60,255,0,200,90,255").unwrap()],
+            widths: vec![450],
+            cameras: vec![Camera::named("normal").unwrap(), Camera::named("harsh").unwrap()],
+            chunk: 300,
+            frames: 6,
+        })
+        .unwrap();
+        let rows = report["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 4, "{report}");
+        // Version 11 codes at 450 pixels are easy: every code of every cell is read.
+        for row in rows {
+            assert_eq!((row["read"].as_u64(), row["frames"].as_u64()), (Some(6), Some(6)), "{row}");
+        }
+        assert_eq!((rows[0]["span"].as_u64(), rows[2]["span"].as_u64(), rows[1]["camera"].as_str()), (Some(150), Some(165), Some("harsh")));
+        let table = sweep_table(&report);
+        assert!(table.starts_with("| Span | Levels (r0,r1,g0,g1,b0,b1) | normal, 450 px | harsh, 450 px |\n| --- | --- | --- | --- |\n"), "{table}");
+        assert!(table.contains("| 150 | 105,255,105,255,105,255 | 6 of 6 | 6 of 6 |") && table.contains("| 165 | 60,255,0,200,90,255 | 6 of 6 | 6 of 6 |"), "{table}");
     }
 
     #[test]

@@ -121,27 +121,64 @@ For networks that block everything, and for the fun of it. The phone shows a rap
   | 700 | 717 bytes | version 18, 89 modules | 2.3 ms | 100% | 8.4, 14, 21 kB/s |
   | 900 | 917 bytes | version 21, 101 modules | 2.5 ms | 100% | 10.8, 18, 27 kB/s |
 
-  With the code only 450 pixels wide (about 4 pixels per module at `c` = 900), all are still read, and so are all of the version 18 codes in a harsh case (turned 10 degrees, blur radius 2, noise plus or minus 10). A picture with no code in it costs under 2 ms while the page waits for a phone, and about 12 ms while codes are in view, when a second reader takes a look too. Sent at the full 1080 pixel square of a 1080p camera, a picture takes about 4 ms. A color picture (below) carries three codes and takes 11 to 19 ms. The data rate counts compressed, sealed bytes: ordinary speech compresses to well under half its size.
+  With the code only 450 pixels wide (about 4 pixels per module at `c` = 900), all are still read, and so are all of the version 18 codes in a harsh case (turned 10 degrees, blur radius 2, noise plus or minus 10). A picture with no code in it costs under 2 ms while the page waits for a phone, and about 12 ms while codes are in view, when a second reader takes a look too. Sent at the full 1080 pixel square of a 1080p camera, a picture takes about 4 ms. A color picture (below) carries three codes and takes 16 to 21 ms. The data rate counts compressed, sealed bytes: ordinary speech compresses to well under half its size.
 
 ### Color Flash
 
 A picture may carry up to three frames at once, one in each color channel. Each is an ordinary frame as above (same `ZF1` format, same session); nothing in a frame says it travelled in color.
 
-- In a channel, a light module is 255 and a dark module 0. A picture holding frames A, B and C is red from A, green from B and blue from C, so every module is one of eight colors: black, white, red, green, blue, cyan, magenta or yellow.
-- The frames of one picture have the same length, so their QR codes are the same version and their finder patterns, timing patterns, alignment patterns and quiet zone line up: black where all three are dark, white where all three are light. A picture with fewer than three frames repeats one of them in the spare channels.
+- In a channel a module is at one of two levels, a dark one and a light one. A picture holding frames A, B and C is red from A, green from B and blue from C, so every module is one of eight colors: all three dark, all three light, and the six in between.
+- The frames of one picture have the same length, so their QR codes are the same version and their finder patterns, timing patterns, alignment patterns and quiet zone line up: the all-dark color where all three are dark, the all-light color where all three are light. A picture with fewer than three frames repeats one of them in the spare channels.
 - Which frame goes in which channel, and which frames share a picture, is the sender's choice. The receiver must not depend on either: it reads each channel as a code of its own and keeps frames by `(session, i)` as always, so a frame seen twice counts once.
-- Senders may still send black and white pictures, and may mix the two in one flash. The receiver reads a picture in gray when it is not colorful.
+- Senders may still send black and white pictures, and may mix the two in one flash. The receiver reads a picture in gray when it is not a color code.
 - A color picture carries three frames, so it moves three times the data of a black and white one at the same QR version and the same pictures a second.
 
-What the receiver has to undo: a camera sees each of the phone's colors partly in its neighbouring channels (crosstalk, commonly 10 to 30%), and webcams store color at half the resolution of brightness (4:2:0). The computer estimates the camera's 3 by 3 mixing and black level from each picture (its pixels gather around the eight colors) and turns the mixing around before reading the channels (`src/flash/color.rs`). Measured with `zone dev flash-bench --color` (version 21 codes, `c` = 900, turned 3 to 6 degrees, blur radius 1, noise plus or minus 6 to 10, 4:2:0, the picture 1.4 times the code's width; one core of an Apple M4 Pro):
+#### The palette
 
-| Code width | Crosstalk 0.15 | Crosstalk 0.3 | Crosstalk 0.3, blur radius 2 | Read time per picture |
+The plain palette is dark 0 and light 255 in every channel: black, white, red, green, blue, cyan, magenta, yellow. The sender may instead give each channel its own two levels, so that the picture has a designed look. Written `r0,r1,g0,g1,b0,b1` (the dark then the light level of red, of green, of blue, each 0 to 255 in the screen's own color space, sRGB), the plain palette is `0,255,0,255,0,255`, and `60,255,0,200,90,255` is a palette whose all-dark color is a deep violet and whose all-light color is a pale magenta.
+
+The contract, for the sender:
+
+- **Constant within a picture.** Every module of a channel is exactly at that channel's dark level or its light level: no gradients, no third level, no antialiasing between modules. The quiet zone (four modules) is the all-light color `(r1, g1, b1)` and the dark of the finder patterns is the all-dark color `(r0, g0, b0)`.
+- **Free between pictures.** Each picture may have its own palette. Nothing in a frame or a picture says which: the receiver works the palette out from each picture by itself, so there is nothing to keep in step.
+- **Light above dark, by at least 120.** In every channel `light - dark` (the span) is at least 120. 150 or more is recommended until this has been filmed with real cameras. Where the span sits between 0 and 255 does not matter (`0,120`, `67,187` and `135,255` read alike).
+- **Green carries the most.** A camera's green sees part of the red and part of the blue light, so green is the channel that suffers when it has less contrast than its neighbours. Give green a span at least as large as red's and blue's. Red or blue may have less than the others.
+- **Three different frames, or one.** A picture needs all eight colors for the receiver to work out the palette (random-looking sealed data gives them). A picture that repeats a frame in two channels has only four and is read by its raw channels: use the plain palette for those, or black and white.
+- Around the code, anything that is not busy: a plain background, the phone's own interface, the retro sweep between pictures. The receiver looks only at the middle of the code to learn the palette.
+
+What the receiver has to undo: a camera sees each of the phone's colors partly in its neighbouring channels (crosstalk, commonly 10 to 30%), webcams store color at half the resolution of brightness (4:2:0), and exposure moves every level. What the camera shows of a module is close to `dark + M * s`, where `s` holds the module's three bits, `dark` is the all-dark color as the camera sees it, and the 3 by 3 matrix `M` holds both the palette's spans and the camera's mixing. The computer finds `dark` and `M` from each picture (`src/flash/color.rs`): it finds the code as the busy part of the picture and looks at the middle of it, finds the eight colors there (as the places the pixels are densest, or by sorting the pixels into eight groups, whichever explains the pixels better), tells which color is which from the shape the eight make (the corners of a slanted box, the all-dark color its darkest corner), and turns `M` around. Each channel then comes back on its own, stretched to full contrast whatever the span was, and is read like any black and white code.
+
+Measured with `zone dev flash-sweep` (300 codes in each cell, three to a picture; version 21 codes, `c` = 900; the picture 1.4 times the code's width; one core of an Apple M4 Pro). The cameras are made up, and nothing here has been filmed with a real phone and camera yet:
+
+| Camera | Turned | Blur radius | Noise | Crosstalk | Darker toward the far corner |
+| --- | --- | --- | --- | --- | --- |
+| normal | 3 degrees | 1 | plus or minus 6 | 0.15 | 10% |
+| harsh | 6 degrees | 1 | plus or minus 10 | 0.3 | 25% |
+| blurred | 6 degrees | 2 | plus or minus 10 | 0.3 | 25% |
+
+Codes read out of 300, by span (the same in every channel, light at 255) and by the code's width in the picture:
+
+| Span | Levels | normal 450, 550, 700 px | harsh 450, 550, 700 px | blurred 450, 550, 700 px |
 | --- | --- | --- | --- | --- |
-| 450 px | 90 of 90 codes | 90 of 90 | 1 of 90 | 11 ms |
-| 550 px | 90 of 90 | 90 of 90 | 79 of 90 | 14 ms |
-| 700 px | 90 of 90 | 90 of 90 | 90 of 90 | 19 ms |
+| 255 | `0,255,0,255,0,255` | 300, 300, 300 | 300, 300, 300 | 300, 300, 300 |
+| 200 | `55,255,55,255,55,255` | 300, 300, 300 | 300, 300, 300 | 300, 300, 300 |
+| 170 | `85,255,85,255,85,255` | 300, 300, 300 | 300, 300, 300 | 300, 300, 300 |
+| 150 | `105,255,105,255,105,255` | 300, 300, 300 | 300, 300, 300 | 300, 300, 300 |
+| 120 | `135,255,135,255,135,255` | 300, 300, 300 | 300, 300, 300 | 300, 300, 300 |
+| 100 | `155,255,155,255,155,255` | 300, 300, 300 | 300, 300, 300 | 298, 300, 300 |
+| 80 | `175,255,175,255,175,255` | 300, 300, 300 | 300, 300, 300 | 283, 291, 298 |
 
-So a color code wants a little more of the camera's picture than a black and white one: about 550 pixels across for version 21. None of this has been filmed with a real phone and camera yet.
+So 120 is the smallest span at which every code was read in every camera and at every width, and it is the floor of the contract. Spans of 150, 120 and 100 placed with dark at 0 (`0,150,...`) and in the middle (`52,202,...`) gave the same counts as with light at 255, to within three codes in the blurred camera at span 100. Palettes with different spans in the three channels:
+
+| Levels | Spans (red, green, blue) | normal | harsh | blurred 450, 550, 700 px |
+| --- | --- | --- | --- | --- |
+| `60,255,0,200,90,255` | 195, 200, 165 | all | all | 300, 300, 300 |
+| `105,255,0,255,105,255` | 150, 255, 150 | all | all | 300, 300 (700 not measured) |
+| `100,220,100,220,0,255` | 120, 120, 255 | all | all | 249, 299, 300 |
+| `0,255,52,202,0,255` | 255, 150, 255 | all | all | 283, 300 (700 not measured) |
+| `0,255,60,180,0,255` | 255, 120, 255 | all | all | 269, 300, 300 |
+
+That is where "green carries the most" comes from: a green with less contrast than both of its neighbours is the one case that lost codes above the floor, and only in the out-of-focus camera with the code small in the picture. Reading one color picture takes 16 to 21 ms on one core (450 to 700 pixels), against 4 ms for a black and white one. What these made-up cameras do not have: the blocks and ringing of a webcam's video compression, the moire between screen pixels and sensor pixels, glare, and a white balance that drifts. All of them cost contrast, which is why 150 is the recommendation and 120 the floor.
 
 `scripts/flash_reference.py` is the reference encoder and decoder. Both implementations must reproduce its vector: session `0x01020304`, payload byte `i` = `(i*7+3) mod 256` for 1280 bytes, `c` = 300, so `k` = 5. The chunk sets of frames 5 to 12 are `[1] [0,3] [1] [0,3,4] [1,2,4] [1] [1,2,3] [2,4]`, and the SHA-256 of frames 0 to 39 concatenated is `16e659e1a7b1a24735a6f04aeca9514d3ab1a59f285993c2b1e6e97a00c39b12`.
 

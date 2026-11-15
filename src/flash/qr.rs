@@ -345,7 +345,7 @@ mod tests {
         // about 520 pixels wide in a 720 pixel picture: what the page posts.
         use crate::flash::dev::{BenchOptions, webcam_picture};
         for chunk in [700, 900] {
-            let options = BenchOptions { chunk, code_px: 520, picture: 720, frames: 1, tilt: 4.0, blur: 1, noise: 6, sample: None, color: false, crosstalk: 0.0 };
+            let options = BenchOptions { chunk, code_px: 520, picture: 720, frames: 1, tilt: 4.0, blur: 1, noise: 6, sample: None, color: false, crosstalk: 0.0, levels: crate::flash::color::Levels::FULL, shade: 0.0 };
             for seed in 0..3u64 {
                 let bytes: Vec<u8> = (0..chunk + 17).map(|i| (i as u64 * 131 + seed * 7) as u8).collect();
                 let picture = webcam_picture(&draw(&bytes, 1, 4).unwrap(), &options, seed + 1);

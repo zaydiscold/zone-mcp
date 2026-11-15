@@ -363,16 +363,33 @@ select { background: var(--raised); border: 1px solid var(--line); border-radius
     return response.json();
   }
 
-  // How much of a picture is strongly colored, from a sparse sample. A color Flash picture
-  // is mostly saturated colors; a black and white code, even under warm light, is not.
-  function colorful(rgba) {
-    let colored = 0, seen = 0;
-    for (let i = 0; i < rgba.length; i += 4 * 61) {
-      const r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
-      if (Math.max(r, g, b) - Math.min(r, g, b) > 64) colored++;
-      seen++;
+  // How much of the middle of a picture is colored, from a sparse sample. Each channel is
+  // measured against its own range there (its darkest level is 0, its lightest 1), so the
+  // palette of a color Flash and the light in the room do not matter: in a black and white
+  // code, even a tinted one, a pixel's three channels then agree, and in a color code most
+  // pixels have one channel light where another is dark. zone itself decides the same way.
+  function colorful(rgba, side) {
+    const from = side >> 2, to = side - from, step = Math.max(1, Math.floor((to - from) / 48));
+    const r = [], g = [], b = [];
+    for (let y = from, row = 0; y < to; y += step, row++) {
+      for (let x = from + (row & 1 ? step >> 1 : 0); x < to; x += step) {
+        const i = 4 * (y * side + x);
+        r.push(rgba[i]); g.push(rgba[i + 1]); b.push(rgba[i + 2]);
+      }
     }
-    return seen ? colored / seen : 0;
+    if (r.length < 64) return 0;
+    const range = (values) => {
+      const sorted = Uint8Array.from(values).sort(), cut = Math.floor(sorted.length / 50);
+      return [sorted[cut], sorted[sorted.length - 1 - cut]];
+    };
+    const [r0, r1] = range(r), [g0, g1] = range(g), [b0, b1] = range(b);
+    if (r1 - r0 < 24 || g1 - g0 < 24 || b1 - b0 < 24) return 0;
+    let colored = 0;
+    for (let k = 0; k < r.length; k++) {
+      const x = (r[k] - r0) / (r1 - r0), y = (g[k] - g0) / (g1 - g0), z = (b[k] - b0) / (b1 - b0);
+      if (Math.max(x, y, z) - Math.min(x, y, z) > 0.35) colored++;
+    }
+    return colored / r.length;
   }
 
   // One picture: the middle square of what the camera sees. In gray (one byte a pixel) for
@@ -386,7 +403,7 @@ select { background: var(--raised); border: 1px solid var(--line); border-radius
     if (grabCanvas.width !== side) { grabCanvas.width = side; grabCanvas.height = side; }
     grabContext.drawImage(video, (vw - crop) / 2, (vh - crop) / 2, crop, crop, 0, 0, side, side);
     const rgba = grabContext.getImageData(0, 0, side, side).data;
-    if (colorful(rgba) >= 0.12 || performance.now() - colorSeenAt < 2000) {
+    if (colorful(rgba, side) >= 0.12 || performance.now() - colorSeenAt < 2000) {
       const rgb = new Uint8Array(side * side * 3);
       for (let i = 0, j = 0; j < rgb.length; i += 4, j += 3) { rgb[j] = rgba[i]; rgb[j + 1] = rgba[i + 1]; rgb[j + 2] = rgba[i + 2]; }
       return { side, body: rgb, format: "rgb" };

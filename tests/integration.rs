@@ -682,6 +682,35 @@ fn color_flash_pictures_through_the_command_line_and_the_daemon() {
     let events = feed(&sandbox, &[]);
     let flash = events.iter().find(|e| e["event"] == "flash_received").unwrap();
     assert_eq!((flash["color"].as_bool(), flash["new"].as_u64(), flash["device"].as_str()), (Some(true), Some(300), Some("Color phone")), "{flash}");
+
+    // The same flash drawn in a designed palette (each channel with its own dark and light
+    // level) reads the same, by the command line and by the daemon, without either being told
+    // the palette. Everything in it is already here.
+    let palette = sandbox.home.join("palette");
+    let dir = palette.to_str().unwrap();
+    let levels = "60,255,0,200,90,255";
+    let made = sandbox.json(&["dev", "flash-encode", "--color", "--levels", levels, "--out", dir, "--secret", &secret, "--count", "300", "--chunk", "700", "--scale", "3", "--name", "Color phone"]);
+    assert_eq!(made["levels"], levels);
+    let report = sandbox.json(&["dev", "flash-decode", dir, "--secret", &secret]);
+    assert_eq!((report["complete"].as_bool(), report["items"].as_u64(), report["color_pictures"].as_u64()), (Some(true), Some(300), made["pictures"].as_u64()), "{report}");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&palette).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    let (width, height, pixels) = read_rgb_png(&files[0]);
+    assert_eq!(&pixels[..3], &[255, 200, 255], "the quiet zone is the all-light color");
+    let mut last = Value::Null;
+    for file in &files {
+        let (width, height, pixels) = read_rgb_png(file);
+        last = http_post(port, &format!("/api/flash/picture?w={width}&h={height}&format=rgb"), &cookie, &pixels).1;
+        if last["state"] == "done" {
+            break;
+        }
+        assert_eq!((last["last"]["frames"].as_u64(), last["last"]["color"].as_bool()), (Some(3), Some(true)), "{last}");
+    }
+    assert_eq!((last["state"].as_str(), last["result"]["unchanged"].as_u64(), last["result"]["paired"].as_bool()), (Some("done"), Some(300), Some(false)), "{last}");
+    assert!(width == height && width > 100);
+    // Levels that are not a palette are refused.
+    assert!(!sandbox.run(&["dev", "flash-encode", "--color", "--levels", "0,255,200,100,0,255", "--out", dir, "--secret", &secret]).status.success());
+    assert!(!sandbox.run(&["dev", "flash-encode", "--levels", levels, "--out", dir, "--secret", &secret]).status.success(), "--levels needs --color");
 }
 
 // ------------------------------------------------------------------------- backup import and queries

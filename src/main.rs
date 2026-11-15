@@ -406,6 +406,10 @@ enum DevAction {
         /// Color Flash: draw three frames to a picture, in red, green and blue
         #[arg(long)]
         color: bool,
+        /// With --color, the palette: the dark then the light level of red, green and blue,
+        /// as r0,r1,g0,g1,b0,b1 (default 0,255,0,255,0,255)
+        #[arg(long, value_name = "LEVELS", requires = "color", allow_hyphen_values = true)]
+        levels: Option<String>,
     },
     /// Read a folder of PNG pictures of flash frames, rebuild the flash and report counts
     FlashDecode {
@@ -457,6 +461,46 @@ enum DevAction {
         /// With --color, how much of each channel the camera sees in its neighbours
         #[arg(long, default_value_t = 0.15)]
         crosstalk: f64,
+        /// With --color, the palette as r0,r1,g0,g1,b0,b1 (default 0,255,0,255,0,255)
+        #[arg(long, value_name = "LEVELS", conflicts_with = "span")]
+        levels: Option<String>,
+        /// With --color, a palette of this contrast in every channel: light 255, dark 255 less this
+        #[arg(long, value_name = "SPAN")]
+        span: Option<u8>,
+        /// Uneven brightness: how much darker the picture gets toward its far corner (0.25 is a quarter)
+        #[arg(long, default_value_t = 0.0)]
+        shade: f64,
+        /// Use one of the cameras of PROTOCOL.md's tables (normal, harsh, blurred) for
+        /// --tilt, --blur, --noise, --crosstalk and --shade
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["tilt", "blur", "noise", "crosstalk", "shade"])]
+        camera: Option<String>,
+    },
+    /// Measure how many codes of a color picture are read, for each contrast, code width and camera
+    FlashSweep {
+        /// Contrast spans to measure: light minus dark, the same in every channel
+        #[arg(long, value_delimiter = ',', default_value = "255,200,170,150,120")]
+        spans: Vec<u8>,
+        /// Where a span sits: light (light is 255), dark (dark is 0) or middle
+        #[arg(long, default_value = "light")]
+        anchor: String,
+        /// A palette to measure as well, as r0,r1,g0,g1,b0,b1 (repeatable)
+        #[arg(long, value_name = "LEVELS")]
+        levels: Vec<String>,
+        /// Widths of the code in the picture, in pixels. The picture is 1.4 times as wide
+        #[arg(long, value_delimiter = ',', default_value = "450,550,700")]
+        widths: Vec<usize>,
+        /// Cameras: normal, harsh, blurred
+        #[arg(long, value_delimiter = ',', default_value = "normal,harsh")]
+        cameras: Vec<String>,
+        /// Bytes per frame body
+        #[arg(long, default_value_t = flash::fountain::DEFAULT_CHUNK)]
+        chunk: usize,
+        /// Frames read in each cell, three to a picture
+        #[arg(long, default_value_t = 90)]
+        frames: usize,
+        /// Print a table for PROTOCOL.md instead of JSON
+        #[arg(long)]
+        table: bool,
     },
     /// Print synthetic items as JSON Lines
     Synthetic {
@@ -568,17 +612,51 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 let report = runtime()?.block_on(fakephone::run(options))?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
             }
-            DevAction::FlashEncode { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name, color } => {
+            DevAction::FlashEncode { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name, color, levels } => {
+                let levels = levels.as_deref().map(flash::color::Levels::parse).transpose()?;
                 let session = match session {
                     Some(text) => Some(u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| anyhow::anyhow!("--session is up to 8 hex characters"))?),
                     None => None,
                 };
-                let options = flash::dev::EncodeOptions { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name, color };
+                let options = flash::dev::EncodeOptions { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name, color, levels };
                 println!("{}", serde_json::to_string_pretty(&flash::dev::encode(&options)?)?);
             }
-            DevAction::FlashBench { chunk, code_px, picture, frames, tilt, blur, noise, sample, color, crosstalk } => {
-                let options = flash::dev::BenchOptions { chunk, code_px, picture, frames, tilt, blur, noise, sample, color, crosstalk };
+            DevAction::FlashBench { chunk, code_px, picture, frames, tilt, blur, noise, sample, color, crosstalk, levels, span, shade, camera } => {
+                let levels = match (levels, span) {
+                    (Some(text), _) => flash::color::Levels::parse(&text)?,
+                    (None, Some(0)) => anyhow::bail!("--span is 1 to 255"),
+                    (None, Some(span)) => flash::color::Levels::with_span(span),
+                    (None, None) => flash::color::Levels::FULL,
+                };
+                let (tilt, blur, noise, crosstalk, shade) = match camera {
+                    Some(name) => {
+                        let camera = flash::dev::Camera::named(&name)?;
+                        (camera.tilt, camera.blur, camera.noise, camera.crosstalk, camera.shade)
+                    }
+                    None => (tilt, blur, noise, crosstalk, shade),
+                };
+                let options = flash::dev::BenchOptions { chunk, code_px, picture, frames, tilt, blur, noise, sample, color, crosstalk, levels, shade };
                 println!("{}", serde_json::to_string_pretty(&flash::dev::bench(&options)?)?);
+            }
+            DevAction::FlashSweep { spans, anchor, levels, widths, cameras, chunk, frames, table } => {
+                if spans.contains(&0) {
+                    anyhow::bail!("--spans are 1 to 255");
+                }
+                let options = flash::dev::SweepOptions {
+                    spans,
+                    anchor,
+                    palettes: levels.iter().map(|text| flash::color::Levels::parse(text)).collect::<Result<_>>()?,
+                    widths,
+                    cameras: cameras.iter().map(|name| flash::dev::Camera::named(name)).collect::<Result<_>>()?,
+                    chunk,
+                    frames,
+                };
+                let report = flash::dev::sweep(&options)?;
+                if table {
+                    print!("{}", flash::dev::sweep_table(&report));
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                }
             }
             DevAction::FlashRead { dir, no_unmix } => {
                 for line in flash::dev::read_folder(&dir, !no_unmix)? {
