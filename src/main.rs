@@ -152,6 +152,9 @@ enum Command {
         order: Option<String>,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Continue after an earlier page: the cursor that search printed
+        #[arg(long)]
+        cursor: Option<String>,
         /// Print JSON instead of text
         #[arg(long)]
         json: bool,
@@ -375,12 +378,12 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
         }
         Command::List { filter, order, limit, all, json } => cli::list(&Db::open_default()?, &filter, &order, limit, all, json)?,
-        Command::Search { query, filter, order, limit, json } => {
+        Command::Search { query, filter, order, limit, cursor, json } => {
             let query = query.join(" ");
             if query.trim().is_empty() {
                 anyhow::bail!("say what to search for: zone search <words>");
             }
-            cli::search(&Db::open_default()?, &query, &filter, order.as_deref(), limit, json)?
+            cli::search(&Db::open_default()?, &query, &filter, order.as_deref(), limit, cursor.as_deref(), json)?
         }
         Command::Show { ids, tz, json } => cli::show(&Db::open_default()?, &ids, tz.as_deref(), json)?,
         Command::Stats { filter, by, json } => cli::stats(&Db::open_default()?, &filter, &by, json)?,

@@ -136,7 +136,7 @@ Deliberately few.
 | Tool | What it does |
 | --- | --- |
 | `list_items(start?, end?, kinds?, sources?, order?, limit?, cursor?, unprocessed_only?, timezone?)` | Short cards for a time range (id, kind, source, local time with weekday and UTC offset, duration, word count, first 200 characters, processed flag), the total that match, counts by kind, and a cursor for the next page. |
-| `search_items(query, start?, end?, kinds?, sources?, limit?, timezone?)` | Full-text search with snippets around the matches. Says when results were cut. |
+| `search_items(query, start?, end?, kinds?, sources?, limit?, cursor?, timezone?)` | Full-text search with snippets around the matches, best match first, with a cursor for the next page. |
 | `get_items(ids, max_chars?, offset?, timezone?)` | Full text, bounded, with a `truncated` flag and `next_offset`. |
 | `library_stats(start?, end?, group_by?, kinds?, sources?, timezone?)` | Counts, words and recorded seconds by local day, kind or source. |
 | `sync_status()` | The computer's current local time, weekday and time zone (so an agent can resolve "Wednesday"), paired phones, last sync per carrier, counts. |

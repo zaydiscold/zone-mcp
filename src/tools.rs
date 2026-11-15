@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
 
 use crate::daemon_info::DaemonInfo;
-use crate::db::{Cursor, Db, Filter, Order, Row};
+use crate::db::{Cursor, Db, Filter, Order, Row, SearchCursor};
 use crate::item::preview;
 use crate::paths;
 use crate::timeparse::{Bound, Clock, format_offset, unix};
@@ -43,7 +43,8 @@ library is.
 - `list_items` returns short cards for a time range, newest or oldest first, with a total count and \
 a cursor for the next page. Times without an offset are read in the computer's time zone unless \
 you pass `timezone`.
-- `search_items` finds words. `get_items` returns full text for ids you picked from cards.
+- `search_items` finds words, best match first, with a cursor for the next page. `get_items` \
+returns full text for ids you picked from cards.
 - `mark_processed` only sets a flag so you can work through items once (`unprocessed_only` skips \
 flagged items). Nothing here can edit or delete the person's words.
 
@@ -131,6 +132,10 @@ pub fn definitions(read_only: bool) -> Vec<ToolDef> {
     search_properties.insert(
         "limit".into(),
         json!({ "type": "integer", "minimum": 1, "maximum": MAX_SEARCH_LIMIT, "default": DEFAULT_SEARCH_LIMIT, "description": "How many matches to return, best match first." }),
+    );
+    search_properties.insert(
+        "cursor".into(),
+        json!({ "type": "string", "description": "next_cursor from the previous call, for the matches after it. Keep the other arguments the same." }),
     );
 
     let mut stats_properties = common_filters();
@@ -387,7 +392,12 @@ fn search_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
     let clock = clock(args)?;
     let (filter, range) = filter(args, &clock)?;
     let limit = opt_usize(args, "limit")?.unwrap_or(DEFAULT_SEARCH_LIMIT).clamp(1, MAX_SEARCH_LIMIT);
-    let result = db.search(&query, &filter, None, limit)?;
+    let offset = match opt_string(args, "cursor")? {
+        Some(text) => SearchCursor::decode(&text)?.0,
+        None => 0,
+    };
+    let result = db.search_page(&query, &filter, None, limit, offset)?;
+    let next_cursor = SearchCursor::next(offset, result.hits.len(), result.total).map(|c| c.encode());
     let items: Vec<Value> = result
         .hits
         .iter()
@@ -406,21 +416,23 @@ fn search_items(db: &mut Db, args: &Map<String, Value>) -> Result<Value> {
             Value::Object(entry)
         })
         .collect();
-    let truncated = result.total > items.len() as i64;
+    let truncated = next_cursor.is_some();
     let mut out = Map::new();
     out.insert("query".into(), json!(query));
     out.insert("range".into(), range);
     out.insert("total".into(), json!(result.total));
     out.insert("returned".into(), json!(items.len()));
     out.insert("truncated".into(), json!(truncated));
+    out.insert("next_cursor".into(), json!(next_cursor));
     if truncated {
+        let shown = if offset == 0 {
+            format!("Showing the {} best of {} matches.", items.len(), result.total)
+        } else {
+            format!("Showing matches {} to {} of {}.", offset + 1, offset + items.len(), result.total)
+        };
         out.insert(
             "note".into(),
-            json!(format!(
-                "Showing the {} best of {} matches. Raise limit (up to {MAX_SEARCH_LIMIT}) or narrow with start, end, kinds or sources.",
-                items.len(),
-                result.total
-            )),
+            json!(format!("{shown} Pass next_cursor as cursor for the ones after, or narrow with start, end, kinds or sources.")),
         );
     }
     match result.matched {
@@ -842,6 +854,12 @@ mod tests {
         let out = call(&mut db, "search_items", &args(json!({ "query": "harbor", "limit": 1 })), false).unwrap();
         assert_eq!((out["total"].as_i64(), out["returned"].as_i64(), out["truncated"].as_bool()), (Some(2), Some(1), Some(true)));
         assert!(out["note"].as_str().unwrap().contains("1 best of 2"));
+        // The cursor leads to the other match, and then there is no further page.
+        let cursor = out["next_cursor"].as_str().unwrap().to_string();
+        let rest = call(&mut db, "search_items", &args(json!({ "query": "harbor", "limit": 1, "cursor": cursor })), false).unwrap();
+        assert_eq!((rest["returned"].as_i64(), rest["truncated"].as_bool(), &rest["next_cursor"]), (Some(1), Some(false), &Value::Null));
+        assert_ne!(ids(&rest), ids(&out));
+        assert!(call(&mut db, "search_items", &args(json!({ "query": "harbor", "cursor": "nope" })), false).unwrap_err().to_string().contains("cursor"));
         assert!(out["items"][0]["snippet"].as_str().unwrap().contains("[harbor]"));
         let out = call(&mut db, "search_items", &args(json!({ "query": "harbor", "kinds": ["note"] })), false).unwrap();
         assert_eq!((ids(&out), out["truncated"].as_bool()), (vec!["C-NOTE".to_string()], Some(false)));

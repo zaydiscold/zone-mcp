@@ -230,6 +230,27 @@ impl Order {
     }
 }
 
+/// A position in search results, for fetching the next page: how many matches came before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchCursor(pub usize);
+
+impl SearchCursor {
+    pub fn encode(&self) -> String {
+        format!("s{:x}", self.0)
+    }
+
+    pub fn decode(text: &str) -> Result<SearchCursor> {
+        let parsed = text.trim().strip_prefix('s').and_then(|rest| usize::from_str_radix(rest, 16).ok());
+        parsed.map(SearchCursor).context("the cursor is not one a search issued. Start again without a cursor.")
+    }
+
+    /// The cursor after a page of `returned` matches that started at `offset`, when more remain.
+    pub fn next(offset: usize, returned: usize, total: i64) -> Option<SearchCursor> {
+        let end = offset + returned;
+        (returned > 0 && (end as i64) < total).then_some(SearchCursor(end))
+    }
+}
+
 /// A position in a listing, for fetching the next page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cursor {
@@ -502,15 +523,22 @@ impl Db {
 
     /// Full-text search. `order` none means best match first.
     pub fn search(&self, query: &str, filter: &Filter, order: Option<Order>, limit: usize) -> Result<SearchResult> {
+        self.search_page(query, filter, order, limit, 0)
+    }
+
+    /// One page of a search: `limit` matches after skipping `offset`. The order is the same
+    /// on every call, so pages do not overlap as long as the library does not change between
+    /// them.
+    pub fn search_page(&self, query: &str, filter: &Filter, order: Option<Order>, limit: usize, offset: usize) -> Result<SearchResult> {
         let Some(words) = fts_query(query, false) else {
-            return self.search_substring(query, filter, order, limit);
+            return self.search_substring(query, filter, order, limit, offset);
         };
-        let result = self.search_fts(&words, filter, order, limit, "words")?;
+        let result = self.search_fts(&words, filter, order, limit, offset, "words")?;
         if result.total > 0 {
             return Ok(result);
         }
         match fts_query(query, true) {
-            Some(prefixes) => self.search_fts(&prefixes, filter, order, limit, "prefix"),
+            Some(prefixes) => self.search_fts(&prefixes, filter, order, limit, offset, "prefix"),
             None => Ok(result),
         }
     }
@@ -521,11 +549,12 @@ impl Db {
         filter: &Filter,
         order: Option<Order>,
         limit: usize,
+        offset: usize,
         matched: &'static str,
     ) -> Result<SearchResult> {
         let (clause, filter_args) = filter_sql(filter);
         let order_sql = match order {
-            None => "bm25(items_fts), i.created_at DESC",
+            None => "bm25(items_fts), i.created_at DESC, i.n DESC",
             Some(Order::Newest) => "i.created_at DESC, i.n DESC",
             Some(Order::Oldest) => "i.created_at ASC, i.n ASC",
         };
@@ -539,9 +568,10 @@ impl Db {
         let sql = format!(
             "SELECT {ROW_COLUMNS}, snippet(items_fts, -1, '[', ']', ' ... ', 24) \
              FROM items_fts JOIN items i ON i.n = items_fts.rowid \
-             WHERE items_fts MATCH ? AND {clause} ORDER BY {order_sql} LIMIT ?"
+             WHERE items_fts MATCH ? AND {clause} ORDER BY {order_sql} LIMIT ? OFFSET ?"
         );
         args.push(Sql::Integer(limit as i64));
+        args.push(Sql::Integer(offset as i64));
         let mut statement = self.conn.prepare(&sql)?;
         let hits = statement
             .query_map(params_from_iter(args), |row| Ok(SearchHit { row: read_row(row)?, snippet: row.get(19)? }))?
@@ -550,7 +580,7 @@ impl Db {
     }
 
     /// For queries with nothing the word index can use (punctuation, symbols).
-    fn search_substring(&self, query: &str, filter: &Filter, order: Option<Order>, limit: usize) -> Result<SearchResult> {
+    fn search_substring(&self, query: &str, filter: &Filter, order: Option<Order>, limit: usize, offset: usize) -> Result<SearchResult> {
         let needle = query.trim();
         if needle.is_empty() {
             bail!("the search query is empty");
@@ -567,8 +597,9 @@ impl Db {
             |row| row.get(0),
         )?;
         args.push(Sql::Integer(limit as i64));
+        args.push(Sql::Integer(offset as i64));
         let sql = format!(
-            "SELECT {ROW_COLUMNS} FROM items i WHERE {like} AND {clause} ORDER BY i.created_at {direction}, i.n {direction} LIMIT ?"
+            "SELECT {ROW_COLUMNS} FROM items i WHERE {like} AND {clause} ORDER BY i.created_at {direction}, i.n {direction} LIMIT ? OFFSET ?"
         );
         let mut statement = self.conn.prepare(&sql)?;
         let rows = statement.query_map(params_from_iter(args), read_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1552,6 +1583,25 @@ mod tests {
         assert_eq!(ids(&db.search("cafe", &all, None, 10).unwrap()), ["M"]);
         assert_eq!(ids(&db.search("planning", &all, None, 10).unwrap()), ["M"]);
         // Filters apply, and the total says when results were cut.
+        // Pages follow each other without overlap, in every order and for literal matches.
+        for (query, order) in [("coffee", None), ("coffee", Some(Order::Oldest)), ("coffee", Some(Order::Newest)), ("o", None)] {
+            let in_order = |r: &SearchResult| r.hits.iter().map(|h| h.row.id.clone()).collect::<Vec<_>>();
+            let whole = in_order(&db.search(query, &all, order, 50).unwrap());
+            assert!(whole.len() >= 2, "{query}");
+            let mut paged = Vec::new();
+            let mut offset = 0;
+            loop {
+                let page = db.search_page(query, &all, order, 1, offset).unwrap();
+                paged.extend(in_order(&page));
+                match SearchCursor::next(offset, page.hits.len(), page.total) {
+                    Some(next) => offset = SearchCursor::decode(&next.encode()).unwrap().0,
+                    None => break,
+                }
+            }
+            assert_eq!(paged, whole, "{query} {order:?}");
+        }
+        assert!(db.search_page("coffee", &all, None, 10, 99).unwrap().hits.is_empty());
+        assert!(SearchCursor::decode("zz").is_err() && SearchCursor::decode("1a.2b").is_err());
         let r = db.search("coffee", &all, None, 1).unwrap();
         assert_eq!((r.hits.len(), r.total), (1, 2));
         let meetings = Filter { kinds: vec!["meeting".to_string()], ..Default::default() };
@@ -1627,6 +1677,30 @@ mod tests {
         let edge = "12".repeat(32);
         db.create_offer(&edge, now, 600.0).unwrap();
         assert_eq!(db.admit("phone-c", Some(&edge), &phone, now + 599.0).unwrap(), Admission::Paired);
+    }
+
+    #[test]
+    fn offers_that_ran_out_are_deleted() {
+        let mut db = Db::open_in_memory().unwrap();
+        let count = |db: &Db| -> i64 { db.conn.query_row("SELECT count(*) FROM pairing_offers", [], |r| r.get(0)).unwrap() };
+        let phone = PhoneInfo::default();
+        let (unused, used) = ("aa".repeat(32), "bb".repeat(32));
+        db.create_offer(&unused, 1000.0, 600.0).unwrap();
+        db.create_offer(&used, 1000.0, 600.0).unwrap();
+        assert_eq!(db.admit("phone-a", Some(&used), &phone, 1100.0).unwrap(), Admission::Paired);
+        // Still inside the ten minutes: nothing goes.
+        assert_eq!((db.delete_expired_offers(1500.0).unwrap(), count(&db)), (0, 2));
+        // Making a new offer after the ten minutes removes the one nobody used. The used one
+        // stays, so the phone that used it is still known by it.
+        db.create_offer(&"cc".repeat(32), 1700.0, 600.0).unwrap();
+        assert_eq!(count(&db), 2);
+        assert_eq!(db.admit("phone-a", Some(&used), &phone, 1800.0).unwrap(), Admission::Known);
+        assert_eq!(db.admit("phone-b", Some(&unused), &phone, 1800.0).unwrap(), Admission::BadSecret);
+        // What the daemon does when it starts: the third offer ran out while it was not running.
+        assert_eq!((db.delete_expired_offers(5000.0).unwrap(), count(&db)), (1, 1));
+        // A used offer goes after a month. The phone stays paired.
+        assert_eq!((db.delete_expired_offers(1100.0 + 31.0 * 86400.0).unwrap(), count(&db)), (1, 0));
+        assert_eq!(db.admit("phone-a", None, &phone, 9e6).unwrap(), Admission::Known);
     }
 
     #[test]

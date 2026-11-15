@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use clap::Args;
 use serde_json::{Map, Value, json};
 
-use crate::db::{Db, Filter, Order, Row};
+use crate::db::{Db, Filter, Order, Row, SearchCursor};
 use crate::item::preview;
 use crate::timeparse::{Bound, Clock, human_duration};
 use crate::tools::normalize_kind;
@@ -139,11 +139,13 @@ pub fn list(db: &Db, args: &FilterArgs, order: &str, limit: usize, all: bool, as
     Ok(())
 }
 
-pub fn search(db: &Db, query: &str, args: &FilterArgs, order: Option<&str>, limit: usize, as_json: bool) -> Result<()> {
+pub fn search(db: &Db, query: &str, args: &FilterArgs, order: Option<&str>, limit: usize, cursor: Option<&str>, as_json: bool) -> Result<()> {
     let clock = args.clock()?;
     let filter = args.filter(&clock)?;
     let order = order.map(Order::parse).transpose()?;
-    let result = db.search(query, &filter, order, limit.max(1))?;
+    let offset = cursor.map(SearchCursor::decode).transpose()?.map(|c| c.0).unwrap_or(0);
+    let result = db.search_page(query, &filter, order, limit.max(1), offset)?;
+    let next_cursor = SearchCursor::next(offset, result.hits.len(), result.total).map(|c| c.encode());
     let mut out = std::io::stdout().lock();
     if as_json {
         let items: Vec<Value> = result
@@ -155,16 +157,24 @@ pub fn search(db: &Db, query: &str, args: &FilterArgs, order: Option<&str>, limi
                 value
             })
             .collect();
-        writeln!(out, "{}", serde_json::to_string_pretty(&json!({ "total": result.total, "matched": result.matched, "items": items }))?)?;
+        writeln!(out, "{}", serde_json::to_string_pretty(&json!({ "total": result.total, "matched": result.matched, "next_cursor": next_cursor, "items": items }))?)?;
         return Ok(());
     }
     for hit in &result.hits {
         print_card(&mut out, &hit.row, &clock, &hit.snippet.replace('\n', " "))?;
     }
-    if result.hits.is_empty() {
+    if result.hits.is_empty() && offset == 0 {
         writeln!(out, "Nothing matches \"{query}\".")?;
-    } else if (result.hits.len() as i64) < result.total {
-        writeln!(out, "\nShowing {} of {} matches. Use --limit N for more.", result.hits.len(), result.total)?;
+    } else if let Some(next) = &next_cursor {
+        writeln!(
+            out,
+            "\nShowing matches {} to {} of {}. For the next ones, run the same search with --cursor {next}",
+            offset + 1,
+            offset + result.hits.len(),
+            result.total
+        )?;
+    } else if offset > 0 {
+        writeln!(out, "\nThat is the last of {} matches.", result.total)?;
     } else {
         writeln!(out, "\n{} {}.", result.total, if result.total == 1 { "match" } else { "matches" })?;
     }
