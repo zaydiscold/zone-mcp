@@ -20,6 +20,8 @@ enum DaemonState: Equatable {
     /// The app just opened and has not looked yet.
     case checking
     case starting
+    /// The login item from `zone install` is loaded and is expected to start zone.
+    case waitingForLoginItem
     case running(DaemonOwner)
     case problem(String)
 }
@@ -129,7 +131,7 @@ final class AppModel {
     var menuBarState: MenuBarState {
         switch daemon {
         case .problem: return .problem
-        case .checking, .starting: return .stopped
+        case .checking, .starting, .waitingForLoginItem: return .stopped
         case .running: return isSyncing ? .syncing : .idle
         }
     }
@@ -139,6 +141,7 @@ final class AppModel {
         switch daemon {
         case .checking: return "Looking"
         case .starting: return "Starting"
+        case .waitingForLoginItem: return "Waiting for zone to start"
         case let .problem(message): return message
         case .running:
             if isSyncing { return "Receiving" }
@@ -222,6 +225,7 @@ final class AppModel {
         var interval: TimeInterval = watchers > 0 ? 3 : 15
         if case .waiting = pairing { interval = 1 }
         if case .starting = daemon { interval = 1 }
+        if case .waitingForLoginItem = daemon { interval = 2 }
         if now.timeIntervalSince(lastRefresh) >= interval {
             Task { await refresh() }
         }
@@ -282,14 +286,20 @@ final class AppModel {
                 return
             }
             seen.program = ProcessLookup.program(of: pid)
-            if pid != seen.childPID, !env.isSandbox, FileManager.default.fileExists(atPath: env.legacyLaunchAgent.path) {
-                seen.loginItemPID = await Task.detached { ProcessLookup.launchdPID(label: ZoneEnvironment.legacyLabel) }.value
-            }
+        }
+        // A test run never looks at launchd: the old login item is part of the real setup.
+        if seen.pid != seen.childPID || !seen.running, !env.isSandbox, FileManager.default.fileExists(atPath: env.legacyLaunchAgent.path) {
+            let agent = await Task.detached { ProcessLookup.launchdAgent(label: ZoneEnvironment.legacyLabel) }.value
+            seen.loginItemPID = agent.pid
+            seen.loginItemLoaded = agent.loaded
         }
         switch DaemonPlanner.plan(seen) {
         case let .attach(owner):
             if let pid = seen.pid { ownerCache = (pid, owner) }
             daemon = .running(owner)
+        case .waitForLoginItem:
+            ownerCache = nil
+            daemon = .waitingForLoginItem
         case .start:
             ownerCache = nil
             startOwnDaemon()
@@ -351,10 +361,11 @@ final class AppModel {
     /// Takes over from a zone the app did not start: stops it (and removes the old login
     /// item when that is what started it), then starts the app's own.
     func takeOver() async {
-        guard let owner, owner == .loginItem || owner == .other, let pid = status?.daemon.pid else { return }
+        let fromLoginItem = owner == .loginItem || daemon == .waitingForLoginItem
+        guard fromLoginItem || owner == .other else { return }
         working.insert("takeover")
         defer { working.remove("takeover") }
-        if owner == .loginItem {
+        if fromLoginItem {
             guard !env.isSandbox else { return }
             do {
                 try await client.removeLoginItem()
@@ -363,7 +374,9 @@ final class AppModel {
                 return
             }
         }
-        await Task.detached { DaemonProcess.stop(pid: pid) }.value
+        if let pid = status?.daemon.pid, status?.daemon.running == true {
+            await Task.detached { DaemonProcess.stop(pid: pid) }.value
+        }
         legacyProgram = env.isSandbox ? nil : ProcessLookup.program(inLaunchAgent: env.legacyLaunchAgent)
         ownerCache = nil
         nextStartAllowed = .distantPast
@@ -508,10 +521,10 @@ final class AppModel {
             }
             // An older zone: unlock the page first, then go to Flash.
             let link = try await client.historyLink()
-            NSWorkspace.shared.open(link)
+            open(link)
             try await Task.sleep(for: .seconds(1.5))
             if let flash = URL(string: "/flash", relativeTo: link)?.absoluteURL {
-                NSWorkspace.shared.open(flash)
+                open(flash)
             }
         }
     }
@@ -567,6 +580,28 @@ final class AppModel {
         Task {
             try? await Task.sleep(for: .seconds(4))
             if noticeToken == token { notice = nil }
+        }
+    }
+
+    /// Opens a link in the browser, or a folder in the Finder. A test run notes it in the
+    /// sandbox's `opened` file instead, so nothing comes to the front on the Mac.
+    func open(_ url: URL) {
+        guard env.isSandbox else {
+            if url.isFileURL {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } else {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        let file = env.dataDirectory.deletingLastPathComponent().appendingPathComponent("opened")
+        let line = Data((url.absoluteString + "\n").utf8)
+        if let handle = try? FileHandle(forWritingTo: file) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: line)
+        } else {
+            try? line.write(to: file)
         }
     }
 
@@ -658,8 +693,8 @@ final class AppModel {
         checkingUpdate = false
         guard openPage else { return }
         switch answer {
-        case let .newer(_, page): NSWorkspace.shared.open(page)
-        case .unknown: NSWorkspace.shared.open(UpdateCheck.releasesPage)
+        case let .newer(_, page): open(page)
+        case .unknown: open(UpdateCheck.releasesPage)
         case .upToDate: break
         }
     }

@@ -29,7 +29,7 @@ struct WelcomeView: View {
             ZStack {
                 switch step {
                 case 0: WelcomeStep().transition(slide)
-                case 1: PhoneStep().transition(slide)
+                case 1: PhoneStep(model: model).transition(slide)
                 case 2: PairStep(model: model).transition(slide)
                 case 3: AgentsStep(model: model).transition(slide)
                 default: DoneStep(model: model, startAtLogin: $startAtLogin, addCommand: $addCommand).transition(slide)
@@ -213,6 +213,7 @@ private struct StepHeading: View {
 // MARK: Step 2: The iPhone app
 
 private struct PhoneStep: View {
+    let model: AppModel
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -246,7 +247,7 @@ private struct PhoneStep: View {
                 }
                 .zoneCard(padding: 14)
                 Button {
-                    if let url = URL(string: WelcomeView.appStore) { NSWorkspace.shared.open(url) }
+                    if let url = URL(string: WelcomeView.appStore) { model.open(url) }
                 } label: {
                     HStack(spacing: 5) {
                         Text("Open the App Store page")

@@ -69,6 +69,10 @@ public struct ZoneEnvironment: Equatable, Sendable {
                 zoneHome: zoneHome,
                 port: value("ZONE_PORT").flatMap(Int.init) ?? defaultSandboxPort,
                 computerName: name,
+                // The sandbox's own bin folder comes first, so a test can stand in for a
+                // system command (a pretend `open` that notes the link instead of starting
+                // the browser).
+                searchPath: "\(root.appendingPathComponent("bin").path):/usr/bin:/bin:/usr/sbin:/sbin",
                 isSandbox: true
             )
         }

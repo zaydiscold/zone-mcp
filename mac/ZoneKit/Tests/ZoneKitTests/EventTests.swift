@@ -52,7 +52,7 @@ final class EventTests: XCTestCase {
             "Lost the relay connection",
             "Zone stopped",
             "Turned away a phone that is not paired",
-            "Asked every phone to send everything again",
+            "Asked every phone to resend",
             "My iPhone forgotten",
             "A flash could not be stored",
         ])

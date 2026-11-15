@@ -17,6 +17,19 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(DaemonPlanner.plan(DaemonObservation(running: false, pid: 99, childPID: 99, stableBinary: "/data/bin/zone")), .start)
     }
 
+    func testALoadedLoginItemIsWaitedFor() {
+        // launchd has `zone install`'s agent loaded but its zone is not up yet (the Mac just
+        // logged in, or launchd is about to restart it). Starting a second would only make
+        // launchd's fail, over and over.
+        let loaded = DaemonObservation(running: false, loginItemLoaded: true, stableBinary: "/data/bin/zone")
+        XCTAssertEqual(DaemonPlanner.plan(loaded), .waitForLoginItem)
+        // Once the app is running its own, that one is simply kept going.
+        let ours = DaemonObservation(running: false, childPID: 41, loginItemLoaded: true, stableBinary: "/data/bin/zone")
+        XCTAssertEqual(DaemonPlanner.plan(ours), .start)
+        // A process number for the login item means it is loaded.
+        XCTAssertTrue(DaemonObservation(running: true, pid: 7, loginItemPID: 7, stableBinary: "/x").loginItemLoaded)
+    }
+
     func testOurOwnChildIsOurs() {
         let seen = DaemonObservation(running: true, pid: 500, childPID: 500, program: "/data/bin/zone", stableBinary: "/data/bin/zone")
         XCTAssertEqual(DaemonPlanner.plan(seen), .attach(.app))
@@ -266,7 +279,7 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(child["HOME"], "/tmp/box/home")
         XCTAssertEqual(child["ZONE_HOME"], "/tmp/box/zone-home")
         XCTAssertEqual(child["ZONE_PORT"], "47991")
-        XCTAssertEqual(child["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin", "the real PATH would let zone find real AI clients")
+        XCTAssertEqual(child["PATH"], "/tmp/box/bin:/usr/bin:/bin:/usr/sbin:/sbin", "the real PATH would let zone find real AI clients")
         XCTAssertNil(child["CLAUDE_CONFIG_DIR"], "a real client's settings folder must not leak into a test run")
         for (_, value) in child where value.hasPrefix("/Users/zed") {
             XCTFail("the sandbox leaks a real path: \(value)")

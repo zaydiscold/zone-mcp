@@ -318,12 +318,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "type":
             // type:floating=lease types into whatever has the keyboard in that window.
             if let (window, text) = target(argument) { type(text, into: window) }
-        case "record":
+        case "record", "recordflat":
             // record:welcome=/path/folder,6,12 takes 12 pictures a second for 6 seconds.
             if let (window, rest) = target(argument) {
                 let fields = rest.split(separator: ",").map(String.init)
-                record(window, into: URL(fileURLWithPath: fields[0]), seconds: fields.count > 1 ? Double(fields[1]) ?? 5 : 5, rate: fields.count > 2 ? Double(fields[2]) ?? 12 : 12)
+                record(
+                    window,
+                    into: URL(fileURLWithPath: fields[0]),
+                    seconds: fields.count > 1 ? Double(fields[1]) ?? 5 : 5,
+                    rate: fields.count > 2 ? Double(fields[2]) ?? 12 : 12,
+                    shadow: name == "record"
+                )
             }
+        case "icons":
+            // icons:/path/picture.png draws the four faces of the menu bar icon.
+            if let argument { drawIconSheet(to: URL(fileURLWithPath: argument)) }
         case "quit":
             NSApp.terminate(nil)
         default:
@@ -372,7 +381,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func record(_ window: NSWindow, into folder: URL, seconds: Double, rate: Double) {
+    /// The menu bar icon's four faces, large, on a dark and a light menu bar. The real one
+    /// sits in the real menu bar, which a test run does not photograph.
+    private func drawIconSheet(to file: URL) {
+        let states: [(MenuBarState, String, Double)] = [(.idle, "Running", 0), (.syncing, "Receiving", 0.45), (.stopped, "Not running", 0), (.problem, "Needs you", 0)]
+        let scale: CGFloat = 4
+        let cell = NSSize(width: 150, height: 86)
+        let size = NSSize(width: cell.width * CGFloat(states.count), height: cell.height * 2)
+        let image = NSImage(size: size, flipped: true) { _ in
+            for (row, dark) in [true, false].enumerated() {
+                let bar = NSRect(x: 0, y: CGFloat(row) * cell.height, width: size.width, height: cell.height)
+                (dark ? NSColor(white: 0.13, alpha: 1) : NSColor(white: 0.93, alpha: 1)).setFill()
+                bar.fill()
+                let ink = dark ? NSColor.white : NSColor.black
+                for (index, (state, label, phase)) in states.enumerated() {
+                    let icon = MenuBarIcon.image(state, phase: phase)
+                    let tinted = NSImage(size: icon.size, flipped: false) { rect in
+                        icon.draw(in: rect)
+                        ink.set()
+                        rect.fill(using: .sourceIn)
+                        return true
+                    }
+                    let iconSize = NSSize(width: icon.size.width * 2, height: icon.size.height * 2)
+                    let x = CGFloat(index) * cell.width + (cell.width - iconSize.width) / 2
+                    tinted.draw(in: NSRect(x: x, y: bar.minY + 14, width: iconSize.width, height: iconSize.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                    let text = NSAttributedString(string: label, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: ink.withAlphaComponent(0.7)])
+                    text.draw(at: NSPoint(x: CGFloat(index) * cell.width + (cell.width - text.size().width) / 2, y: bar.minY + 60))
+                }
+            }
+            return true
+        }
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale), bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return }
+        rep.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: size))
+        NSGraphicsContext.restoreGraphicsState()
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? rep.representation(using: .png, properties: [:])?.write(to: file)
+    }
+
+    private func record(_ window: NSWindow, into folder: URL, seconds: Double, rate: Double, shadow: Bool) {
         var frame = 0
         let total = Int(seconds * rate)
         let timer = Timer(timeInterval: 1 / rate, repeats: true) { timer in
@@ -382,7 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     try? "done\n".write(to: folder.appendingPathComponent("done"), atomically: true, encoding: .utf8)
                     return
                 }
-                _ = WindowSnapshot.capture(window, to: folder.appendingPathComponent(String(format: "frame-%04d.png", frame)))
+                _ = WindowSnapshot.capture(window, to: folder.appendingPathComponent(String(format: "frame-%04d.png", frame)), shadow: shadow)
                 frame += 1
             }
         }

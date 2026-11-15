@@ -305,7 +305,7 @@ public enum ActivityWords {
             }
         case .flashFailed: return "A flash could not be stored"
         case .resyncRequested:
-            return event.device.map { "Asked \($0) to send everything again" } ?? "Asked every phone to send everything again"
+            return event.device.map { "Asked \($0) to resend" } ?? "Asked every phone to resend"
         case .pairOffered: return "Pair code shown"
         case .unknown: return event.name.replacingOccurrences(of: "_", with: " ")
         }

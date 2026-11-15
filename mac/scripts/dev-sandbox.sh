@@ -29,11 +29,16 @@ zone_binary="$app/Contents/Helpers/zone"
 
 # The sandbox's zone: only these variables, so nothing from this shell leaks in.
 zone() {
-    env -i HOME="$box/home" ZONE_HOME="$box/zone-home" ZONE_PORT="$port" ZONE_NAME="Demo Mac" PATH=/usr/bin:/bin "$zone_binary" "$@"
+    env -i HOME="$box/home" ZONE_HOME="$box/zone-home" ZONE_PORT="$port" ZONE_NAME="Demo Mac" PATH="$box/bin:/usr/bin:/bin" "$zone_binary" "$@"
 }
 
+# The sandbox app's process, whichever build it was started from.
 running_pid() {
-    pgrep -f "^$app/Contents/MacOS/Zone\$" | head -1 || true
+    local pid
+    pid="$(cat "$box/app.pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q "Zone.app/Contents/MacOS/Zone"; then
+        echo "$pid"
+    fi
 }
 
 command="${1:-start}"
@@ -65,6 +70,11 @@ start)
         mkdir -p "$box/home/.claude" "$box/home/Library/Application Support/Claude" "$box/home/.cursor" \
                  "$box/home/.gemini" "$box/home/.config/zed" "$box/home/.codex"
         : > "$box/home/.codex/config.toml"
+        # A pretend `open`: links the app would show in the browser are written to the
+        # file `opened` instead, so a test run never brings a browser to the front.
+        mkdir -p "$box/bin"
+        printf '#!/bin/sh\necho "$@" >> "%s/opened"\n' "$box" > "$box/bin/open"
+        chmod +x "$box/bin/open"
         python3 "$here/dev-items.py" backup "$box/backup"
         zone import "$box/backup/Demo.zonebackup" >/dev/null
         echo "Made a sandbox in $box with $(zone status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["items"]["total"])') made-up items."
@@ -75,6 +85,7 @@ start)
     variables=(ZONE_MAC_SANDBOX="$box" ZONE_PORT="$port" ZONE_NAME="Demo Mac" ZONE_MAC_APPEARANCE="$appearance" ZONE_MAC_SHOW="$show")
     if [ "$quiet" = 1 ]; then variables+=(ZONE_MAC_QUIET=1); fi
     nohup env -i HOME="$HOME" PATH=/usr/bin:/bin "${variables[@]}" "$app/Contents/MacOS/Zone" >"$box/app.log" 2>&1 &
+    echo "$!" > "$box/app.pid"
     echo "Started $app (pid $!). Its windows are listed in $box/windows."
     ;;
 cmd)

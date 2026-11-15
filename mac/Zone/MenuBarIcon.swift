@@ -15,7 +15,7 @@ enum MenuBarState: Equatable {
 /// Draws the menu bar icon: the serif Z and dot from the app icon, as a template image so
 /// macOS colors it for a light or dark menu bar.
 enum MenuBarIcon {
-    static let size = NSSize(width: 22, height: 18)
+    static let size = NSSize(width: 24, height: 18)
 
     /// `phase` runs 0 to 1 and only matters while syncing.
     static func image(_ state: MenuBarState, phase: Double = 0) -> NSImage {
@@ -52,7 +52,7 @@ enum MenuBarIcon {
 
         // The dot sits on the baseline to the right of the Z, as in the app icon.
         let radius: CGFloat = 2.6
-        let center = NSPoint(x: min(letterX + letterSize.width + radius + 0.6, rect.width - radius - 0.8), y: baselineY + radius)
+        let center = NSPoint(x: min(letterX + letterSize.width + radius + 1, rect.width - radius - 0.8), y: baselineY + radius)
 
         switch state {
         case .idle:
@@ -63,7 +63,7 @@ enum MenuBarIcon {
             let breathe = 0.75 + 0.25 * cos(phase * 2 * .pi)
             ink.setFill()
             NSBezierPath(ovalIn: circle(center, radius * breathe)).fill()
-            let ringRadius = radius + 0.5 + 3.2 * phase
+            let ringRadius = radius + 0.5 + 2.4 * phase
             let ring = NSBezierPath(ovalIn: circle(center, ringRadius))
             ring.lineWidth = 1
             NSColor.black.withAlphaComponent(0.85 * (1 - phase)).setStroke()

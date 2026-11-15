@@ -124,7 +124,7 @@ private struct MainPage: View {
         switch model.daemon {
         case .running:
             StatusDot(color: Zone.accentGraphic(scheme), pulses: model.isSyncing, size: 8)
-        case .checking, .starting:
+        case .checking, .starting, .waitingForLoginItem:
             StatusDot(color: Zone.muted(scheme), hollow: true, size: 8)
         case .problem:
             StatusDot(color: Zone.alarm, size: 8)
@@ -134,10 +134,16 @@ private struct MainPage: View {
     // MARK: Someone else runs zone
 
     private var takeoverBanner: AnyView? {
-        guard let owner = model.owner, owner == .loginItem || owner == .other, !model.state.declinedTakeover else { return nil }
-        let text = owner == .loginItem
-            ? "zone was already set to start at login from the command line. This app is using that one."
-            : "A zone started somewhere else (a terminal, most likely) is running. This app is using that one."
+        let waiting = model.daemon == .waitingForLoginItem
+        guard waiting || ((model.owner == .loginItem || model.owner == .other) && !model.state.declinedTakeover) else { return nil }
+        let text: String
+        if waiting {
+            text = "zone is set to start at login from the command line, and has not started yet. This app is waiting for it."
+        } else if model.owner == .loginItem {
+            text = "zone was already set to start at login from the command line. This app is using that one."
+        } else {
+            text = "A zone started somewhere else (a terminal, most likely) is running. This app is using that one."
+        }
         return AnyView(
             VStack(alignment: .leading, spacing: 8) {
                 Text(text)
@@ -150,10 +156,12 @@ private struct MainPage: View {
                     }
                     .buttonStyle(ZonePillButtonStyle(filled: true))
                     .disabled(model.working.contains("takeover"))
-                    Button("Keep it this way") {
-                        model.state.declinedTakeover = true
+                    if !waiting {
+                        Button("Keep it this way") {
+                            model.state.declinedTakeover = true
+                        }
+                        .buttonStyle(ZonePillButtonStyle())
                     }
-                    .buttonStyle(ZonePillButtonStyle())
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -651,7 +659,7 @@ private struct SettingsPage: View {
                     commandRow
                     Hairline().padding(.leading, 38)
                     row("gearshape.2", "Who runs zone", ownerLine) {
-                        if let owner = model.owner, owner == .loginItem || owner == .other {
+                        if model.owner == .loginItem || model.owner == .other || model.daemon == .waitingForLoginItem {
                             Button(model.working.contains("takeover") ? "Taking over" : "Take over") {
                                 Task { await model.takeOver() }
                             }
@@ -679,7 +687,8 @@ private struct SettingsPage: View {
                     Hairline().padding(.leading, 38)
                     row("externaldrive", "Your library", Formats.tilde(model.env.dataDirectory.path, home: model.env.home.path)) {
                         Button("Show") {
-                            NSWorkspace.shared.activateFileViewerSelecting([model.env.dataDirectory])
+                            model.closePopover()
+                            model.open(model.env.dataDirectory)
                         }
                         .buttonStyle(ZonePillButtonStyle())
                     }
@@ -729,6 +738,7 @@ private struct SettingsPage: View {
             return "The login item from the command line (\(program)). It keeps running without this app."
         case .running(.other): return "A zone started outside this app, most likely in a terminal."
         case .starting, .checking: return "Starting."
+        case .waitingForLoginItem: return "The login item from the command line, which has not started zone yet."
         case let .problem(message): return message
         }
     }

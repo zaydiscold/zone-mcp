@@ -33,15 +33,18 @@ public struct DaemonObservation: Equatable, Sendable {
     public var program: String?
     /// The process launchd runs for the old login item, when it is loaded.
     public var loginItemPID: Int?
+    /// True when launchd has the old login item loaded, running or not.
+    public var loginItemLoaded: Bool
     /// The app's own copy of the program.
     public var stableBinary: String
 
-    public init(running: Bool, pid: Int? = nil, childPID: Int? = nil, program: String? = nil, loginItemPID: Int? = nil, stableBinary: String) {
+    public init(running: Bool, pid: Int? = nil, childPID: Int? = nil, program: String? = nil, loginItemPID: Int? = nil, loginItemLoaded: Bool = false, stableBinary: String) {
         self.running = running
         self.pid = pid
         self.childPID = childPID
         self.program = program
         self.loginItemPID = loginItemPID
+        self.loginItemLoaded = loginItemLoaded || loginItemPID != nil
         self.stableBinary = stableBinary
     }
 }
@@ -49,13 +52,19 @@ public struct DaemonObservation: Equatable, Sendable {
 public enum DaemonPlan: Equatable, Sendable {
     /// Nothing is running: start the app's own.
     case start
+    /// Nothing is running yet, but launchd has the old login item loaded and will start
+    /// (or restart) its zone. Starting the app's own now would make launchd's fail, and
+    /// launchd would then try again every ten seconds for ever.
+    case waitForLoginItem
     /// Something is running: leave it be, and remember whose it is.
     case attach(DaemonOwner)
 }
 
 public enum DaemonPlanner {
     public static func plan(_ seen: DaemonObservation) -> DaemonPlan {
-        guard seen.running else { return .start }
+        guard seen.running else {
+            return seen.loginItemLoaded && seen.childPID == nil ? .waitForLoginItem : .start
+        }
         if let pid = seen.pid, pid == seen.childPID {
             return .attach(.app)
         }
@@ -111,17 +120,17 @@ public enum ProcessLookup {
         return nil
     }
 
-    /// The process launchd is running for an agent of the logged-in person. Nil when the
-    /// agent is not loaded or not running.
-    public static func launchdPID(label: String) -> Int? {
+    /// What launchd says about an agent of the logged-in person: whether it is loaded, and
+    /// the process it is running for it (nil when it is not running right now).
+    public static func launchdAgent(label: String) -> (loaded: Bool, pid: Int?) {
         let launchctl = URL(fileURLWithPath: "/bin/launchctl")
         guard let output = try? ZoneProcessRunner.runAndWait(
             binary: launchctl,
             arguments: ["print", "gui/\(getuid())/\(label)"],
             environment: ["PATH": "/usr/bin:/bin"],
             timeout: 5
-        ), output.status == 0 else { return nil }
-        return pid(inLaunchctlPrint: output.text)
+        ), output.status == 0 else { return (false, nil) }
+        return (true, pid(inLaunchctlPrint: output.text))
     }
 
     /// The program a launchd agent file starts.
