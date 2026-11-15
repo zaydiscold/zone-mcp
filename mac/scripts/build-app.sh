@@ -10,10 +10,13 @@
 #   --zone-binary FILE  Use this zone program instead of building the universal one.
 #   --committed         Build zone from the last commit, not from the files as they are on
 #                       disk (for when the Rust code is in the middle of a change).
-#   --notarize          Send the app and the disk image to Apple and staple the tickets.
-#                       Needs a Developer ID identity. Uses `asc notarization` when asc is
-#                       installed, else notarytool with NOTARY_KEY (a .p8 file),
-#                       NOTARY_KEY_ID and NOTARY_ISSUER, or NOTARY_PROFILE (a keychain profile).
+#   --notarize          Send the app and the disk image to Apple, staple the tickets and
+#                       check both the way Gatekeeper will. Needs a Developer ID identity.
+#                       Uses `asc notarization` when asc is installed, else notarytool with
+#                       NOTARY_KEY (a .p8 file), NOTARY_KEY_ID and NOTARY_ISSUER.
+#   --notary-profile P  Notarize with this notarytool keychain profile instead (made once
+#                       with `xcrun notarytool store-credentials P`). Implies --notarize.
+#                       The NOTARY_PROFILE variable does the same.
 #   --no-dmg            Stop after the app.
 #   --version X.Y.Z     The version to stamp (default: the one in project.yml).
 #
@@ -41,9 +44,10 @@ while [ $# -gt 0 ]; do
         --zone-binary) zone_binary="$2"; shift ;;
         --committed) committed="--committed" ;;
         --notarize) notarize=1 ;;
+        --notary-profile) NOTARY_PROFILE="$2"; notarize=1; shift ;;
         --no-dmg) make_dmg=0 ;;
         --version) version="$2"; shift ;;
-        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
     esac
     shift
@@ -155,6 +159,8 @@ if [ "$notarize" = 1 ]; then
     ditto -c -k --keepParent "$app" "$zip"
     notary "$zip"
     xcrun stapler staple "$app"
+    xcrun stapler validate "$app"
+    spctl -a -vv "$app"
 fi
 
 # ------------------------------------------------------------------ the disk image
@@ -185,7 +191,8 @@ if [ "$notarize" = 1 ]; then
     say "Notarizing the disk image"
     notary "$dmg"
     xcrun stapler staple "$dmg"
-    spctl --assess --type open --context context:primary-signature -v "$dmg" || true
+    xcrun stapler validate "$dmg"
+    spctl -a -vv --type open --context context:primary-signature "$dmg"
 fi
 
 say "Done"
