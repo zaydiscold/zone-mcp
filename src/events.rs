@@ -160,7 +160,9 @@ fn print(row: &EventRow, clock: &Clock, as_json: bool) {
 /// say so: a terminal or a file never does.
 #[cfg(unix)]
 fn reader_gone() -> bool {
-    let mut fd = libc::pollfd { fd: 1, events: 0, revents: 0 };
+    // Asking whether writing is possible is what makes macOS say that the reader hung up
+    // (Linux says so whatever is asked).
+    let mut fd = libc::pollfd { fd: 1, events: libc::POLLOUT, revents: 0 };
     // SAFETY: one valid pollfd, a count of one, and no waiting.
     let ready = unsafe { libc::poll(&mut fd, 1, 0) };
     ready > 0 && fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0
