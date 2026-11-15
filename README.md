@@ -132,11 +132,20 @@ computer you keep offline. When Link works, Link is easier, because it is automa
    `http://127.0.0.1:47813/flash` once the page is unlocked).
 2. Allow the camera when the browser asks. The pictures never leave your computer: the page hands
    them to zone on the same machine, and nothing is loaded from the internet.
-3. On the iPhone, start Flash in Zone's computer sync settings and hold the screen up to the
-   camera so the code fills most of the square on the page. Turn the phone's brightness up.
-4. Watch the bar. The page shows how many codes it has read and how many pieces of the library it
-   has out of the total. When it says Done, it also says how many items were new, changed, or
-   already here. Then tap Done on the phone.
+3. On the iPhone, open Zone and choose Settings > Computers > your computer > Send by Flash, and
+   hold the screen up to the camera so the code fills most of the square on the page, about a
+   hand's width away. Turn the phone's brightness up.
+4. Watch your library assemble. Beside the camera is a mosaic with one tile for every piece of
+   the library: a tile lights up when its piece arrives, the ones that arrive mixed with others
+   wait dimly until the last few codes untangle them, and then everything resolves at once. When
+   the page says Assembled, it also says how many items were new, changed, or already here. Then
+   tap Done on the phone.
+
+The page guides you as it goes. It says when the camera is not allowed and how to allow it,
+suggests moving closer, turning the brightness up or tilting away a glare when it sees no code
+for a few seconds, says when a QR code in view is not a Zone flash, and says plainly what to do
+when a flash cannot be opened (usually: the phone is not paired, so run `zone pair` and scan the
+code first). Everything it shows comes from zone's own decoder, not from an animation.
 
 You do not have to catch every code. Any code helps, in any order, so if the camera misses some
 the phone just keeps going until the computer has enough. If you put the phone down early,

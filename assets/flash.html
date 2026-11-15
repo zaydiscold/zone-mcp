@@ -3,157 +3,349 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="dark">
 <meta name="referrer" content="no-referrer">
 <title>Zone Flash</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b5cf6'/%3E%3Cpath d='M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z' fill='%23fff'/%3E%3C/svg%3E">
 <style nonce="__NONCE__">
 :root {
-  --bg: #121214; --surface: #1a1a1e; --raised: #222227; --line: #2d2d34; --text: #e8e7ec; --muted: #a09eab;
-  --faint: #6e6c79; --accent: #a78bfa; --accent-strong: #8b5cf6; --accent-ink: #f4f0ff; --good: #86d3ad; --bad: #f0a3a3;
+  --bg: #0b0b0e; --bg-2: #111116; --surface: #16161b; --raised: #1e1e25; --line: #2a2a33; --line-soft: #1f1f27;
+  --text: #ecebf1; --muted: #a3a1ae; --faint: #6e6c7a;
+  --accent: #a78bfa; --accent-strong: #8b5cf6; --accent-ink: #f6f2ff; --blue: #60a5fa; --teal: #5eead4;
+  --good: #86d3ad; --bad: #f4a7a7; --warn: #f5cf8a;
+  --radius: 18px;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-}
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f5f4f7; --surface: #ffffff; --raised: #f1f0f5; --line: #dfdde6; --text: #1c1a22; --muted: #5f5c6c;
-    --faint: #8d8a9a; --accent: #6d49e8; --accent-strong: #5b36d6; --accent-ink: #ffffff; --good: #2d8a5f; --bad: #b3261e;
-  }
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; min-height: 100vh; color: var(--text); font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(1200px 600px at 18% -10%, rgba(139, 92, 246, 0.16), transparent 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(94, 234, 212, 0.07), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
 button, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.wrap { max-width: 720px; margin: 0 auto; padding: 0 16px 48px; }
-.top { display: flex; align-items: center; gap: 12px; padding: 16px 0; }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 17px; margin-right: auto; }
-.brand svg { width: 24px; height: 24px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-h1 { font-size: 22px; line-height: 1.25; margin: 6px 0 4px; }
-.lead { color: var(--muted); margin: 0 0 16px; max-width: 60ch; }
-.stage { position: relative; background: #000; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; aspect-ratio: 4 / 3; }
-video { width: 100%; height: 100%; object-fit: cover; display: block; transform: scaleX(-1); }
-.aim { position: absolute; inset: 0; margin: auto; width: 62%; aspect-ratio: 1; max-height: 86%; border: 2px solid rgba(255, 255, 255, 0.75); border-radius: 14px; pointer-events: none; }
-.cover { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; background: var(--surface); color: var(--muted); }
+code { font-family: var(--mono); font-size: 0.92em; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--text); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+#art { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 30; }
+
+.wrap { max-width: 1400px; margin: 0 auto; padding: 0 28px 48px; position: relative; }
+/* The guide on the left, the stage and the numbers beside it. The squares are sized to the
+   window's height too, so everything fits on one screen. */
+.layout { display: grid; grid-template-columns: 268px minmax(0, 1fr); gap: 30px; align-items: start; }
+.col { width: max(300px, min(100%, calc(100vh - 400px))); margin: 0 auto; }
+.top { display: flex; align-items: center; gap: 12px; padding: 16px 0 6px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 17px; letter-spacing: -0.01em; }
+.brand svg { width: 26px; height: 26px; display: block; }
+.pill { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); border: 1px solid rgba(167, 139, 250, 0.35); background: rgba(139, 92, 246, 0.1); border-radius: 999px; padding: 2px 10px; }
+.top .back { margin-left: auto; color: var(--muted); font-size: 14px; }
+.top .back:hover { color: var(--text); }
+
+.hero { padding: 8px 0 18px; }
+h1 { font-size: clamp(26px, 3vw, 34px); line-height: 1.1; letter-spacing: -0.025em; margin: 0 0 6px; font-weight: 700; }
+h1 .glow { background: linear-gradient(92deg, #c4b5fd 0%, #93c5fd 45%, #99f6e4 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.lead { color: var(--muted); margin: 0; max-width: 90ch; font-size: 15px; }
+
+.banner { display: flex; gap: 12px; align-items: flex-start; margin: 0 0 18px; padding: 14px 16px; border-radius: 14px; border: 1px solid rgba(245, 207, 138, 0.35); background: rgba(245, 207, 138, 0.07); color: var(--text); }
+.banner[hidden] { display: none; }
+.banner svg { flex: none; width: 20px; height: 20px; color: var(--warn); margin-top: 2px; }
+.banner.info { border-color: rgba(167, 139, 250, 0.35); background: rgba(139, 92, 246, 0.08); }
+.banner.info svg { color: var(--accent); }
+
+/* The stage: what the camera sees, the space between, and the library assembling. */
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr); align-items: start; }
+.panel-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 2px 10px; color: var(--muted); font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+.panel-title b { color: var(--text); font-weight: 600; letter-spacing: 0.06em; }
+.panel-title .meta { text-transform: none; letter-spacing: 0; font-variant-numeric: tabular-nums; color: var(--faint); }
+
+.cam { position: relative; aspect-ratio: 1; border-radius: var(--radius); overflow: hidden; background: #000; border: 1px solid var(--line); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.02); }
+.cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+.cam .shade { position: absolute; inset: 0; background: radial-gradient(closest-side, transparent 62%, rgba(0, 0, 0, 0.55)); pointer-events: none; }
+.finder { position: absolute; inset: 9%; pointer-events: none; }
+.finder i { position: absolute; width: 18%; height: 18%; border: 3px solid rgba(255, 255, 255, 0.82); transition: border-color 0.25s, transform 0.25s, filter 0.25s; }
+.finder i:nth-child(1) { left: 0; top: 0; border-right: 0; border-bottom: 0; border-top-left-radius: 16px; }
+.finder i:nth-child(2) { right: 0; top: 0; border-left: 0; border-bottom: 0; border-top-right-radius: 16px; }
+.finder i:nth-child(3) { left: 0; bottom: 0; border-right: 0; border-top: 0; border-bottom-left-radius: 16px; }
+.finder i:nth-child(4) { right: 0; bottom: 0; border-left: 0; border-top: 0; border-bottom-right-radius: 16px; }
+.cam.hit .finder i { border-color: var(--teal); filter: drop-shadow(0 0 10px rgba(94, 234, 212, 0.85)); }
+.cam.hit .finder i:nth-child(1) { transform: translate(-3px, -3px); }
+.cam.hit .finder i:nth-child(2) { transform: translate(3px, -3px); }
+.cam.hit .finder i:nth-child(3) { transform: translate(-3px, 3px); }
+.cam.hit .finder i:nth-child(4) { transform: translate(3px, 3px); }
+.scan { position: absolute; left: 9%; right: 9%; top: 9%; height: 2px; background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.95), transparent); box-shadow: 0 0 18px rgba(167, 139, 250, 0.9); opacity: 0; pointer-events: none; }
+.cam.looking .scan { opacity: 1; animation: scan 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate; }
+@keyframes scan { from { transform: translateY(0); } to { transform: translateY(calc(82cqw - 2px)); } }
+.cam { container-type: inline-size; }
+.chip { position: absolute; left: 14px; top: 14px; display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px 5px 9px; border-radius: 999px; font-size: 12.5px; background: rgba(10, 10, 14, 0.62); border: 1px solid rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); color: var(--text); }
+.chip[hidden] { display: none; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.chip.on .dot { background: var(--accent); box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.6); animation: beat 1.6s infinite; }
+.chip.live .dot { background: var(--teal); animation: beat 0.8s infinite; }
+.chip.done .dot { background: var(--good); animation: none; }
+@keyframes beat { 0% { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.55); } 100% { box-shadow: 0 0 0 9px rgba(167, 139, 250, 0); } }
+.cover { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 28px; text-align: center; color: var(--muted); background: radial-gradient(closest-side, rgba(139, 92, 246, 0.14), transparent), var(--surface); }
 .cover[hidden] { display: none; }
-.btn { border: 1px solid var(--line); background: var(--raised); border-radius: 9px; padding: 8px 14px; min-height: 40px; }
-.btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); font-weight: 600; }
-.panel { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-.state { font-weight: 600; font-size: 16px; }
+.cover svg { width: 44px; height: 44px; color: var(--accent); }
+.cover p { margin: 0; max-width: 34ch; }
+.cover .how { font-size: 13.5px; color: var(--faint); max-width: 40ch; }
+
+.between { position: relative; height: 100%; display: flex; align-items: center; justify-content: center; }
+
+.mosaic { position: relative; aspect-ratio: 1; border-radius: var(--radius); background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.01)), var(--bg-2); border: 1px solid var(--line); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55); overflow: hidden; }
+.mosaic canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.mosaic .idle { position: absolute; inset: auto 0 0 0; padding: 18px; text-align: center; color: var(--faint); font-size: 13.5px; }
+.mosaic .idle[hidden] { display: none; }
+.badge { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(0.9); display: flex; align-items: center; gap: 10px; padding: 12px 20px 12px 14px; border-radius: 999px; background: rgba(9, 9, 12, 0.72); border: 1px solid rgba(134, 211, 173, 0.45); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); font-weight: 650; font-size: 18px; letter-spacing: -0.01em; white-space: nowrap; opacity: 0; transition: opacity 0.5s, transform 0.5s cubic-bezier(0.2, 1.4, 0.4, 1); pointer-events: none; }
+.badge svg { width: 26px; height: 26px; color: var(--good); }
+.badge.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.badge.bad { border-color: rgba(244, 167, 167, 0.5); }
+.badge.bad svg { color: var(--bad); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 2px 0; color: var(--faint); font-size: 12.5px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.legend .k1 { background: linear-gradient(135deg, #8b5cf6, #5eead4); }
+.legend .k2 { background: rgba(139, 92, 246, 0.25); box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.6); }
+.legend .k3 { background: rgba(255, 255, 255, 0.06); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
+
+/* The readout under the stage. */
+.readout { margin-top: 18px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 28px; align-items: center; padding: 20px 22px; background: rgba(22, 22, 27, 0.75); border: 1px solid var(--line-soft); border-radius: var(--radius); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.big { font-size: 56px; line-height: 1; font-weight: 250; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; min-width: 2.6ch; grid-row: span 3; }
+.big small { font-size: 26px; color: var(--faint); margin-left: 2px; letter-spacing: 0; }
+.state { font-weight: 640; font-size: 18px; letter-spacing: -0.01em; }
 .state.good { color: var(--good); }
 .state.bad { color: var(--bad); }
-.track { height: 10px; background: var(--raised); border-radius: 6px; overflow: hidden; margin: 10px 0 8px; }
-.fill { height: 100%; width: 0; background: var(--accent-strong); border-radius: 6px; transition: width 0.15s linear; }
-.fill.good { background: var(--good); }
-.numbers { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--muted); font-size: 13.5px; font-variant-numeric: tabular-nums; }
-.result { margin-top: 10px; }
+.track { position: relative; height: 8px; background: var(--raised); border-radius: 6px; overflow: hidden; }
+.track .held, .track .solved { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 6px; transition: width 0.25s ease-out; }
+.track .held { background: rgba(139, 92, 246, 0.42); }
+.track .solved { background: linear-gradient(90deg, #8b5cf6, #60a5fa 55%, #5eead4); box-shadow: 0 0 14px rgba(139, 92, 246, 0.6); }
+.track.good .solved { background: var(--good); box-shadow: 0 0 14px rgba(134, 211, 173, 0.55); }
+.numbers { display: flex; flex-wrap: wrap; gap: 4px 20px; color: var(--muted); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.numbers b { color: var(--text); font-weight: 600; }
+.hint { grid-column: 1 / -1; display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(167, 139, 250, 0.22); color: var(--text); }
+.hint[hidden] { display: none; }
+.hint svg { flex: none; width: 18px; height: 18px; color: var(--accent); margin-top: 2px; }
+.hint.bad { background: rgba(244, 167, 167, 0.07); border-color: rgba(244, 167, 167, 0.3); }
+.hint.bad svg { color: var(--bad); }
+.result { grid-column: 1 / -1; margin-top: 12px; }
 .result[hidden] { display: none; }
-.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
-select { background: var(--raised); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; min-height: 40px; max-width: 100%; }
-select[hidden] { display: none; }
-ol { color: var(--muted); padding-left: 20px; margin: 18px 0 0; }
-ol li { margin: 4px 0; }
-@media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px; }
+.stat { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line); }
+.stat b { font-size: 26px; font-weight: 300; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stat span { color: var(--muted); font-size: 13px; }
+.stat.new b { color: var(--teal); }
+.result p { margin: 0; color: var(--muted); }
+.controls { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+.controls:empty { display: none; }
+.btn { border: 1px solid var(--line); background: var(--raised); border-radius: 11px; padding: 9px 16px; min-height: 42px; }
+.btn:hover { border-color: var(--faint); }
+.btn.primary { background: linear-gradient(180deg, #9a70fb, #7c4fef); border-color: #8b5cf6; color: var(--accent-ink); font-weight: 600; box-shadow: 0 10px 30px rgba(139, 92, 246, 0.35); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn[hidden], select[hidden] { display: none; }
+select { background: var(--raised); border: 1px solid var(--line); border-radius: 11px; padding: 9px 12px; min-height: 42px; max-width: 100%; }
+
+/* The guide. */
+.steps { list-style: none; margin: 31px 0 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; counter-reset: step; font-size: 14px; }
+.steps li { position: relative; padding: 16px 16px 16px 60px; border-radius: 16px; background: rgba(22, 22, 27, 0.6); border: 1px solid var(--line-soft); color: var(--muted); transition: border-color 0.3s, background 0.3s, opacity 0.3s; }
+.steps li::before { counter-increment: step; content: counter(step); position: absolute; left: 16px; top: 16px; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-weight: 650; color: var(--muted); background: var(--raised); border: 1px solid var(--line); }
+.steps li b { display: block; color: var(--text); font-weight: 620; margin-bottom: 3px; }
+.steps li .path { color: var(--text); }
+.steps li[data-state="active"] { border-color: rgba(167, 139, 250, 0.5); background: rgba(139, 92, 246, 0.09); }
+.steps li[data-state="active"]::before { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; box-shadow: 0 0 0 6px rgba(139, 92, 246, 0.18); }
+.steps li[data-state="done"]::before { content: "\2713"; background: rgba(134, 211, 173, 0.16); border-color: rgba(134, 211, 173, 0.5); color: var(--good); }
+.steps li[data-state="done"] { opacity: 0.72; }
+.foot { margin-top: 26px; color: var(--faint); font-size: 13px; max-width: 80ch; }
+
+@media (max-width: 1180px) {
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
+}
+@media (max-width: 880px) {
+  .stage { grid-template-columns: minmax(0, 1fr); }
+  .col { width: 100%; }
+  .between { height: 64px; }
+  .steps { grid-template-columns: minmax(0, 1fr); }
+  .readout { grid-template-columns: minmax(0, 1fr); }
+  .big { grid-row: auto; font-size: 52px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cam.looking .scan { animation: none; opacity: 0; }
+  .chip .dot, .chip.on .dot, .chip.live .dot { animation: none; }
+  .track .held, .track .solved, .finder i, .badge { transition: none; }
+}
 </style>
 </head>
 <body>
+<canvas id="art" aria-hidden="true"></canvas>
 <div class="wrap">
-  <div class="top">
+  <header class="top">
     <div class="brand">
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#8b5cf6"/><path d="M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z" fill="#fff"/></svg>
-      Zone
+      Zone <span class="pill">Flash</span>
     </div>
-    <a href="/">Back to your library</a>
+    <a class="back" href="/">Back to your library</a>
+  </header>
+
+  <section class="hero">
+    <h1>Your library, <span class="glow">straight off the screen.</span></h1>
+    <p class="lead">The iPhone shows a fast stream of QR codes and this computer's camera reads them. No Wi-Fi, no internet.</p>
+  </section>
+
+  <div class="banner" id="setup" role="note" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+    <div id="setupText"></div>
   </div>
 
-  <h1>Flash: send your library with no network</h1>
-  <p class="lead">Your iPhone shows a fast series of QR codes and this computer's camera reads them. Nothing goes over Wi-Fi or the internet.</p>
+  <div class="layout">
+    <ol class="steps" aria-label="How to send by Flash">
+      <li id="step1" data-state="active"><b>On your iPhone</b>Open Zone, then <span class="path">Settings &gt; Computers &gt; your computer &gt; Send by Flash</span>.</li>
+      <li id="step2"><b>Hold it up to the camera</b>Let the code fill the square, about a hand's width away, with the screen brightness up.</li>
+      <li id="step3"><b>Watch it assemble</b>Every tile is a piece of your library. Any code helps, in any order, so missed ones do not matter.</li>
+    </ol>
+    <div class="work">
+      <main class="stage">
+        <div class="col">
+          <div class="panel-title"><b>Camera</b><span class="meta" id="camMeta">off</span></div>
+          <div class="cam" id="cam">
+            <video id="video" playsinline muted aria-label="What the camera sees"></video>
+            <div class="shade"></div>
+            <div class="finder" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <div class="scan" aria-hidden="true"></div>
+            <div class="chip" id="chip" hidden><span class="dot"></span><span id="chipText">Camera on</span></div>
+            <div class="cover" id="cover">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <p id="coverText">Zone needs the camera to read the codes on your iPhone's screen. The pictures stay on this computer.</p>
+              <p class="how" id="coverHow" hidden></p>
+              <button class="btn primary" id="start" type="button">Turn on the camera</button>
+            </div>
+          </div>
+        </div>
+        <div class="between" aria-hidden="true"></div>
+        <div class="col">
+          <div class="panel-title"><b>Your library</b><span class="meta" id="mosaicMeta">waiting for the first code</span></div>
+          <div class="mosaic" id="mosaicBox">
+            <canvas id="mosaic" aria-hidden="true"></canvas>
+            <div class="idle" id="idle">Each tile will be one piece of your library. They light up as the camera reads them.</div>
+            <div class="badge" id="badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path id="badgeMark" d="m7.5 12.5 3 3 6-6.5"/></svg><span id="badgeText">Assembled</span></div>
+          </div>
+          <div class="legend" aria-hidden="true"><span><i class="k1"></i>Rebuilt</span><span><i class="k2"></i>Read, waiting on other pieces</span><span><i class="k3"></i>Not seen yet</span></div>
+        </div>
+      </main>
 
-  <div class="stage">
-    <video id="video" playsinline muted aria-label="Camera"></video>
-    <div class="aim" id="aim" hidden></div>
-    <div class="cover" id="cover">
-      <div id="coverText">This page needs the camera to read the codes on your phone's screen. The pictures stay on this computer.</div>
-      <button class="btn primary" id="start" type="button">Turn on the camera</button>
+      <section class="readout">
+        <div class="big" aria-hidden="true"><span id="pct">0</span><small>%</small></div>
+        <div class="state" id="state">Turn on the camera to begin</div>
+        <div class="track" id="track" role="progressbar" aria-label="Pieces received" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="held" id="heldBar"></div><div class="solved" id="solvedBar"></div></div>
+        <div class="numbers">
+          <span><b id="rows">0</b> of <b id="k">0</b> pieces</span>
+          <span><b id="solvedN">0</b> rebuilt</span>
+          <span><b id="frames">0</b> codes read</span>
+          <span id="rate"></span>
+        </div>
+        <div class="hint" id="hint" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          <div id="hintText"></div>
+        </div>
+        <div class="result" id="result" hidden>
+          <div class="stats">
+            <div class="stat new"><b id="nNew">0</b><span>new</span></div>
+            <div class="stat"><b id="nChanged">0</b><span>changed</span></div>
+            <div class="stat"><b id="nSame">0</b><span>already here</span></div>
+          </div>
+          <p id="resultText"></p>
+        </div>
+        <div class="controls">
+          <select id="cameras" aria-label="Camera to use" hidden></select>
+          <button class="btn" id="again" type="button" hidden>Start over</button>
+        </div>
+      </section>
     </div>
   </div>
+  <div class="sr" id="announce" aria-live="polite" aria-atomic="true"></div>
 
-  <div class="panel" aria-live="polite">
-    <div class="state" id="state">Waiting for the camera</div>
-    <div class="track" role="progressbar" aria-label="Received" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="track"><div class="fill" id="fill"></div></div>
-    <div class="numbers">
-      <span id="rows">0 of 0 pieces</span>
-      <span id="frames">0 codes read</span>
-      <span id="rate"></span>
-    </div>
-    <div class="result" id="result" hidden></div>
-    <div class="row">
-      <select id="cameras" aria-label="Camera to use" hidden></select>
-      <button class="btn" id="again" type="button" hidden>Start over</button>
-    </div>
-  </div>
-
-  <ol>
-    <li>The phone has to be paired with this computer once. If it is not, open <a href="/">your library</a>, choose Pair a phone, and scan that code first. That works offline too.</li>
-    <li>In Zone on the iPhone, open the computer sync settings and start Flash.</li>
-    <li>Hold the phone so its code fills most of the square, screen brightness up. Keep it steady until this page says it is done.</li>
-  </ol>
+  <p class="foot">The iPhone has to be paired with this computer once, because the codes are encrypted with a key both sides got at pairing. Pairing needs no network either: run <code>zone pair</code> (or choose Pair a phone in <a href="/">your library</a>) and scan the code with the iPhone. If you put the phone down early, nothing is stored and you can start again.</p>
 </div>
 
 <script nonce="__NONCE__">
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
+  const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const video = $("video");
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  const MAX_SIDE = 720;
+  const grabCanvas = document.createElement("canvas");
+  const grabContext = grabCanvas.getContext("2d", { willReadFrequently: true });
+  // The middle square of the camera's picture is sent at up to this many pixels on a side:
+  // all of a 1080p camera's detail, so a code held farther away still has pixels to spare.
+  const MAX_SIDE = 1080;
+  // Pictures on their way to zone at once. zone reads them side by side, so the camera's
+  // every frame can be looked at while the last one is still being read.
+  const IN_FLIGHT = 2;
+  const FLIGHT_MS = 560;
+  const CASCADE_MS = 1300;
+
+  // ------------------------------------------------------------ state
+
   let stream = null;
   let running = false;
+  let phase = "intro"; // intro, denied, nocamera, looking, receiving, storing, done, failed, offline
   let finished = false;
-  let sent = 0;
+  let cameraOnAt = 0;
+  let lastCodeAt = 0;
+  let lastFrameAt = 0;
+  let lastUsefulAt = 0;
+  let foreignCodeAt = 0;
   let rateStart = 0;
   let rateFrames = 0;
+  let session = null;
+  let revealAt = 0;
+  let lastStatus = { state: "waiting" };
+  let appliedSeen = -1;
+  let frameNumber = 0;
+  let lastTaken = 0;
+  let workers = 0;
+  const frameWaiters = [];
 
-  function show(status) {
-    const k = status.k || 0;
-    const rows = status.rows || 0;
-    const percent = k ? Math.floor((rows / k) * 100) : 0;
-    $("fill").style.width = (status.state === "done" ? 100 : percent) + "%";
-    $("fill").classList.toggle("good", status.state === "done");
-    $("track").setAttribute("aria-valuenow", String(percent));
-    $("rows").textContent = rows + " of " + k + " pieces";
-    $("frames").textContent = (status.frames || 0) + " codes read";
-    const state = $("state");
-    state.className = "state";
-    const result = $("result");
-    result.hidden = true;
-    if (status.state === "waiting") {
-      state.textContent = running ? "Looking for a code. Hold the phone up to the camera" : "Waiting for the camera";
-    } else if (status.state === "receiving") {
-      state.textContent = "Receiving, " + percent + "%";
-    } else if (status.state === "storing") {
-      state.textContent = "Storing";
-    } else if (status.state === "done") {
-      const r = status.result || {};
-      state.textContent = "Done. " + r.items + (r.items === 1 ? " item" : " items") + " received";
-      state.classList.add("good");
-      const parts = [r.new + " new", r.changed + " changed", r.unchanged + " already here"];
-      if (r.rejected) parts.push(r.rejected + " could not be read");
-      result.textContent = (r.paired ? "This phone is now paired with this computer. " : "") + parts.join(", ") + ". You can tap Done on the phone.";
-      result.hidden = false;
-    } else if (status.state === "failed") {
-      state.textContent = "The flash arrived but could not be opened";
-      state.classList.add("bad");
-      result.textContent = (status.result && status.result.error) || "";
-      result.hidden = false;
+  // The mosaic: one tile per chunk of the flash. `target` is what the decoder says, `shown`
+  // what is drawn, which catches up when a particle lands or the final cascade reaches it.
+  const tiles = { k: 0, target: new Uint8Array(0), shown: new Uint8Array(0), at: new Float64Array(0), changed: new Float64Array(0), approximate: false };
+  let sweepAt = 0;
+  let particles = [];
+  let rings = [];
+
+  // ------------------------------------------------------------ helpers
+
+  function setText(id, text) { const el = $(id); if (el.textContent !== text) el.textContent = text; }
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+  function announce(text) { setText("announce", text); }
+
+  function bitsFromHex(hex, k) {
+    const out = new Uint8Array(k);
+    if (!hex) return out;
+    for (let byte = 0; byte * 8 < k; byte++) {
+      const value = parseInt(hex.substr(byte * 2, 2), 16) || 0;
+      if (!value) continue;
+      for (let bit = 0; bit < 8 && byte * 8 + bit < k; bit++) out[byte * 8 + bit] = (value >> bit) & 1;
     }
-    const over = status.state === "done" || status.state === "failed";
-    $("again").hidden = !over;
-    if (over && !finished) { finished = true; }
-    if (!over) finished = false;
+    return out;
   }
+
+  function resetTiles(k) {
+    tiles.k = k;
+    tiles.target = new Uint8Array(k);
+    tiles.shown = new Uint8Array(k);
+    tiles.at = new Float64Array(k).fill(Infinity);
+    tiles.changed = new Float64Array(k).fill(-1e9);
+    sweepAt = 0;
+    layout.dirty = true;
+  }
+
+  // ------------------------------------------------------------ talking to zone
 
   async function post(path, body) {
     const response = await fetch(path, { method: "POST", body, headers: body ? { "Content-Type": "application/octet-stream" } : {}, credentials: "same-origin" });
@@ -168,39 +360,514 @@ ol li { margin: 4px 0; }
     if (!vw || !vh) return null;
     const crop = Math.min(vw, vh);
     const side = Math.min(crop, MAX_SIDE);
-    if (canvas.width !== side) { canvas.width = side; canvas.height = side; }
-    context.drawImage(video, (vw - crop) / 2, (vh - crop) / 2, crop, crop, 0, 0, side, side);
-    const rgba = context.getImageData(0, 0, side, side).data;
+    if (grabCanvas.width !== side) { grabCanvas.width = side; grabCanvas.height = side; }
+    grabContext.drawImage(video, (vw - crop) / 2, (vh - crop) / 2, crop, crop, 0, 0, side, side);
+    const rgba = grabContext.getImageData(0, 0, side, side).data;
     const gray = new Uint8Array(side * side);
-    for (let i = 0, j = 0; j < gray.length; i += 4, j++) {
-      gray[j] = (rgba[i] * 77 + rgba[i + 1] * 150 + rgba[i + 2] * 29) >> 8;
-    }
+    for (let i = 0, j = 0; j < gray.length; i += 4, j++) gray[j] = (rgba[i] * 77 + rgba[i + 1] * 150 + rgba[i + 2] * 29) >> 8;
     return { side, gray };
   }
 
-  async function loop() {
-    while (running) {
-      const picture = grab();
-      if (!picture) { await new Promise((r) => setTimeout(r, 100)); continue; }
-      try {
-        const status = await post("/api/flash/picture?w=" + picture.side + "&h=" + picture.side, picture.gray);
-        show(status);
-        sent++;
-        rateFrames++;
-        const now = performance.now();
-        if (now - rateStart > 1000) {
-          $("rate").textContent = Math.round((rateFrames * 1000) / (now - rateStart)) + " pictures a second";
-          rateStart = now; rateFrames = 0;
-        }
-      } catch (error) {
-        $("state").textContent = "Lost contact with zone. Check that it is still running";
-        $("state").className = "state bad";
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-      // Once a flash is stored there is no hurry: look twice a second for a new one.
-      await new Promise((r) => (finished ? setTimeout(r, 500) : requestAnimationFrame(r)));
+  // Counts the camera's new frames, so no frame is sent twice and none waits for a timer.
+  function watchFrames() {
+    const wake = () => { frameNumber++; frameWaiters.splice(0).forEach((resolve) => resolve()); };
+    if (video.requestVideoFrameCallback) {
+      const tick = () => { wake(); video.requestVideoFrameCallback(tick); };
+      video.requestVideoFrameCallback(tick);
+    } else {
+      const tick = () => { wake(); requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
     }
   }
+  function nextFrame() {
+    return frameNumber > lastTaken ? Promise.resolve() : new Promise((resolve) => frameWaiters.push(resolve));
+  }
+
+  async function worker() {
+    workers++;
+    try {
+      while (running) {
+        await nextFrame();
+        if (!running) break;
+        lastTaken = frameNumber;
+        const picture = grab();
+        if (!picture) { await new Promise((r) => setTimeout(r, 100)); continue; }
+        try {
+          const status = await post("/api/flash/picture?w=" + picture.side + "&h=" + picture.side, picture.gray);
+          if (phase === "offline") phase = "looking";
+          apply(status, true);
+          rateFrames++;
+          const now = performance.now();
+          if (now - rateStart > 1000) {
+            setText("rate", Math.round((rateFrames * 1000) / (now - rateStart)) + " pictures a second");
+            rateStart = now; rateFrames = 0;
+          }
+        } catch (error) {
+          if (error.message === "locked") return;
+          setPhase("offline");
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        // Once a flash is stored there is no hurry: look twice a second for a new one.
+        if (finished) await new Promise((r) => setTimeout(r, 500));
+      }
+    } finally {
+      workers--;
+    }
+  }
+
+  function loop() {
+    for (let i = workers; i < IN_FLIGHT; i++) worker();
+  }
+
+  // ------------------------------------------------------------ reacting to what zone says
+
+  function apply(status, fromPicture) {
+    const now = performance.now();
+    // Answers to pictures sent together can come back in either order; the newest wins.
+    const seen = status.pictures ? status.pictures.seen : 0;
+    if (fromPicture && seen < appliedSeen) return;
+    appliedSeen = seen;
+    lastStatus = status;
+    const last = status.last || {};
+    if (fromPicture) {
+      if (last.codes) lastCodeAt = now;
+      if (last.frames) { lastFrameAt = now; pulse(); }
+      if (last.useful) lastUsefulAt = now;
+      if (last.codes && !last.frames) foreignCodeAt = now;
+    }
+
+    // The tiles.
+    const k = status.k || 0;
+    if (status.session && status.session !== session) {
+      session = status.session;
+      resetTiles(k);
+    } else if (!status.session && session && status.state === "waiting") {
+      session = null;
+      resetTiles(0);
+    }
+    if (k && tiles.k === k) updateTiles(status, now);
+
+    // The words and numbers.
+    const rows = status.rows || 0;
+    const solvedCount = status.solved == null ? (status.state === "done" || status.state === "storing" ? k : 0) : status.solved;
+    const over = status.state === "done" || status.state === "storing";
+    const percent = over ? 100 : (k ? Math.floor((rows / k) * 100) : 0);
+    setText("pct", String(percent));
+    setText("rows", String(rows));
+    setText("k", String(k));
+    setText("solvedN", String(solvedCount));
+    setText("frames", String(status.frames || 0));
+    $("heldBar").style.width = (k ? (over ? 100 : (rows / k) * 100) : 0) + "%";
+    $("solvedBar").style.width = (k ? (over ? 100 : (solvedCount / k) * 100) : 0) + "%";
+    $("track").setAttribute("aria-valuenow", String(percent));
+    setText("mosaicMeta", k ? plural(k, "piece", "pieces") + ", " + Math.round((status.bytes || 0) / 1024) + " KB" : "waiting for the first code");
+    $("idle").hidden = k > 0;
+
+    if (status.state === "receiving") setPhase("receiving");
+    else if (status.state === "storing") setPhase("storing");
+    else if (status.state === "done") setPhase("done");
+    else if (status.state === "failed") setPhase("failed");
+    else if (status.state === "waiting" && running) setPhase("looking");
+
+    finished = status.state === "done" || status.state === "failed";
+    $("again").hidden = !finished;
+    $("rate").hidden = finished;
+    if (status.state === "done") showResult(status.result || {});
+    else if (status.state === "failed") showFailure(status.result || {});
+    else { $("result").hidden = true; $("badge").classList.remove("show", "bad"); }
+  }
+
+  function updateTiles(status, now) {
+    const k = tiles.k;
+    tiles.approximate = !status.blocks;
+    let next;
+    if (status.blocks) {
+      const held = bitsFromHex(status.blocks.held, k);
+      const solved = bitsFromHex(status.blocks.solved, k);
+      next = new Uint8Array(k);
+      for (let n = 0; n < k; n++) next[n] = solved[n] ? 2 : held[n] ? 1 : 0;
+    } else {
+      // A flash too large for one tile per piece: light tiles in proportion to the counts.
+      next = new Uint8Array(k);
+      const over = status.state === "done" || status.state === "storing";
+      const rows = over ? k : status.rows || 0;
+      for (let n = 0; n < rows && n < k; n++) next[n] = 1;
+      if (over) next.fill(2);
+    }
+    const rising = [];
+    for (let n = 0; n < k; n++) if (next[n] > tiles.target[n]) rising.push(n);
+    const completing = (status.state === "done" || status.state === "storing") && tiles.target.some((v, n) => v !== 2 && next[n] === 2);
+    tiles.target = next;
+    if (!rising.length) return;
+    if (completing && !reduceMotion) {
+      // The last rows resolve everything that waited, lowest piece first, as the decoder
+      // does. Play that out, then sweep light across the whole library.
+      const waiting = rising.filter((n) => tiles.shown[n] !== 2);
+      const step = Math.min(28, CASCADE_MS / Math.max(1, waiting.length));
+      waiting.forEach((n, i) => { tiles.at[n] = Math.min(tiles.at[n], now + 180 + i * step); });
+      sweepAt = now + 180 + waiting.length * step + 120;
+      revealAt = sweepAt + 650;
+      launch(rising.slice(-6), now);
+      return;
+    }
+    if (completing) { revealAt = now; }
+    if (reduceMotion) {
+      for (const n of rising) { tiles.at[n] = now; }
+      return;
+    }
+    // New pieces fly in from the camera. Pieces that were already in place light up at once.
+    const flying = rising.filter((n) => tiles.shown[n] === 0).slice(0, 8);
+    const flyingSet = new Set(flying);
+    for (const n of rising) {
+      if (flyingSet.has(n)) tiles.at[n] = Math.min(tiles.at[n], now + FLIGHT_MS);
+      else tiles.at[n] = Math.min(tiles.at[n], now + 60);
+    }
+    for (const n of rising) if (tiles.shown[n] === 0 && !flyingSet.has(n)) tiles.at[n] = Math.min(tiles.at[n], now + FLIGHT_MS + 80);
+    launch(flying, now);
+  }
+
+  function setPhase(next) {
+    if (phase === next) return;
+    phase = next;
+    const cam = $("cam");
+    const chip = $("chip");
+    cam.classList.toggle("looking", next === "looking");
+    chip.className = "chip" + (next === "looking" ? " on" : next === "receiving" || next === "storing" ? " live" : next === "done" ? " done" : "");
+    chip.hidden = !running;
+    const state = $("state");
+    state.className = "state";
+    const words = {
+      intro: "Turn on the camera to begin",
+      denied: "The camera is not allowed for this page",
+      nocamera: "No camera could be started",
+      looking: "Looking for the code",
+      receiving: "Reading the flash",
+      storing: "Putting your library together",
+      done: "Assembled",
+      failed: "The flash came through, but could not be opened",
+      offline: "Lost contact with zone. Check that it is still running",
+    }[next];
+    setText("state", words);
+    if (next === "done") state.classList.add("good");
+    if (next === "failed" || next === "offline" || next === "denied" || next === "nocamera") state.classList.add("bad");
+    setText("chipText", { looking: "Looking for a code", receiving: "Reading", storing: "Storing", done: "Done" }[next] || "Camera on");
+    setText("camMeta", running ? (next === "receiving" ? "reading" : "on") : "off");
+    // The guide follows along.
+    const steps = { intro: [1, 0, 0], denied: [1, 0, 0], nocamera: [1, 0, 0], looking: [1, 1, 0], receiving: [2, 2, 1], storing: [2, 2, 1], done: [2, 2, 2], failed: [2, 2, 1], offline: [1, 1, 0] }[next];
+    ["step1", "step2", "step3"].forEach((id, i) => {
+      $(id).setAttribute("data-state", steps[i] === 2 ? "done" : steps[i] === 1 ? "active" : "");
+    });
+    if (next === "looking") { $("step1").setAttribute("data-state", lastFrameAt ? "done" : "active"); }
+    if (next !== "receiving") announce(words);
+    if (next === "receiving") announce("Reading the flash. Keep the phone steady.");
+    hints();
+  }
+
+  function showResult(r) {
+    const show = () => {
+      setText("nNew", String(r.new || 0));
+      setText("nChanged", String(r.changed || 0));
+      setText("nSame", String(r.unchanged || 0));
+      const parts = [];
+      const from = r.phone ? "From " + r.phone + ": " : "";
+      parts.push(from + plural(r.items || 0, "item", "items") + " received.");
+      if (r.deletions) parts.push(plural(r.deletions, "deletion", "deletions") + " applied.");
+      if (r.rejected) parts.push(plural(r.rejected, "item", "items") + " could not be read.");
+      if (r.paired) parts.push("This iPhone is now paired with this computer.");
+      parts.push("You can tap Done on the phone.");
+      setText("resultText", parts.join(" "));
+      $("result").hidden = false;
+      $("badge").classList.remove("bad");
+      $("badgeMark").setAttribute("d", "m7.5 12.5 3 3 6-6.5");
+      setText("badgeText", "Assembled");
+      $("badge").classList.add("show");
+      setText("state", "Assembled. " + plural(r.items || 0, "item", "items") + " received");
+      announce("Done. " + (r.new || 0) + " new, " + (r.changed || 0) + " changed, " + (r.unchanged || 0) + " already here.");
+    };
+    if ($("result").hidden) {
+      const wait = Math.max(0, revealAt - performance.now());
+      if (wait > 0) setTimeout(() => { if (lastStatus.state === "done") show(); }, wait); else show();
+    }
+  }
+
+  function showFailure(r) {
+    $("result").hidden = true;
+    hint(r.error || "The codes could not be opened.", true);
+    $("badge").classList.add("bad");
+    $("badgeMark").setAttribute("d", "M15 9l-6 6M9 9l6 6");
+    setText("badgeText", "Could not be opened");
+    $("badge").classList.add("show");
+  }
+
+  // ------------------------------------------------------------ guidance
+
+  const LOOKING_HINTS = [
+    "Hold the phone about a hand's width from the camera, so its code fills the square.",
+    "Turn the iPhone's screen brightness all the way up.",
+    "See a glare on the phone's screen? Tilt it a little until it goes.",
+    "Is Flash running on the phone? In Zone: Settings > Computers > your computer > Send by Flash.",
+  ];
+
+  function hint(text, bad) {
+    const box = $("hint");
+    if (!text) { box.hidden = true; return; }
+    box.classList.toggle("bad", !!bad);
+    const target = $("hintText");
+    if (target.getAttribute("data-text") !== text) {
+      // zone writes commands in `backticks`: show them as code, everything as plain text.
+      target.textContent = "";
+      text.split("`").forEach((part, i) => {
+        if (i % 2) { const code = document.createElement("code"); code.textContent = part; target.append(code); }
+        else target.append(part);
+      });
+      target.setAttribute("data-text", text);
+      announce(text.replace(/`/g, ""));
+    }
+    box.hidden = false;
+  }
+
+  function hints() {
+    const now = performance.now();
+    if (phase === "failed") return;
+    if (!running || phase === "done" || phase === "storing" || phase === "intro" || phase === "denied" || phase === "nocamera") { if (phase !== "failed") hint(""); return; }
+    if (phase === "offline") { hint("zone stopped answering. Start it again with zone serve (or zone install), then reload this page.", true); return; }
+    if (now - foreignCodeAt < 2500 && now - lastFrameAt > 2500) {
+      hint("That QR code is not from Zone. On the iPhone, open Zone and choose Settings > Computers > your computer > Send by Flash.");
+      return;
+    }
+    if (phase === "looking") {
+      const since = now - Math.max(cameraOnAt, lastFrameAt);
+      if (since < 3500) { hint(""); return; }
+      hint(LOOKING_HINTS[Math.floor((since - 3500) / 4500) % LOOKING_HINTS.length]);
+      return;
+    }
+    if (phase === "receiving") {
+      if (now - lastFrameAt > 3000) hint("Lost sight of the code. Bring the phone back in front of the camera; it picks up where it left off.");
+      else if (now - lastUsefulAt > 4000) hint("Still reading. Hold steady: the last few pieces come from whichever codes the camera catches next.");
+      else hint("");
+    }
+  }
+  setInterval(hints, 500);
+
+  // ------------------------------------------------------------ the art
+
+  const art = $("art");
+  const artContext = art.getContext("2d");
+  const mosaicCanvas = $("mosaic");
+  const mosaicContext = mosaicCanvas.getContext("2d");
+  const layout = { dirty: true, cols: 0, rows: 0, cell: 0, size: 0, ox: 0, oy: 0, w: 0, h: 0, dpr: 1, colors: [] };
+
+  // A violet to blue to teal wash across the library, so the finished mosaic is one image.
+  const STOPS = [[139, 92, 246], [96, 165, 250], [94, 234, 212]];
+  function wash(t) {
+    const x = Math.max(0, Math.min(1, t)) * (STOPS.length - 1);
+    const i = Math.min(STOPS.length - 2, Math.floor(x));
+    const f = x - i;
+    return STOPS[i].map((c, j) => Math.round(c + (STOPS[i + 1][j] - c) * f));
+  }
+
+  function measure() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = mosaicCanvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width * dpr)), h = Math.max(1, Math.round(rect.height * dpr));
+    if (mosaicCanvas.width !== w || mosaicCanvas.height !== h) { mosaicCanvas.width = w; mosaicCanvas.height = h; layout.dirty = true; }
+    const aw = Math.round(window.innerWidth * dpr), ah = Math.round(window.innerHeight * dpr);
+    if (art.width !== aw || art.height !== ah) { art.width = aw; art.height = ah; }
+    if (!layout.dirty) return;
+    layout.dirty = false;
+    layout.dpr = dpr; layout.w = w; layout.h = h;
+    const k = tiles.k || 144;
+    const pad = Math.round(Math.min(w, h) * 0.07);
+    const cols = Math.max(1, Math.ceil(Math.sqrt(k * (w / h))));
+    const rows = Math.max(1, Math.ceil(k / cols));
+    const cell = Math.min((w - pad * 2) / cols, (h - pad * 2) / rows);
+    layout.cols = cols; layout.rows = rows; layout.cell = cell;
+    layout.size = cell * (k > 900 ? 0.86 : k > 200 ? 0.8 : 0.74);
+    layout.ox = (w - cell * cols) / 2; layout.oy = (h - cell * rows) / 2;
+    layout.colors = [];
+    for (let n = 0; n < k; n++) {
+      const c = n % cols, r = Math.floor(n / cols);
+      layout.colors.push(wash((cols > 1 ? c / (cols - 1) : 0.5) * 0.62 + (rows > 1 ? r / (rows - 1) : 0.5) * 0.38));
+    }
+  }
+
+  function tileCenter(n) {
+    const c = n % layout.cols, r = Math.floor(n / layout.cols);
+    return [layout.ox + (c + 0.5) * layout.cell, layout.oy + (r + 0.5) * layout.cell];
+  }
+
+  // Where a tile is on the page, in the art canvas's pixels.
+  function tileOnPage(n) {
+    const rect = mosaicCanvas.getBoundingClientRect();
+    const [x, y] = tileCenter(n);
+    return [(rect.left + x / layout.dpr) * layout.dpr, (rect.top + y / layout.dpr) * layout.dpr];
+  }
+
+  function camCenter() {
+    const rect = $("cam").getBoundingClientRect();
+    const dpr = layout.dpr;
+    return [(rect.left + rect.width / 2) * dpr, (rect.top + rect.height / 2) * dpr, (rect.width / 2) * dpr];
+  }
+
+  function rounded(context, x, y, size, radius) {
+    if (context.roundRect) { context.beginPath(); context.roundRect(x, y, size, size, radius); context.fill(); }
+    else context.fillRect(x, y, size, size);
+  }
+
+  function drawMosaic(now) {
+    const ctx = mosaicContext;
+    ctx.clearRect(0, 0, layout.w, layout.h);
+    const size = layout.size, radius = Math.max(1, size * 0.22);
+    if (!tiles.k) {
+      // Before any code: a quiet grid, breathing. It is not progress; nothing is lit.
+      for (let n = 0; n < 144; n++) {
+        const [x, y] = tileCenter(n);
+        const wave = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(now / 900 - (n % layout.cols) * 0.35 - Math.floor(n / layout.cols) * 0.22);
+        ctx.fillStyle = "rgba(167, 139, 250, " + (0.035 + wave * 0.045).toFixed(3) + ")";
+        rounded(ctx, x - size / 2, y - size / 2, size, radius);
+      }
+      return;
+    }
+    const sweep = sweepAt && now >= sweepAt ? (now - sweepAt) / 900 : -1;
+    for (let n = 0; n < tiles.k; n++) {
+      if (now >= tiles.at[n]) {
+        if (tiles.shown[n] !== tiles.target[n]) { tiles.shown[n] = tiles.target[n]; tiles.changed[n] = now; }
+        tiles.at[n] = Infinity;
+      }
+      const state = tiles.shown[n];
+      const [x, y] = tileCenter(n);
+      const [cr, cg, cb] = layout.colors[n];
+      const age = now - tiles.changed[n];
+      const pop = age < 700 ? 1 - age / 700 : 0;
+      const s = size * (1 + pop * 0.35);
+      if (state === 0) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+        rounded(ctx, x - size / 2, y - size / 2, size, radius);
+        continue;
+      }
+      if (state === 1) {
+        ctx.fillStyle = "rgba(" + cr + ", " + cg + ", " + cb + ", 0.26)";
+        rounded(ctx, x - s / 2, y - s / 2, s, radius);
+        ctx.fillStyle = "rgba(" + cr + ", " + cg + ", " + cb + ", 0.85)";
+        const dot = Math.max(1.5, size * 0.16);
+        rounded(ctx, x - dot / 2, y - dot / 2, dot, dot / 2);
+      } else if (phase === "failed") {
+        ctx.fillStyle = "rgba(244, 167, 167, " + (0.16 + ((cr + cg) % 7) / 100).toFixed(3) + ")";
+        rounded(ctx, x - size / 2, y - size / 2, size, radius);
+      } else {
+        let light = 0;
+        if (sweep >= 0 && sweep <= 1.4) {
+          const c = (n % layout.cols) / Math.max(1, layout.cols - 1), r = Math.floor(n / layout.cols) / Math.max(1, layout.rows - 1);
+          const d = Math.abs((c * 0.62 + r * 0.38) - sweep * 1.25 + 0.2);
+          light = Math.max(0, 1 - d * 6) * 0.75;
+        }
+        ctx.fillStyle = "rgb(" + Math.min(255, cr + 30 * light + 80 * pop) + ", " + Math.min(255, cg + 60 * light + 80 * pop) + ", " + Math.min(255, cb + 50 * light + 80 * pop) + ")";
+        if (pop > 0 || light > 0) { ctx.shadowColor = "rgba(" + cr + ", " + cg + ", " + cb + ", 0.9)"; ctx.shadowBlur = (12 * pop + 18 * light) * layout.dpr; }
+        rounded(ctx, x - s / 2, y - s / 2, s, radius);
+        ctx.shadowBlur = 0;
+      }
+      if (pop > 0.01) {
+        ctx.fillStyle = "rgba(255, 255, 255, " + (pop * pop * 0.8).toFixed(3) + ")";
+        rounded(ctx, x - s / 2, y - s / 2, s, radius);
+      }
+    }
+  }
+
+  // Particles from the camera to the tiles their code filled.
+  function launch(list, now) {
+    if (reduceMotion || !list.length) return;
+    measure();
+    const [cx, cy, cr] = camCenter();
+    const perTile = Math.max(4, Math.floor(60 / list.length));
+    for (const n of list) {
+      const [tx, ty] = tileOnPage(n);
+      const color = layout.colors[n] || STOPS[0];
+      for (let i = 0; i < perTile; i++) {
+        const sx = cx + (Math.random() - 0.5) * cr * 0.9, sy = cy + (Math.random() - 0.5) * cr * 0.9;
+        const mx = (sx + tx) / 2, my = (sy + ty) / 2;
+        const bend = (Math.random() * 0.5 + 0.35) * Math.hypot(tx - sx, ty - sy) * 0.35;
+        const wide = window.innerWidth > 880;
+        particles.push({
+          sx, sy, tx: tx + (Math.random() - 0.5) * layout.cell * 0.4, ty: ty + (Math.random() - 0.5) * layout.cell * 0.4,
+          cx: mx + (wide ? 0 : bend), cy: my - (wide ? bend : 0),
+          t0: now + Math.random() * 90, dur: FLIGHT_MS - 120 + Math.random() * 140,
+          color, size: (1.2 + Math.random() * 1.8) * layout.dpr,
+        });
+      }
+    }
+  }
+
+  function pulse() {
+    const cam = $("cam");
+    cam.classList.add("hit");
+    clearTimeout(pulse.timer);
+    pulse.timer = setTimeout(() => cam.classList.remove("hit"), 200);
+    if (reduceMotion) return;
+    measure();
+    const [cx, cy, cr] = camCenter();
+    if (rings.length < 6) rings.push({ x: cx, y: cy, r: cr * 0.55, t0: performance.now() });
+  }
+
+  function drawArt(now) {
+    const ctx = artContext;
+    ctx.clearRect(0, 0, art.width, art.height);
+    if (!running && !particles.length) return;
+    ctx.globalCompositeOperation = "lighter";
+    // The link between the camera and the library: a faint thread with light running along it.
+    if (running && phase !== "intro" && !reduceMotion) {
+      const [cx, cy, cr] = camCenter();
+      const rect = mosaicCanvas.getBoundingClientRect();
+      const mx = (rect.left + rect.width / 2) * layout.dpr, my = (rect.top + rect.height / 2) * layout.dpr;
+      const wide = window.innerWidth > 880;
+      const sx = wide ? cx + cr * 1.02 : cx, sy = wide ? cy : cy + cr * 1.02;
+      const ex = wide ? mx - (rect.width / 2) * layout.dpr * 1.02 : mx, ey = wide ? my : my - (rect.height / 2) * layout.dpr * 1.02;
+      const busy = phase === "receiving" || phase === "storing";
+      const speed = busy ? 0.0016 : 0.0005;
+      for (let i = 0; i < 18; i++) {
+        const t = (now * speed + i / 18) % 1;
+        const x = sx + (ex - sx) * t, y = sy + (ey - sy) * t + Math.sin(t * Math.PI * 2 + now / 700) * 3 * layout.dpr;
+        const fade = Math.sin(t * Math.PI);
+        ctx.fillStyle = "rgba(167, 139, 250, " + ((busy ? 0.55 : 0.22) * fade).toFixed(3) + ")";
+        ctx.beginPath(); ctx.arc(x, y, (busy ? 1.8 : 1.2) * layout.dpr, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    rings = rings.filter((ring) => {
+      const p = (now - ring.t0) / 650;
+      if (p >= 1) return false;
+      ctx.strokeStyle = "rgba(94, 234, 212, " + (0.55 * (1 - p)).toFixed(3) + ")";
+      ctx.lineWidth = 2 * layout.dpr * (1 - p) + 0.5;
+      ctx.beginPath(); ctx.arc(ring.x, ring.y, ring.r * (1 + p * 0.55), 0, Math.PI * 2); ctx.stroke();
+      return true;
+    });
+    particles = particles.filter((p) => {
+      const t = (now - p.t0) / p.dur;
+      if (t < 0) return true;
+      if (t >= 1) return false;
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const u = 1 - e;
+      const x = u * u * p.sx + 2 * u * e * p.cx + e * e * p.tx;
+      const y = u * u * p.sy + 2 * u * e * p.cy + e * e * p.ty;
+      const [r, g, b] = p.color;
+      const alpha = Math.min(1, t * 4) * (1 - Math.max(0, t - 0.85) / 0.15);
+      ctx.fillStyle = "rgba(" + r + ", " + g + ", " + b + ", " + (0.9 * alpha).toFixed(3) + ")";
+      ctx.beginPath(); ctx.arc(x, y, p.size, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(255, 255, 255, " + (0.5 * alpha).toFixed(3) + ")";
+      ctx.beginPath(); ctx.arc(x, y, p.size * 0.45, 0, Math.PI * 2); ctx.fill();
+      return true;
+    });
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function frame(now) {
+    measure();
+    drawMosaic(now);
+    drawArt(now);
+    requestAnimationFrame(frame);
+  }
+  window.addEventListener("resize", () => { layout.dirty = true; });
+  requestAnimationFrame(frame);
+
+  // ------------------------------------------------------------ the camera
 
   async function listCameras(currentId) {
     try {
@@ -218,36 +885,50 @@ ol li { margin: 4px 0; }
     } catch (error) { /* the list is optional */ }
   }
 
-  async function start(deviceId) {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      $("coverText").textContent = "This browser cannot use the camera here. Try a current version of Safari, Chrome, Edge or Firefox.";
+  function coverFor(kind) {
+    const how = $("coverHow");
+    if (kind === "denied") {
+      setText("coverText", "The camera is not allowed for this page yet.");
+      how.textContent = "Allow it from the camera or lock icon in the address bar (in Safari: Safari > Settings for This Website > Camera). On a Mac, also check System Settings > Privacy & Security > Camera for this browser. Then press Try again.";
+      how.hidden = false;
+      setPhase("denied");
+    } else if (kind === "nocamera") {
+      setText("coverText", "No camera could be started.");
+      how.textContent = "Check that a camera is connected and that no other app (a video call, say) is using it, then press Try again.";
+      how.hidden = false;
+      setPhase("nocamera");
+    } else if (kind === "unsupported") {
+      setText("coverText", "This browser cannot use the camera on this page. Try a current Safari, Chrome, Edge or Firefox.");
+      how.hidden = true;
       $("start").hidden = true;
-      return;
     }
+    $("cover").hidden = false;
+    $("start").textContent = "Try again";
+  }
+
+  async function start(deviceId) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { coverFor("unsupported"); return; }
     if (stream) stream.getTracks().forEach((track) => track.stop());
-    const wanted = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+    // The most detail and the most frames a second the camera offers.
+    const wanted = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
     if (deviceId) wanted.deviceId = { exact: deviceId };
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: wanted, audio: false });
     } catch (error) {
-      const denied = error && (error.name === "NotAllowedError" || error.name === "SecurityError");
-      $("coverText").textContent = denied
-        ? "The camera was not allowed. Allow it for this page in the browser's address bar or settings, then try again."
-        : "No camera could be started. Check that one is connected and not in use by another app, then try again.";
-      $("cover").hidden = false;
-      $("start").textContent = "Try again";
+      coverFor(error && (error.name === "NotAllowedError" || error.name === "SecurityError") ? "denied" : "nocamera");
       return;
     }
     video.srcObject = stream;
     await video.play().catch(() => {});
     $("cover").hidden = true;
-    $("aim").hidden = false;
     const track = stream.getVideoTracks()[0];
     listCameras(track && track.getSettings ? track.getSettings().deviceId : null);
+    cameraOnAt = performance.now();
     if (!running) {
       running = true;
       rateStart = performance.now();
-      show({ state: "waiting" });
+      phase = "";
+      setPhase(lastStatus.state === "receiving" ? "receiving" : "looking");
       loop();
     }
   }
@@ -255,19 +936,51 @@ ol li { margin: 4px 0; }
   $("start").addEventListener("click", () => start(null));
   $("cameras").addEventListener("change", (event) => start(event.target.value));
   $("again").addEventListener("click", async () => {
-    try { show(await post("/api/flash/reset", null)); } catch (error) { /* shown by the loop */ }
+    try {
+      const status = await post("/api/flash/reset", null);
+      session = null; resetTiles(0); revealAt = 0; lastFrameAt = 0; appliedSeen = -1; cameraOnAt = performance.now();
+      $("badge").classList.remove("show");
+      phase = "";
+      apply(status, false);
+      setPhase(running ? "looking" : "intro");
+    } catch (error) { /* shown by the loop */ }
   });
   document.addEventListener("visibilitychange", () => {
     // A hidden tab stops reading. Coming back picks up where it was.
     if (document.hidden) { running = false; } else if (stream && !running) { running = true; loop(); }
   });
   window.addEventListener("pagehide", () => { if (stream) stream.getTracks().forEach((track) => track.stop()); });
+  watchFrames();
+
+  // Before anything: can this computer open a flash at all?
+  fetch("/api/flash/status", { credentials: "same-origin" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((status) => {
+      if (!status) return;
+      const setup = status.setup || {};
+      const banner = $("setup");
+      const text = $("setupText");
+      if (!setup.phones && !setup.pairing_codes) {
+        text.textContent = "";
+        text.append("No iPhone is paired with this computer yet, so a flash could not be opened. Run ");
+        const code = document.createElement("code"); code.textContent = "zone pair"; text.append(code);
+        text.append(" in a terminal, or choose Pair a phone in ");
+        const link = document.createElement("a"); link.href = "/"; link.textContent = "your library"; text.append(link);
+        text.append(", and scan the code with the iPhone. That works offline too. Then come back here.");
+        banner.className = "banner"; banner.hidden = false;
+      } else if (!setup.phones && setup.pairing_codes) {
+        text.textContent = "A pairing code is waiting. If your iPhone scanned it, its first flash also pairs it with this computer.";
+        banner.className = "banner info"; banner.hidden = false;
+      }
+      if (!running) apply(status, false);
+    })
+    .catch(() => {});
 
   // Start at once when the camera was allowed before, otherwise wait for the button.
   if (navigator.permissions && navigator.permissions.query) {
     navigator.permissions.query({ name: "camera" }).then((p) => { if (p.state === "granted") start(null); }).catch(() => {});
   }
-  fetch("/api/flash/status", { credentials: "same-origin" }).then((r) => (r.ok ? r.json() : null)).then((s) => { if (s && !running) show(s); }).catch(() => {});
+  window.__zoneFlash = { tiles, get phase() { return phase; } };
 })();
 </script>
 </body>
