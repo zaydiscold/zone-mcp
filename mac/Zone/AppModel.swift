@@ -59,7 +59,7 @@ final class AppModel {
     private(set) var update: UpdateCheck.Answer?
     private(set) var checkingUpdate = false
     private(set) var zoneVersion: String?
-    /// True when events come from `zone events`, false when they are read out of zone.log.
+    /// True when this app's zone has the `events` command.
     private(set) var usesEvents = false
     /// The program the old login item starts, when there is one.
     private(set) var legacyProgram: String?
@@ -82,6 +82,8 @@ final class AppModel {
     @ObservationIgnored private let bundledBinary: URL?
     @ObservationIgnored private let daemonProcess = DaemonProcess()
     @ObservationIgnored private var source: ActivitySource?
+    @ObservationIgnored private var sourceFollowsEvents: Bool?
+    @ObservationIgnored private var recordsEventsCache: (pid: Int, records: Bool)?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private let launched = Date()
     @ObservationIgnored private var refreshing = false
@@ -172,7 +174,6 @@ final class AppModel {
         zoneVersion = try? await client.version()
         usesEvents = await client.hasEvents()
         canOpenFlash = await client.hasFlashOpen()
-        startActivitySource()
         refreshLoginItem()
         legacyProgram = env.isSandbox ? nil : ProcessLookup.program(inLaunchAgent: env.legacyLaunchAgent)
 
@@ -201,8 +202,22 @@ final class AppModel {
         await loadAgents()
     }
 
-    private func startActivitySource() {
-        let source: ActivitySource = usesEvents
+    /// Listens for what zone does, the way that fits the zone that is running. A zone that
+    /// writes its events down is followed with `zone events`. A zone the app did not start
+    /// may be an older one that only writes its log, so then the log is read: every version
+    /// writes that. Changing over (after taking over, say) never shows a thing twice.
+    private func chooseActivitySource() async {
+        var followEvents = usesEvents
+        if usesEvents, owner == .loginItem || owner == .other, let pid = status?.daemon.pid {
+            if recordsEventsCache?.pid != pid {
+                recordsEventsCache = (pid, await client.daemonRecordsEvents(pid: pid))
+            }
+            followEvents = recordsEventsCache?.records ?? false
+        }
+        guard followEvents != sourceFollowsEvents else { return }
+        sourceFollowsEvents = followEvents
+        source?.stop()
+        let source: ActivitySource = followEvents
             ? EventsCommandSource(binary: env.stableBinary, environment: env.childEnvironment())
             : LogTailSource(file: env.logFile)
         self.source = source
@@ -251,6 +266,7 @@ final class AppModel {
                 if fresh.items.total != status?.items.total { libraryDirty = true }
                 status = fresh
                 await supervise(fresh)
+                await chooseActivitySource()
             } catch {
                 if case .checking = daemon {
                     daemon = .problem(error.localizedDescription)
@@ -394,9 +410,13 @@ final class AppModel {
             syncingUntil = Date().addingTimeInterval(4)
             libraryDirty = true
         }
-        if event.kind == .paired, case .waiting = pairing, event.date >= pairingStarted.addingTimeInterval(-1) {
-            pairing = .paired(name: event.device ?? "Your iPhone", deviceID: event.deviceID ?? "")
-            syncingUntil = Date().addingTimeInterval(4)
+        if event.kind == .paired, case let .waiting(code) = pairing, event.date >= pairingStarted.addingTimeInterval(-1) {
+            // When zone names its codes, only the phone that used this very code counts.
+            let thisCode = code.id == nil || event.offer == nil || code.id == event.offer
+            if thisCode {
+                pairing = .paired(name: event.device ?? "Your iPhone", deviceID: event.deviceID ?? "")
+                syncingUntil = Date().addingTimeInterval(4)
+            }
         }
         Task { await refresh() }
     }
@@ -469,16 +489,32 @@ final class AppModel {
         agentsLoaded = true
     }
 
+    /// Connects or disconnects an agent. Connecting one that is already connected (to point
+    /// it at this app's zone, or to add its other profiles) keeps what it may read.
     func setAgent(_ agent: Agent, connected: Bool) async {
+        await changeAgent(agent) { [client] in
+            if connected {
+                try await client.connect(agent)
+            } else {
+                try await client.disconnect(agent: agent.id)
+            }
+        }
+    }
+
+    /// Changes what a connected agent may read (in every profile it has).
+    func setAgentView(_ agent: Agent, _ view: AgentView) async {
+        guard agent.isOn, agent.view != view || agent.viewsDiffer else { return }
+        await changeAgent(agent) { [client] in
+            try await client.connect(agent, view: view)
+        }
+    }
+
+    private func changeAgent(_ agent: Agent, _ work: @escaping () async throws -> Void) async {
         guard !busyAgents.contains(agent.id) else { return }
         busyAgents.insert(agent.id)
         agentError = nil
         do {
-            if connected {
-                try await client.connect(agent: agent.id)
-            } else {
-                try await client.disconnect(agent: agent.id)
-            }
+            try await work()
         } catch {
             agentError = "\(agent.title): \(error.localizedDescription)"
         }

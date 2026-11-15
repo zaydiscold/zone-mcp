@@ -293,6 +293,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         case "hide":
             model.state.hideText = argument != "off"
+        case "view":
+            // view:cursor=notes sets what an agent may read: all, notes or nokeyboard.
+            if let argument, let equals = argument.firstIndex(of: "="),
+               let agent = model.agents.first(where: { $0.id == argument[..<equals] }) {
+                let view: AgentView
+                switch argument[argument.index(after: equals)...] {
+                case "notes": view = .notesAndMeetings
+                case "nokeyboard": view = .noKeyboard
+                default: view = .everything
+                }
+                Task { await model.setAgentView(agent, view) }
+            }
         case "appearance":
             NSApp.appearance = NSAppearance(named: argument == "light" ? .aqua : .darkAqua)
         case "windows":
@@ -348,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let window: NSWindow?
         switch argument[..<equals] {
         case "popover": window = statusItem.window
+        case "status": window = statusItem.buttonWindow
         case "welcome": window = welcomeWindow
         case "floating": window = floatingWindow
         default: window = nil

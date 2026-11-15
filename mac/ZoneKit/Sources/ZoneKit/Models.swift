@@ -224,19 +224,23 @@ public struct Device: Decodable, Equatable, Sendable, Identifiable {
 public struct PairCode: Decodable, Equatable, Sendable {
     public var url: String
     public var name: String?
+    /// The code's own name. The `paired` event of the phone that uses it carries the same.
+    /// Nil from an older zone.
+    public var id: String?
     /// Unix seconds.
     public var expiresAt: Double
 
     enum CodingKeys: String, CodingKey {
-        case url, name
+        case url, name, id
         case expiresAt = "expires_at"
     }
 
     public var expiry: Date { Date(timeIntervalSince1970: expiresAt) }
 
-    public init(url: String, name: String? = nil, expiresAt: Double) {
+    public init(url: String, name: String? = nil, id: String? = nil, expiresAt: Double) {
         self.url = url
         self.name = name
+        self.id = id
         self.expiresAt = expiresAt
     }
 }

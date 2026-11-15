@@ -98,6 +98,14 @@ final class ParsingTests: XCTestCase {
         XCTAssertEqual(try decode([Device].self, "[]"), [])
     }
 
+    func testPairCodeWithItsName() throws {
+        let code = try decode(PairCode.self, """
+        {"url": "zone://pair?v=1&n=13&s=7e&name=Demo%20Mac", "id": "4661e7f2e848e4c2", "state": "waiting", "claimed": false,
+         "qr_svg": "<svg/>", "endpoint_id": "13", "name": "Demo Mac", "expires_at": 1794773062.0}
+        """)
+        XCTAssertEqual(code.id, "4661e7f2e848e4c2")
+    }
+
     func testPairCode() throws {
         let code = try decode(PairCode.self, """
         {"url": "zone://pair?v=1&n=13035f4f&s=7ec780d5&name=Demo%20Mac", "endpoint_id": "13035f4f",
@@ -105,6 +113,7 @@ final class ParsingTests: XCTestCase {
         """)
         XCTAssertTrue(code.url.hasPrefix("zone://pair?"))
         XCTAssertEqual(code.expiry.timeIntervalSince1970, 1794772531.643459, accuracy: 0.001)
+        XCTAssertNil(code.id, "an older zone does not name its codes")
     }
 
     func testItemsAndTheirPreviews() throws {
@@ -193,6 +202,112 @@ final class ParsingTests: XCTestCase {
         XCTAssertEqual(agent.standing, .connected)
         XCTAssertEqual(agent.title, "Hermes")
         XCTAssertEqual(agent.note, "Connected in all 2 profiles")
+    }
+
+    // MARK: What an agent may read
+
+    /// As `zone mcp status --json` printed it after `zone mcp install cursor --kinds note,meeting`
+    /// and `zone mcp install gemini --no-keyboard --read-only`.
+    static let scopedSurvey = """
+    {"zone": "/private/tmp/box/zone-home/bin/zone", "automatic": false, "clients": [
+      {"client": "claude-code", "label": "Claude Code (default)", "profile": "default", "path": "/tmp/box/home/.claude.json",
+       "installed": true, "state": "registered", "detail": null, "read_only": false,
+       "scope": {"limited": false, "kinds": ["dictation", "note", "meeting"], "exclude_sources": []}},
+      {"client": "cursor", "label": "Cursor", "profile": null, "path": "/tmp/box/home/.cursor/mcp.json",
+       "installed": true, "state": "registered", "detail": null, "read_only": false,
+       "scope": {"limited": true, "kinds": ["note", "meeting"], "exclude_sources": []}},
+      {"client": "gemini", "label": "Gemini CLI", "profile": null, "path": "/tmp/box/home/.gemini/settings.json",
+       "installed": true, "state": "registered_read_only", "detail": null, "read_only": true,
+       "scope": {"limited": true, "kinds": ["dictation", "note", "meeting"], "exclude_sources": ["keyboard"]}},
+      {"client": "codex", "label": "Codex", "profile": null, "path": "/x", "installed": true, "state": "registered", "detail": null,
+       "read_only": false, "scope": {"limited": true, "kinds": ["note"], "exclude_sources": ["app", "keyboard"]}},
+      {"client": "zed", "label": "Zed", "profile": null, "path": "/x", "installed": true, "state": "not_registered", "detail": null,
+       "read_only": false, "scope": null}
+    ]}
+    """
+
+    func testWhatEachAgentMayRead() throws {
+        let agents = Agent.list(from: try decode(AgentSurvey.self, Self.scopedSurvey))
+        let byID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+
+        let claude = try XCTUnwrap(byID["claude-code"])
+        XCTAssertEqual(claude.view, .everything)
+        XCTAssertTrue(claude.canLimitView)
+        XCTAssertEqual(claude.note, "Reads everything")
+
+        let cursor = try XCTUnwrap(byID["cursor"])
+        XCTAssertEqual(cursor.view, .notesAndMeetings)
+        XCTAssertEqual(cursor.note, "Reads notes and meetings only")
+        XCTAssertFalse(cursor.readOnly)
+
+        let gemini = try XCTUnwrap(byID["gemini"])
+        XCTAssertEqual(gemini.view, .noKeyboard)
+        XCTAssertTrue(gemini.readOnly)
+        XCTAssertEqual(gemini.note, "Reads all but keyboard dictations, cannot mark items")
+
+        // A view the app does not offer is shown as it is.
+        let codex = try XCTUnwrap(byID["codex"])
+        XCTAssertEqual(codex.view, .custom(kinds: ["note"], excludeSources: ["app", "keyboard"]))
+        XCTAssertEqual(codex.note, "Reads notes only, no app and keyboard dictations")
+
+        // Not connected: nothing to limit yet.
+        let zed = try XCTUnwrap(byID["zed"])
+        XCTAssertNil(zed.view)
+        XCTAssertFalse(zed.canLimitView)
+        XCTAssertEqual(zed.note, "Not connected")
+    }
+
+    func testConnectingAgainKeepsTheViewAndReadOnly() throws {
+        // A plain `zone mcp install <client>` puts the view back to everything and drops
+        // read-only (seen with zone at e6201cb), so the app always says both.
+        let agents = Agent.list(from: try decode(AgentSurvey.self, Self.scopedSurvey))
+        let byID = Dictionary(uniqueKeysWithValues: agents.map { ($0.id, $0) })
+
+        XCTAssertEqual(byID["cursor"]?.installArguments(), ["mcp", "install", "cursor", "--kinds", "note,meeting", "--exclude-sources", "none"])
+        XCTAssertEqual(byID["gemini"]?.installArguments(), ["mcp", "install", "gemini", "--read-only", "--kinds", "all", "--exclude-sources", "keyboard"])
+        XCTAssertEqual(byID["codex"]?.installArguments(), ["mcp", "install", "codex", "--kinds", "note", "--exclude-sources", "app,keyboard"])
+        XCTAssertEqual(byID["claude-code"]?.installArguments(), ["mcp", "install", "claude-code", "--kinds", "all", "--exclude-sources", "none"])
+        // A first connection asks for nothing special: the whole library, as zone does by itself.
+        XCTAssertEqual(byID["zed"]?.installArguments(), ["mcp", "install", "zed"])
+        // Choosing a view says exactly that view, and keeps read-only.
+        XCTAssertEqual(byID["gemini"]?.installArguments(view: .notesAndMeetings), ["mcp", "install", "gemini", "--read-only", "--kinds", "note,meeting", "--exclude-sources", "none"])
+        XCTAssertEqual(byID["cursor"]?.installArguments(view: .everything), ["mcp", "install", "cursor", "--kinds", "all", "--exclude-sources", "none"])
+    }
+
+    func testProfilesWithDifferentViews() {
+        let survey = AgentSurvey(clients: [
+            .init(client: "claude-code", label: "Claude Code (default)", profile: "default", state: "registered", scope: .init()),
+            .init(client: "claude-code", label: "Claude Code (work)", profile: "work", state: "registered", scope: .init(kinds: ["note", "meeting"])),
+        ])
+        let agent = Agent.list(from: survey)[0]
+        XCTAssertTrue(agent.viewsDiffer)
+        XCTAssertNil(agent.view)
+        XCTAssertEqual(agent.note, "Its profiles read different things")
+        // Nothing is assumed for it: the person has to choose.
+        XCTAssertEqual(agent.installArguments(), ["mcp", "install", "claude-code"])
+        XCTAssertEqual(agent.installArguments(view: .notesAndMeetings), ["mcp", "install", "claude-code", "--kinds", "note,meeting", "--exclude-sources", "none"])
+    }
+
+    func testAZoneThatCannotLimitViewsOffersNone() throws {
+        // An older zone says nothing about scope.
+        let agent = Agent.list(from: try decode(AgentSurvey.self, Self.survey)).first { $0.id == "claude-desktop" }
+        XCTAssertEqual(agent?.canLimitView, false)
+        XCTAssertNil(agent?.view)
+        XCTAssertEqual(agent?.note, "Connected")
+        XCTAssertEqual(agent?.readOnly, true, "registered_read_only is still understood")
+        XCTAssertEqual(agent?.installArguments(), ["mcp", "install", "claude-desktop", "--read-only"])
+    }
+
+    func testViewsAndTheirWords() {
+        XCTAssertEqual(AgentView(.init()), .everything)
+        XCTAssertEqual(AgentView(.init(kinds: ["meeting", "note"])), .notesAndMeetings, "the order zone lists kinds in does not matter")
+        XCTAssertEqual(AgentView(.init(excludeSources: ["keyboard"])), .noKeyboard)
+        XCTAssertEqual(AgentView.choices.map(\.title), ["Everything", "Notes and meetings only", "All but keyboard dictations"])
+        XCTAssertFalse(AgentView.everything.isLimited)
+        XCTAssertTrue(AgentView.notesAndMeetings.isLimited)
+        XCTAssertEqual(AgentView.custom(kinds: ["dictation", "note"], excludeSources: []).words, "dictations and notes only")
+        XCTAssertEqual(AgentView.custom(kinds: AgentView.allKinds, excludeSources: ["app"]).words, "no app dictations")
+        XCTAssertEqual(AgentView.custom(kinds: ["note"], excludeSources: []).detail, "Notes only.")
     }
 
     // MARK: Running zone

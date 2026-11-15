@@ -22,13 +22,16 @@ enum WindowSnapshot {
 
     /// The window as the window server shows it.
     private static func serverImage(of window: NSWindow, shadow: Bool) -> CGImage? {
+        // A window the window server does not know (the menu bar icon's, on some systems)
+        // has no number to ask for.
+        guard let number = UInt32(exactly: window.windowNumber), number > 0 else { return nil }
         guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }
         let create = unsafeBitCast(symbol, to: CreateImage.self)
         let onlyThisWindow: UInt32 = 1 << 3
         let bestResolution: UInt32 = 1 << 3
         let withoutShadow: UInt32 = 1 << 0
         let options = shadow ? bestResolution : bestResolution | withoutShadow
-        return create(.null, onlyThisWindow, UInt32(window.windowNumber), options)?.takeRetainedValue()
+        return create(.null, onlyThisWindow, number, options)?.takeRetainedValue()
     }
 
     /// The window's views, drawn into a picture.

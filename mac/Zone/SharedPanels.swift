@@ -243,7 +243,7 @@ struct AgentsPanel: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Zone.muted(scheme))
                     .padding(.top, 1)
-                Text("A connected agent can read everything in your Zone library and mark items as handled. It cannot change or delete your words.")
+                Text("A connected agent can read your Zone library and mark items as handled. It cannot change or delete your words. To show one less, click the line under its name.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Zone.muted(scheme))
                     .fixedSize(horizontal: false, vertical: true)
@@ -264,7 +264,7 @@ struct AgentsPanel: View {
             }
         }
         .scrollIndicators(.never)
-        .frame(maxHeight: wide ? 250 : 300)
+        .frame(maxHeight: wide ? 330 : 380)
         .fixedSize(horizontal: false, vertical: rows.count <= (wide ? 5 : 6))
         .zoneCard(padding: 4, shadow: wide)
     }
@@ -274,49 +274,127 @@ private struct AgentRow: View {
     let model: AppModel
     let agent: Agent
     @Environment(\.colorScheme) private var scheme
+    /// True while the choices of what this agent may read are showing.
+    @State private var choosing = false
 
     var body: some View {
         let busy = model.busyAgents.contains(agent.id)
-        HStack(spacing: 10) {
-            AgentBadge(id: agent.id)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(agent.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Zone.ink(scheme))
-                Text(busy ? "Working" : agent.note)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Zone.muted(scheme))
-            }
-            Spacer(minLength: 6)
-            if case .otherCopy = agent.standing, !busy {
-                Button("Use this app's") {
-                    Task { await model.setAgent(agent, connected: true) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                AgentBadge(id: agent.id)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(agent.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Zone.ink(scheme))
+                    if agent.canLimitView, !busy {
+                        Button {
+                            withAnimation(Zone.motion) { choosing.toggle() }
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text(agent.note)
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                    .rotationEffect(.degrees(choosing ? 180 : 0))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(ZoneLinkButtonStyle(size: 11))
+                        .help("Choose what \(agent.title) may read")
+                        .accessibilityLabel("\(agent.note). Choose what \(agent.title) may read")
+                    } else {
+                        Text(busy ? "Working" : agent.note)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Zone.muted(scheme))
+                    }
                 }
-                .buttonStyle(ZonePillButtonStyle())
-                .help("This agent starts a zone that was installed from the command line. Point it at the one this app keeps up to date.")
-            }
-            if case let .partly(places, total) = agent.standing, !busy {
-                Button("Connect all \(total)") {
-                    Task { await model.setAgent(agent, connected: true) }
+                Spacer(minLength: 6)
+                if case .otherCopy = agent.standing, !busy, !agent.viewsDiffer {
+                    Button("Use this app's") {
+                        Task { await model.setAgent(agent, connected: true) }
+                    }
+                    .buttonStyle(ZonePillButtonStyle())
+                    .help("This agent starts a zone that was installed from the command line. Point it at the one this app keeps up to date. What it may read stays the same.")
                 }
-                .buttonStyle(ZonePillButtonStyle())
-                .help("Connected in \(places) of \(total) profiles.")
+                if case let .partly(places, total) = agent.standing, !busy, !agent.viewsDiffer {
+                    Button("Connect all \(total)") {
+                        Task { await model.setAgent(agent, connected: true) }
+                    }
+                    .buttonStyle(ZonePillButtonStyle())
+                    .help("Connected in \(places) of \(total) profiles.")
+                }
+                if busy {
+                    ProgressView().controlSize(.small).frame(width: 34)
+                } else {
+                    Toggle("", isOn: Binding(
+                        get: { agent.isOn },
+                        set: { on in Task { await model.setAgent(agent, connected: on) } }
+                    ))
+                    .toggleStyle(ZoneToggleStyle())
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityLabel("Connect \(agent.title)")
+                }
             }
-            if busy {
-                ProgressView().controlSize(.small).frame(width: 34)
-            } else {
-                Toggle("", isOn: Binding(
-                    get: { agent.isOn },
-                    set: { on in Task { await model.setAgent(agent, connected: on) } }
-                ))
-                .toggleStyle(ZoneToggleStyle())
-                .labelsHidden()
-                .fixedSize()
-                .accessibilityLabel("Connect \(agent.title)")
+            if choosing, agent.canLimitView, !busy {
+                choices
+                    .padding(.leading, 36)
+                    .padding(.top, 6)
+                    .transition(.opacity)
             }
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 8)
+        .onChange(of: agent.isOn) { _, on in
+            if !on { choosing = false }
+        }
+    }
+
+    /// The views on offer, with the one in force marked. A view set from the command line
+    /// that is none of them is listed too, so it is seen and not lost by accident.
+    private var choices: some View {
+        var views = AgentView.choices
+        if let current = agent.view, !views.contains(current) { views.append(current) }
+        return VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(views.enumerated()), id: \.offset) { _, view in
+                let chosen = agent.view == view
+                Button {
+                    withAnimation(Zone.motion) { choosing = false }
+                    Task { await model.setAgentView(agent, view) }
+                } label: {
+                    HoverRow(radius: 7) { _ in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(chosen ? Zone.accentGraphic(scheme) : Zone.faint(scheme))
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(view.title)
+                                    .font(.system(size: 12, weight: chosen ? .semibold : .regular))
+                                    .foregroundStyle(Zone.ink(scheme))
+                                Text(view.detail)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(Zone.muted(scheme))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .contentShape(Rectangle())
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(view.title). \(view.detail)")
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+            if agent.viewsDiffer {
+                Text("Its profiles read different things now. Choosing one sets it for all of them.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Zone.muted(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 2)
+            }
+        }
     }
 }
 

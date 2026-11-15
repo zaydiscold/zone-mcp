@@ -64,6 +64,37 @@ final class EventTests: XCTestCase {
         XCTAssertEqual(events[12 - 1].reason, "The phone is not paired.")
     }
 
+    /// Lines as a real zone printed them (a sandboxed zone and the stand-in phone).
+    static let realLines = """
+    {"seq":1,"at":1794772460.001,"time":"2026-11-15T11:54:20-08:00","event":"daemon_started","version":"0.1.0","pid":25575,"port":57431}
+    {"seq":2,"at":1794772461.818,"time":"2026-11-15T11:54:21-08:00","event":"pair_offered","offer":"4661e7f2e848e4c2","expires_at":1794773062.0,"via":"cli"}
+    {"seq":3,"at":1794772461.908,"time":"2026-11-15T11:54:21-08:00","event":"paired","device":"Fake iPhone","device_id":"1f133eec78f9e7be0e88a3ce3eef44f92497a0c8e37f67d0ea9dc05521720ace","via":"link","offer":"4661e7f2e848e4c2"}
+    {"seq":4,"at":1794772461.921,"time":"2026-11-15T11:54:21-08:00","event":"link_session","device":"Fake iPhone","device_id":"1f133eec78f9e7be0e88a3ce3eef44f92497a0c8e37f67d0ea9dc05521720ace","items":30,"new":30,"changed":0,"deleted":0,"unchanged":0,"rejected":0,"frames":1,"path":"direct","duration_s":0.0,"paired":true,"end":"bye"}
+    {"seq":6,"at":1794772461.973,"time":"2026-11-15T11:54:21-08:00","event":"link_refused","device":"Fake iPhone","device_id":"a69900c7ee8fe8105461bc5a993659bab47a7561664d88b075d2e68b778b4d25","reason":"bad_secret"}
+    {"seq":7,"at":1794772461.991,"time":"2026-11-15T11:54:21-08:00","event":"resync_requested","device":null,"phones":1}
+    {"seq":8,"at":1794772461.999,"time":"2026-11-15T11:54:21-08:00","event":"unpaired","device":"Fake iPhone","device_id":"1f133eec78f9e7be0e88a3ce3eef44f92497a0c8e37f67d0ea9dc05521720ace"}
+    {"seq":9,"at":1794772463.005,"time":"2026-11-15T11:54:23-08:00","event":"daemon_stopped","uptime_s":3.0}
+    """
+
+    func testRealLinesFromZone() throws {
+        let events = Self.realLines.split(separator: "\n").compactMap { EventLineDecoder.decode(String($0)) }
+        XCTAssertEqual(events.map(\.seq), [1, 2, 3, 4, 6, 7, 8, 9])
+        XCTAssertEqual(events[0].pid, 25575)
+        XCTAssertEqual(events[1].offer, "4661e7f2e848e4c2")
+        XCTAssertEqual(events[2].offer, "4661e7f2e848e4c2", "the phone that paired names the code it used")
+        XCTAssertEqual(events[2].device, "Fake iPhone")
+        XCTAssertEqual(events[3].arrived, 30)
+        XCTAssertTrue(events[3].alsoPaired)
+        XCTAssertEqual(ActivityWords.headline(events[4]), "Turned away a pair code that was wrong or used")
+        XCTAssertNil(events[5].device)
+    }
+
+    func testWhetherTheRunningZoneWritesEvents() {
+        XCTAssertTrue(EventLineDecoder.daemonStarted(pid: 25575, in: Self.realLines))
+        XCTAssertFalse(EventLineDecoder.daemonStarted(pid: 4242, in: Self.realLines), "another zone's start says nothing about this one")
+        XCTAssertFalse(EventLineDecoder.daemonStarted(pid: 25575, in: ""))
+    }
+
     func testAFirstBackupReadNamesItsKinds() throws {
         let line = #"{"seq":7,"at":1794773100.0,"event":"backup_import","trigger":"import","items":24,"new":24,"changed":0,"unchanged":0,"notes":11,"dictations":12,"meetings":1,"skipped":0}"#
         let event = try XCTUnwrap(EventLineDecoder.decode(line))
@@ -188,6 +219,25 @@ final class EventTests: XCTestCase {
 
         feed.update(id: "seq:4") { $0.kinds = ["dictation": 2] }
         XCTAssertEqual(ActivityWords.headline(feed.events[0]), "2 dictations from A")
+    }
+
+    func testTheSameHappeningHeardTwoWaysIsShownOnce() throws {
+        // The app read the log while an older zone was running, then changed to `zone events`.
+        var feed = ActivityFeed()
+        let fromLog = try XCTUnwrap(LogLineParser.parse("2026-11-15T12:00:42-08:00 info  link: My iPhone (7f7f) sent 600 items in 4 frames, 600 new or changed, path: relay then direct"))
+        let fromEvents = try XCTUnwrap(EventLineDecoder.decode(#"{"seq":5,"at":1794772842.9,"event":"link_session","device":"My iPhone","items":600,"new":598,"changed":2,"path":"relay then direct"}"#))
+        XCTAssertTrue(feed.add(fromLog))
+        XCTAssertFalse(feed.add(fromEvents), "one sync, heard twice")
+
+        // A different phone in the same second is a different happening.
+        let other = try XCTUnwrap(EventLineDecoder.decode(#"{"seq":6,"at":1794772842.5,"event":"link_session","device":"Other iPhone","items":600,"new":600,"changed":0}"#))
+        XCTAssertTrue(feed.add(other))
+        // So is the same phone a few seconds later, and two numbered events never merge.
+        let later = try XCTUnwrap(EventLineDecoder.decode(#"{"seq":7,"at":1794772850.0,"event":"link_session","device":"My iPhone","items":600,"new":0,"changed":0}"#))
+        XCTAssertTrue(feed.add(later))
+        let twin = try XCTUnwrap(EventLineDecoder.decode(#"{"seq":8,"at":1794772850.1,"event":"link_session","device":"My iPhone","items":600,"new":0,"changed":0}"#))
+        XCTAssertTrue(feed.add(twin))
+        XCTAssertEqual(feed.events.count, 4)
     }
 
     // MARK: Following

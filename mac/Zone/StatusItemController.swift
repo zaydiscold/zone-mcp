@@ -41,6 +41,8 @@ final class StatusItemController: NSObject {
     var isOpen: Bool { panel?.isVisible ?? false }
     var windowNumber: Int? { panel?.windowNumber }
     var window: NSWindow? { panel }
+    /// The window macOS keeps for the icon in the menu bar.
+    var buttonWindow: NSWindow? { item.button?.window }
 
     init(model: AppModel) {
         self.model = model

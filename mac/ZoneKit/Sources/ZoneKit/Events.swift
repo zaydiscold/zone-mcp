@@ -41,6 +41,10 @@ public struct ActivityEvent: Identifiable, Equatable, Sendable {
     public var reason: String?
     /// True when this session or flash also paired the phone.
     public var alsoPaired: Bool
+    /// For `paired` and `pair_offered`: the name of the pair code that was shown or used.
+    public var offer: String?
+    /// For `daemon_started`: the service's process number.
+    public var pid: Int?
     /// The event's name as zone wrote it, for kinds this app does not know yet.
     public var name: String
 
@@ -131,6 +135,8 @@ public enum EventLineDecoder {
             alsoPaired: (object["paired"] as? Bool) ?? false,
             name: name
         )
+        event.offer = object["offer"] as? String
+        event.pid = int(object["pid"])
         let new = int(object["new"])
         let changed = int(object["changed"])
         if new != nil || changed != nil {
@@ -143,6 +149,14 @@ public enum EventLineDecoder {
             }
         }
         return event
+    }
+
+    /// True when these lines include the start of the service with this process number.
+    public static func daemonStarted(pid: Int, in lines: String) -> Bool {
+        lines.split(whereSeparator: \.isNewline).contains { line in
+            guard line.contains("daemon_started"), let event = decode(String(line)) else { return false }
+            return event.kind == .daemonStarted && event.pid == pid
+        }
     }
 
     private static func int(_ value: Any?) -> Int? {
@@ -344,15 +358,27 @@ public struct ActivityFeed: Equatable, Sendable {
         self.limit = limit
     }
 
-    /// Adds an event. Returns false when it was already there.
+    /// Adds an event. Returns false when it was already there: the same event again, or
+    /// the same happening heard a second way (once from zone.log and once from
+    /// `zone events`, when the app changes from one to the other).
     @discardableResult
     public mutating func add(_ event: ActivityEvent) -> Bool {
-        guard !events.contains(where: { $0.id == event.id }) else { return false }
+        guard !events.contains(where: { $0.id == event.id || Self.sameHappening($0, event) }) else { return false }
         let index = events.firstIndex(where: { $0.date < event.date }) ?? events.endIndex
         events.insert(event, at: index)
         if events.count > limit {
             events.removeLast(events.count - limit)
         }
+        return true
+    }
+
+    /// Two reports of one happening: one read from the log (whole seconds, no number) and
+    /// one from `zone events`, of the same kind, about the same phone, at the same moment.
+    static func sameHappening(_ a: ActivityEvent, _ b: ActivityEvent) -> Bool {
+        guard (a.seq == nil) != (b.seq == nil), a.kind == b.kind else { return false }
+        guard abs(a.date.timeIntervalSince(b.date)) < 1.5 else { return false }
+        if let x = a.device, let y = b.device, x != y { return false }
+        if let x = a.items, let y = b.items, x != y { return false }
         return true
     }
 

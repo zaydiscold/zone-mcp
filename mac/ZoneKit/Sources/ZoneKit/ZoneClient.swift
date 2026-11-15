@@ -209,7 +209,12 @@ public struct ZoneClient: Sendable {
     // MARK: Doing
 
     public func pair() async throws -> PairCode {
-        try await json(PairCode.self, ["pair", "--json"])
+        // --no-wait: print the code and return. An older zone has no such flag (and never waits).
+        do {
+            return try await json(PairCode.self, ["pair", "--json", "--no-wait"])
+        } catch ZoneError.failed(let message) where message.contains("--no-wait") {
+            return try await json(PairCode.self, ["pair", "--json"])
+        }
     }
 
     /// Opens the history page in the browser.
@@ -241,9 +246,17 @@ public struct ZoneClient: Sendable {
         try await run(["backup-folder", "--clear"])
     }
 
-    /// Adds zone to an AI client (every profile it has).
-    public func connect(agent: String) async throws {
-        try await run(["mcp", "install", agent], timeout: 90)
+    /// Adds zone to an AI client (every profile it has), or changes what it may read.
+    /// With no view given, the one it has is kept.
+    public func connect(_ agent: Agent, view: AgentView? = nil) async throws {
+        try await run(agent.installArguments(view: view), timeout: 90)
+    }
+
+    /// True when the zone that is running writes down what happens (so `zone events` has
+    /// something to say about it). An older zone that the app did not start may not.
+    public func daemonRecordsEvents(pid: Int) async -> Bool {
+        guard let output = try? await runner.run(["events", "--json", "--limit", "2000"], timeout: 15), output.status == 0 else { return false }
+        return EventLineDecoder.daemonStarted(pid: pid, in: output.text)
     }
 
     /// Takes zone out of an AI client.
