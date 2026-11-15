@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.91"
 description = "Receives an iPhone's Zone dictation library and serves it to people and AI agents"
 license = "MIT"
+repository = "https://github.com/zaydiscold/zone-mcp"
+homepage = "https://apps.apple.com/app/id6830955448"
+authors = ["Zayd <iam@zayd.wtf>"]
 publish = false
 
 [[bin]]

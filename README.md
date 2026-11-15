@@ -1,15 +1,47 @@
 # zone
 
-The computer side of Zone Link. One small program that receives the library of the Zone iPhone
-app (dictations, voice notes, meeting transcripts), keeps a copy in SQLite on your computer, and
-serves it to you and to AI agents.
+**Your iPhone dictations, voice notes and meeting transcripts, on your computer and inside your AI agents.**
 
-- **For you:** a local web page and a command line to read, search and copy what you said.
-- **For agents:** an MCP server with six tools, registered with every AI client on the computer
-  (Claude Code, Codex, Cursor, Hermes, Gemini CLI, Zed and fourteen more), so any of them can answer
-  "what did I say about the lease on Wednesday afternoon" from your own words.
-- **No account and no Zone server.** The phone talks to your computer directly, or through an iroh
-  relay that only forwards encrypted packets.
+`zone` is the computer side of [Zone](https://apps.apple.com/app/id6830955448), a free on-device
+voice dictation keyboard and app for iPhone. Pair once by scanning a QR code. After that every
+dictation, note and meeting transcript lands in a SQLite library on your computer a few seconds
+after you make it, over any network, end to end encrypted, with no account and no Zone server.
+
+One small program (about 6 MB, Rust) is all of it: the background service, a command line, an MCP
+server for agents, and a local history page.
+
+<p align="center">
+  <img src="docs/media/agent.gif" width="88%" alt="Claude Code asked what was said on Wednesday between noon and 5pm, answering from the zone MCP">
+</p>
+
+- **For your agents:** an MCP server with six tools. `zone install` registers it with every AI client it
+  finds: Claude Code (every profile), Codex, Cursor, Hermes, Gemini CLI, Zed, VS Code, Windsurf and a dozen
+  more. Then ask "what did I say about the lease on Wednesday afternoon", or "work through my voice notes
+  from newest to oldest".
+- **For you:** `zone open` for a local history page, and a command line to list, search and export.
+- **Three ways in:** Link (automatic, any network), Flash (no network at all: the phone flashes color codes
+  at your webcam), and the Zone backup folder in iCloud Drive, OneDrive or Dropbox.
+
+<p align="center">
+  <img src="docs/media/cli.gif" width="88%" alt="zone stats, zone list and zone search in a terminal">
+</p>
+
+> **Getting the iPhone side.** Pairing a computer lives in Zone's Settings > Computers (Beta). It is in
+> testing and arrives with the next Zone update. Until then, the [backup folder](#the-three-ways-items-arrive)
+> works with the Zone version on the App Store today. Every example in this README uses a made-up library.
+
+## Flash: your library, straight off the screen
+
+No Wi-Fi, no internet, no cable. The phone shows a fast stream of codes, three QR codes stacked in the red,
+green and blue light of every picture, with a short retro sweep between them. The computer's camera reads
+them in a local page and your library assembles itself tile by tile. Every code is encrypted with a key only
+your phone and computer share, so filming the screen gets nobody anything. [How it works](#flash-sync-with-no-network).
+
+<p align="center">
+  <img src="docs/media/phone-color-flash.gif" width="26%" alt="The Zone iPhone app showing color Flash codes with a retro wave sweep between them">
+  &nbsp;
+  <img src="docs/media/flash-page.gif" width="70%" alt="The zone Flash page: the camera reads the codes and a mosaic of the library fills in">
+</p>
 
 The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 
@@ -17,20 +49,26 @@ The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 
 | | State |
 | --- | --- |
-| Link (iroh), computer side | Built. Tested against a stand-in phone over real iroh: direct, relay only, and found by endpoint id alone. |
-| Backup folder import | Built. Tested on synthetic backups and on one real Zone backup. |
-| MCP server, command line, web page | Built and tested on macOS. |
-| Flash (QR codes, black and white or color, from the phone's screen to the computer's camera) | Built, computer side. Tested with pictures of the codes: ones drawn by this program, ones written by the iPhone app's own code, and a video of them played to a browser as if it were the camera. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is unknown. |
-| A real iPhone | **Not tested.** The iPhone side is being built separately. Until both meet, treat pairing with a real phone as unproven. |
+| Link with a real iPhone | Works. A real iPhone 15 Pro paired with a Mac sent a library of 1,764 items in about a second, starting on the relay and moving to a direct connection, and new dictations followed within seconds. Tested on Wi-Fi; cellular and strict company networks are not tested yet. |
+| Link across computers | A stand-in phone on a Mac paired with Windows 10 over real iroh: direct, relay only, and found by endpoint id alone. |
+| Backup folder import | Works with real Zone backups and synthetic ones. |
+| MCP server, command line, web page | Works on macOS; registration checked against the real config files of 20 AI clients. |
+| Flash, black and white and color | Tested with pictures and recordings from the iPhone app's own code, and a simulated webcam. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is still unknown. |
 | Windows | Built and run on Windows 10: see [Windows](#windows) for exactly what was checked. |
-| Linux | The program compiles for it (cross-compiled from macOS). It has **not been run** there, so `zone install` on Linux is untested. |
+| Linux | Compiles (cross-compiled from macOS). **Not run** there yet, so `zone install` on Linux is untested. |
 
 ## Install
 
 You need Rust 1.91 or newer.
 
 ```sh
-# in a checkout of this repository
+cargo install --locked --git https://github.com/zaydiscold/zone-mcp zone
+```
+
+or from a checkout:
+
+```sh
+git clone https://github.com/zaydiscold/zone-mcp && cd zone-mcp
 cargo build --release
 cp target/release/zone ~/.local/bin/      # or anywhere on your PATH
 ```
