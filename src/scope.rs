@@ -25,6 +25,9 @@ pub struct ViewArgs {
     /// Leave out mark_processed, the one tool that writes
     #[arg(long)]
     pub read_only: bool,
+    /// With install: let agents flag items again on a client that was registered read-only
+    #[arg(long, conflicts_with = "read_only")]
+    pub read_write: bool,
     /// Show agents only these kinds: dictation, note, meeting (comma separated), or all
     #[arg(long, value_name = "KINDS", value_delimiter = ',')]
     pub kinds: Vec<String>,
@@ -62,11 +65,8 @@ impl ViewArgs {
     /// These flags, with any the other set adds. For `zone mcp --read-only install <client>`,
     /// where a flag may come before or after `install`.
     pub fn or(&self, outer: &ViewArgs) -> ViewArgs {
-        if self.names_a_view() {
-            ViewArgs { read_only: self.read_only || outer.read_only, ..self.clone() }
-        } else {
-            ViewArgs { read_only: self.read_only || outer.read_only, ..outer.clone() }
-        }
+        let (read_only, read_write) = (self.read_only || outer.read_only, self.read_write || outer.read_write);
+        if self.names_a_view() { ViewArgs { read_only, read_write, ..self.clone() } } else { ViewArgs { read_only, read_write, ..outer.clone() } }
     }
 }
 

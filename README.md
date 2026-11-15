@@ -389,13 +389,17 @@ zone mcp status                                        # says what each client s
 | `--notes-only` | Short for `--kinds note`. |
 | `--no-keyboard` | Short for `--exclude-sources keyboard`. |
 | `--read-only` | Everything it would otherwise see, but it cannot flag items as processed. |
+| `--read-write` | Undoes `--read-only` on a client that has it. |
 
 The flags work on `zone mcp` itself too, which is what the client ends up running
 (`zone mcp --kinds note,meeting`). The limit holds in every tool: a hidden item is not listed,
 not found by search, not returned by its id, and not counted, and the server tells the agent that
-its view is limited so it does not mistake what it sees for everything. `zone mcp install <client>`
-without a flag sets that client back to everything, and `zone mcp install --all` without a flag
-leaves each client's view as it is. A mistyped kind is an error, never "everything".
+its view is limited so it does not mistake what it sees for everything.
+
+Running an install line again never shows an agent more than it saw before. A client that
+already has a limited view keeps it until you name another (`--kinds all` is everything), and one
+that is read-only stays read-only until you give `--read-write`. `zone mcp install --all` without
+a view flag leaves every client's view as it is. A mistyped kind is an error, never "everything".
 
 ### Staying registered
 

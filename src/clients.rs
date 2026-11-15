@@ -632,6 +632,27 @@ impl Launch {
         self.args.iter().any(|a| a == "--read-only")
     }
 
+    /// This launch with another view: the same program and environment, started read-only or
+    /// not and with the given scope.
+    pub fn with_view(&self, read_only: bool, scope: &Scope) -> Launch {
+        let mut args = vec!["mcp".to_string()];
+        if read_only {
+            args.push("--read-only".to_string());
+        }
+        args.extend(scope.to_args());
+        Launch { args, ..self.clone() }
+    }
+
+    /// A few words about this launch's view, when it is not everything: `read-only, only voice notes`.
+    fn view_words(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self.read_only() {
+            parts.push("read-only".to_string());
+        }
+        parts.extend(self.scope().and_then(|scope| scope.short()));
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+
     /// The view of the library this entry gives its client. None when its arguments cannot be
     /// read (someone edited them by hand into something zone would not start with).
     pub fn scope(&self) -> Option<Scope> {
@@ -1070,6 +1091,40 @@ fn report_line(env: &Env, target: &Target, outcome: &Outcome, width: usize) -> S
     }
 }
 
+/// What `zone mcp install` was asked for, about what agents may do and see.
+#[derive(Clone, Debug, Default)]
+pub struct Wish {
+    pub read_only: bool,
+    /// Take a read-only registration back to one that can flag items.
+    pub read_write: bool,
+    pub scope: Scope,
+    /// A view was asked for by name (also when the name was `all`).
+    pub view_named: bool,
+}
+
+impl Wish {
+    /// How a place should start zone, given the entry it has now.
+    ///
+    /// What was not asked for stays as it is: a client that already has a limited view keeps
+    /// it unless a view is named, and one that is read-only stays so unless `--read-write` is
+    /// given. Running the same install line twice must never show an agent more than before.
+    pub fn launch_for(&self, base: &Launch, existing: &Found) -> Result<Launch, String> {
+        let kept = match existing {
+            Found::Present(found) if found.command == base.command => Some(found),
+            _ => None,
+        };
+        let read_only = self.read_only || (kept.is_some_and(|found| found.read_only()) && !self.read_write);
+        let scope = match kept {
+            _ if self.view_named => self.scope.clone(),
+            Some(found) => found.scope().ok_or_else(|| {
+                "its entry has arguments zone cannot read, so zone will not guess what it should see. Say it: --kinds all for everything, or --notes-only, --kinds, --no-keyboard".to_string()
+            })?,
+            None => Scope::default(),
+        };
+        Ok(base.with_view(read_only, &scope))
+    }
+}
+
 /// Registers with every installed client, or with the given ones. Prints one line per place.
 /// Returns how many places failed.
 pub fn register_many(clients: &[Client], launch: &Launch, mode: Mode, env: &Env, state: &mut State, quiet_when_missing: bool) -> usize {
@@ -1079,25 +1134,58 @@ pub fn register_many(clients: &[Client], launch: &Launch, mode: Mode, env: &Env,
 /// [`register_many`], and with `exactly`, entries that already start this program are made to
 /// match `launch` (see [`register_with`]).
 pub fn register_many_with(clients: &[Client], launch: &Launch, mode: Mode, env: &Env, state: &mut State, quiet_when_missing: bool, exactly: bool) -> usize {
-    let mut rows: Vec<(Target, Outcome)> = Vec::new();
+    register_each(clients, &|_| Ok(launch.clone()), mode, env, state, quiet_when_missing, exactly).0
+}
+
+/// Registers with every place of the given clients, each with the launch `launch_of` gives for
+/// the entry that place has now. Prints one line per place, with the view a place ends up
+/// with when that is not everything. Returns how many places failed, and whether any place
+/// ended up with a view other than `asked`.
+fn register_each(
+    clients: &[Client],
+    launch_of: &dyn Fn(&Found) -> Result<Launch, String>,
+    mode: Mode,
+    env: &Env,
+    state: &mut State,
+    quiet_when_missing: bool,
+    exactly: bool,
+) -> (usize, Vec<Launch>) {
+    let mut rows: Vec<(Target, Outcome, Option<Launch>)> = Vec::new();
     for &client in clients {
         if mode != Mode::Explicit && !client.installed(env) {
             if !quiet_when_missing {
                 let target = Target { client, profile: None, path: PathBuf::new(), format: Format::Toml, claude_dir: None };
-                rows.push((target, Outcome::NotInstalled));
+                rows.push((target, Outcome::NotInstalled, None));
             }
             continue;
         }
         for target in client.targets(env) {
-            let outcome = register_with(&target, launch, env, state, mode, exactly);
-            rows.push((target, outcome));
+            match launch_of(&read_entry(&target, env)) {
+                Ok(launch) => {
+                    let outcome = register_with(&target, &launch, env, state, mode, exactly);
+                    // What the place has afterwards: an entry left as it was may differ from what was asked.
+                    let now = match read_entry(&target, env) {
+                        Found::Present(found) => Some(found),
+                        _ => None,
+                    };
+                    rows.push((target, outcome, now));
+                }
+                Err(why) => rows.push((target, Outcome::Failed(why), None)),
+            }
         }
     }
-    let width = rows.iter().map(|(t, _)| t.label().chars().count()).max().unwrap_or(10);
-    for (target, outcome) in &rows {
-        println!("{}", report_line(env, target, outcome, width));
+    let width = rows.iter().map(|(t, _, _)| t.label().chars().count()).max().unwrap_or(10);
+    for (target, outcome, now) in &rows {
+        let mut line = report_line(env, target, outcome, width);
+        if matches!(outcome, Outcome::Registered | Outcome::Updated | Outcome::Already)
+            && let Some(view) = now.as_ref().and_then(|launch| launch.view_words())
+        {
+            line.push_str(&format!("  ({view})"));
+        }
+        println!("{line}");
     }
-    rows.iter().filter(|(_, o)| o.is_failure()).count()
+    let registered = rows.iter().filter(|(_, o, _)| matches!(o, Outcome::Registered | Outcome::Updated | Outcome::Already)).filter_map(|(_, _, now)| now.clone()).collect();
+    (rows.iter().filter(|(_, o, _)| o.is_failure()).count(), registered)
 }
 
 fn data_dir() -> Result<PathBuf> {
@@ -1132,33 +1220,41 @@ pub fn chosen(names: &[String], all: bool) -> Result<(Vec<Client>, bool)> {
     Ok((clients, false))
 }
 
-fn closing_lines(launch: &Launch) {
+fn closing_lines(asked: &Launch, registered: &[Launch]) {
     println!();
-    println!("It runs: {} {}", launch.command, launch.args.join(" "));
-    if launch.read_only() {
+    println!("It runs: {} {}", asked.command, asked.args.join(" "));
+    if asked.read_only() {
         println!("Read-only: agents cannot flag items as processed.");
     }
-    if let Some(limit) = launch.scope().and_then(|scope| scope.for_people()) {
+    if let Some(limit) = asked.scope().and_then(|scope| scope.for_people()) {
         println!("{limit}");
+    }
+    // A place that already had a narrower view than what was asked for kept it.
+    if registered.iter().any(|launch| launch.args != asked.args) {
+        println!(
+            "A client that already had a limited view, or was read-only, keeps that (shown in brackets above). \
+             To change it, say so: --kinds all shows it everything, --read-write lets it flag items."
+        );
     }
     println!("New agent sessions have it. Apps that were already open (Claude Desktop, Cursor, an editor) need a restart.");
 }
 
-/// `zone mcp install`. `scope` is the view of the library the clients get. With `--all`,
-/// `view_named` says a view was asked for by name, and then every client gets exactly it,
-/// also the ones that have zone already.
-pub fn install(names: &[String], all: bool, read_only: bool, scope: &Scope, view_named: bool) -> Result<()> {
+/// `zone mcp install`. `wish` is what was asked for about what the clients' agents may do and
+/// see. What was not asked for is kept: see [`Wish::launch_for`]. With `--all`, a client that
+/// has zone already is left alone unless a view was named, and then every client gets it.
+pub fn install(names: &[String], all: bool, wish: &Wish) -> Result<()> {
     let (clients, all) = chosen(names, all)?;
-    let launch = Launch::current(read_only, scope)?;
+    let base = Launch::current(false, &Scope::default())?;
     let env = Env::from_system()?;
     let mut state = data_dir().map(|d| State::load(&d)).unwrap_or_default();
     if all {
         println!("Registering zone with every AI client on this computer:");
         println!();
     }
-    let failed = register_many_with(&clients, &launch, if all { Mode::All } else { Mode::Explicit }, &env, &mut state, false, view_named);
+    let mode = if all { Mode::All } else { Mode::Explicit };
+    let (failed, registered) = register_each(&clients, &|existing| wish.launch_for(&base, existing), mode, &env, &mut state, false, wish.view_named);
     save_state(&state);
-    closing_lines(&launch);
+    closing_lines(&base.with_view(wish.read_only, &wish.scope), &registered);
     if failed > 0 {
         bail!("{failed} {} could not be registered (see above)", if failed == 1 { "place" } else { "places" });
     }

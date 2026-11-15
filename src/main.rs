@@ -296,8 +296,10 @@ enum McpAction {
         /// Every client found on this computer, except ones you removed zone from
         #[arg(long)]
         all: bool,
-        /// What the client's agents may do and see. With --all, giving one of the view flags
-        /// (--kinds, --exclude-sources, --notes-only, --no-keyboard) applies it to every client
+        /// What the client's agents may do and see. A client that already has a limited view,
+        /// or is read-only, keeps that unless you say otherwise (--kinds all, --read-write).
+        /// With --all, giving one of the view flags (--kinds, --exclude-sources, --notes-only,
+        /// --no-keyboard) applies it to every client
         #[command(flatten)]
         view: scope::ViewArgs,
     },
@@ -556,7 +558,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             None => runtime()?.block_on(mcp::serve(tools::Access { read_only: view.read_only, scope: view.scope()? }))?,
             Some(McpAction::Install { clients, all, view: install_view }) => {
                 let view = install_view.or(&view);
-                clients::install(&clients, all, view.read_only, &view.scope()?, view.names_a_view())?
+                let wish = clients::Wish { read_only: view.read_only, read_write: view.read_write, scope: view.scope()?, view_named: view.names_a_view() };
+                clients::install(&clients, all, &wish)?
             }
             Some(McpAction::Uninstall { clients, all }) => clients::uninstall(&clients, all)?,
             Some(McpAction::Status { json }) => clients::status(json)?,

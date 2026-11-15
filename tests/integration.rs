@@ -1131,12 +1131,12 @@ fn the_feed_tells_what_happened_and_never_the_words() {
     // Asking for part of it.
     let middle = events[4]["seq"].as_i64().unwrap();
     let after = feed(&sandbox, &["--after", &middle.to_string()]);
-    assert_eq!(after.len(), events.len() - 5);
+    assert_eq!(feed_kinds(&after), feed_kinds(&events[5..]));
     assert!(after.iter().all(|e| e["seq"].as_i64().unwrap() > middle));
     let newest = feed(&sandbox, &["--limit", "2"]);
     assert_eq!(feed_kinds(&newest).last().map(String::as_str), Some("unpaired"));
     assert_eq!(newest.len(), 2);
-    assert_eq!(feed(&sandbox, &["--since", "1h"]).len(), events.len());
+    assert_eq!(feed_kinds(&feed(&sandbox, &["--since", "1h"])), kinds);
     assert!(feed(&sandbox, &["--since", "2099-01-01"]).is_empty());
     assert!(feed(&sandbox, &["--limit", "0"]).is_empty());
 
@@ -1146,9 +1146,15 @@ fn the_feed_tells_what_happened_and_never_the_words() {
     let mut followed = BufReader::new(follower.stdout.take().unwrap());
     std::thread::sleep(Duration::from_millis(600));
     sandbox.ok(&["import", package.to_str().unwrap()]);
-    let mut line = String::new();
-    followed.read_line(&mut line).unwrap();
-    let event: Value = serde_json::from_str(&line).unwrap();
+    // (The relay may come or go meanwhile, when this computer is online: that is news too.)
+    let event = loop {
+        let mut line = String::new();
+        assert!(followed.read_line(&mut line).unwrap() > 0, "the follower stopped");
+        let event: Value = serde_json::from_str(&line).unwrap();
+        if !event["event"].as_str().unwrap().starts_with("relay_") {
+            break event;
+        }
+    };
     assert_eq!((event["event"].as_str(), event["new"].as_u64(), event["unchanged"].as_u64()), (Some("backup_import"), Some(0), Some(43)), "{event}");
     assert!(event["seq"].as_i64().unwrap() > last_seq);
     // When its reader goes away, the follower notices and ends by itself.
@@ -1173,6 +1179,7 @@ fn the_feed_tells_what_happened_and_never_the_words() {
         let _ = daemon.child.wait();
         let last = feed(&sandbox, &["--limit", "1"]);
         assert_eq!(last[0]["event"], "daemon_stopped", "{last:?}");
+        assert!(last[0]["seq"].as_i64().unwrap() > event["seq"].as_i64().unwrap());
         assert!(last[0]["uptime_s"].as_f64().unwrap() >= 0.0);
         assert!(sandbox.ok(&["events", "--limit", "1"]).contains("Zone stopped after"));
     }
@@ -1577,6 +1584,28 @@ fn mcp_install_gives_each_client_its_own_view() {
     let status = sandbox.json(&["mcp", "status", "--json"]);
     assert_eq!((client(&status, "cursor")["state"].as_str(), client(&status, "cursor")["read_only"].as_bool()), (Some("registered_read_only"), Some(true)));
     assert_eq!(client(&status, "cursor")["scope"]["exclude_sources"], json!(["keyboard"]));
+
+    // The plain install line, run again, keeps what the client has: it never shows an agent more.
+    let out = sandbox.ok(&["mcp", "install", "cursor"]);
+    assert!(line_for(&out, "Cursor").contains("already registered") && line_for(&out, "Cursor").contains("(read-only, hides keyboard)"), "{out}");
+    assert!(out.contains("keeps that") && out.contains("--kinds all") && out.contains("--read-write"), "{out}");
+    assert_eq!(args_of(&cursor), json!(["mcp", "--read-only", "--exclude-sources", "keyboard"]));
+    // Each part changes only when it is named.
+    sandbox.ok(&["mcp", "install", "cursor", "--read-write"]);
+    assert_eq!(args_of(&cursor), json!(["mcp", "--exclude-sources", "keyboard"]));
+    sandbox.ok(&["mcp", "install", "cursor", "--read-only", "--notes-only"]);
+    assert_eq!(args_of(&cursor), json!(["mcp", "--read-only", "--kinds", "note"]));
+    sandbox.ok(&["mcp", "install", "cursor", "--kinds", "all"]);
+    assert_eq!(args_of(&cursor), json!(["mcp", "--read-only"]));
+    // --all with a view leaves read-only as it is, too.
+    sandbox.ok(&["mcp", "install", "--all", "--no-keyboard"]);
+    assert_eq!((args_of(&cursor), args_of(&gemini)), (json!(["mcp", "--read-only", "--exclude-sources", "keyboard"]), json!(["mcp", "--exclude-sources", "keyboard"])));
+    // An entry edited by hand into something zone would not start with is not guessed at.
+    std::fs::write(&gemini, r#"{ "mcpServers": { "zone": { "command": "ZONE", "args": ["mcp", "--kinds", "songs"] } } }"#.replace("ZONE", &zone_exe().to_string_lossy().replace('\\', "\\\\"))).unwrap();
+    let odd = sandbox.run(&["mcp", "install", "gemini"]);
+    assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stdout).contains("zone will not guess"), "{}", String::from_utf8_lossy(&odd.stdout));
+    sandbox.ok(&["mcp", "install", "gemini", "--kinds", "all"]);
+    assert_eq!(args_of(&gemini), json!(["mcp"]));
 
     // A mistyped view changes nothing.
     let typo = sandbox.run(&["mcp", "install", "cursor", "--kinds", "notse"]);

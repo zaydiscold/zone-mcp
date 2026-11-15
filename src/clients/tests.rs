@@ -488,3 +488,30 @@ fn a_narrower_view_is_written_read_back_and_applied_to_all_when_asked() {
     let rows = survey(&env, &state, &launch());
     assert_eq!(rows.iter().find(|r| r.target.client == Client::Cursor).unwrap().standing, Standing::Registered { read_only: false, scope: None });
 }
+
+/// What an install keeps and what it changes, for an entry that is already there.
+#[test]
+fn an_install_keeps_what_it_was_not_asked_to_change() {
+    let base = launch();
+    let notes = Scope::new(&["note".to_string()], &[]).unwrap();
+    let narrow = Found::Present(base.with_view(true, &notes));
+    let args = |wish: Wish, existing: &Found| wish.launch_for(&base, existing).unwrap().args;
+    // Nothing asked: a new place gets everything, a narrowed one stays narrowed and read-only.
+    assert_eq!(args(Wish::default(), &Found::Absent), ["mcp"]);
+    assert_eq!(args(Wish::default(), &narrow), ["mcp", "--read-only", "--kinds", "note"]);
+    // Each part changes only when named.
+    assert_eq!(args(Wish { read_write: true, ..Wish::default() }, &narrow), ["mcp", "--kinds", "note"]);
+    assert_eq!(args(Wish { view_named: true, ..Wish::default() }, &narrow), ["mcp", "--read-only"]);
+    let no_keyboard = Scope::new(&[], &["keyboard".to_string()]).unwrap();
+    assert_eq!(args(Wish { scope: no_keyboard.clone(), view_named: true, read_write: true, ..Wish::default() }, &narrow), ["mcp", "--exclude-sources", "keyboard"]);
+    assert_eq!(args(Wish { read_only: true, ..Wish::default() }, &Found::Present(base.clone())), ["mcp", "--read-only"]);
+    // Another copy of zone has no say in what this one is registered with.
+    let other = Found::Present(Launch { command: "/old/zone".into(), ..base.with_view(true, &notes) });
+    assert_eq!(args(Wish::default(), &other), ["mcp"]);
+    // Arguments that cannot be read are not guessed at, unless a view is named.
+    let odd = Found::Present(Launch { args: vec!["mcp".into(), "--kinds".into(), "songs".into()], ..base.clone() });
+    assert!(Wish::default().launch_for(&base, &odd).unwrap_err().contains("will not guess"));
+    assert_eq!(args(Wish { view_named: true, ..Wish::default() }, &odd), ["mcp"]);
+    assert_eq!(base.with_view(true, &no_keyboard).view_words().unwrap(), "read-only, hides keyboard");
+    assert_eq!(base.view_words(), None);
+}
