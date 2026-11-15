@@ -62,7 +62,7 @@ use crate::db::Db;
     long_about = "Receives the library of the Zone iPhone app and keeps a copy on this computer, for you to read \
                   and search and for AI agents to use.\n\nGetting started:\n  zone install      start zone every time you log in\n  \
                   zone pair         show the code to scan with your iPhone\n  zone open         see your transcriptions in the browser\n  \
-                  zone mcp install claude-code   let an agent read them",
+                  zone mcp install --all   let your AI agents read them",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -208,11 +208,15 @@ enum Command {
         #[command(subcommand)]
         action: Option<McpAction>,
     },
-    /// Start zone every time you log in (no admin rights needed), and start it now
+    /// Start zone every time you log in (no admin rights needed), start it now, and register
+    /// it with the AI clients on this computer
     Install {
         /// Write the login item but do not load or start anything
         #[arg(long)]
         no_start: bool,
+        /// Do not register zone with AI clients, now or when it starts
+        #[arg(long)]
+        no_mcp: bool,
     },
     /// Stop zone and no longer start it at login. Your library is kept
     Uninstall {
@@ -236,17 +240,36 @@ enum Command {
 
 #[derive(Subcommand)]
 enum McpAction {
-    /// Register zone with claude-code, claude-desktop, codex or cursor
+    /// Register zone with AI clients: name them, or --all for every one on this computer
+    #[command(long_about = "Register zone with AI clients: name them, or use --all for every one on this computer.\n\n\
+                            Clients: claude-code (every profile), claude-desktop, codex (every CODEX_HOME), cursor, hermes \
+                            (every profile), gemini, qwen, opencode, windsurf, vscode, zed, kiro, droid, copilot, lm-studio, \
+                            goose, crush, amp, cline, roo.\n\n\
+                            Only zone's own entry is written. Everything else in each file is kept, and the original is saved \
+                            beside it as <file>.before-zone the first time.")]
     Install {
-        client: String,
+        /// Client names, or `detected` for every one on this computer
+        clients: Vec<String>,
+        /// Every client found on this computer, except ones you removed zone from
+        #[arg(long)]
+        all: bool,
         /// Register the read-only server (no mark_processed)
         #[arg(long)]
         read_only: bool,
     },
-    /// Remove zone from a client
-    Uninstall { client: String },
+    /// Remove zone from clients: name them, or --all for every one
+    Uninstall {
+        clients: Vec<String>,
+        /// Every client, and stop registering by itself
+        #[arg(long)]
+        all: bool,
+    },
     /// Show which clients have zone registered
-    Status,
+    Status {
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // Parsed once per run, so the size of the largest variant does not matter.
@@ -392,14 +415,24 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::BackupFolder { path, clear } => admin::backup_folder(path.as_deref(), clear)?,
         Command::Mcp { read_only, action } => match action {
             None => runtime()?.block_on(mcp::serve(read_only))?,
-            Some(McpAction::Install { client, read_only: install_read_only }) => {
-                clients::install(clients::Client::parse(&client)?, read_only || install_read_only)?
-            }
-            Some(McpAction::Uninstall { client }) => clients::uninstall(clients::Client::parse(&client)?)?,
-            Some(McpAction::Status) => clients::status()?,
+            Some(McpAction::Install { clients, all, read_only: install_read_only }) => clients::install(&clients, all, read_only || install_read_only)?,
+            Some(McpAction::Uninstall { clients, all }) => clients::uninstall(&clients, all)?,
+            Some(McpAction::Status { json }) => clients::status(json)?,
         },
-        Command::Install { no_start } => service::install(!no_start)?,
-        Command::Uninstall { no_stop } => service::uninstall(!no_stop)?,
+        Command::Install { no_start, no_mcp } => {
+            service::install(!no_start)?;
+            if no_mcp {
+                clients::stop_registering_by_itself();
+                println!("Not registering zone with AI clients (--no-mcp). `zone mcp install --all` does it later.");
+            } else {
+                clients::register_on_install()?;
+            }
+        }
+        Command::Uninstall { no_stop } => {
+            service::uninstall(!no_stop)?;
+            clients::stop_registering_by_itself();
+            println!("AI clients keep zone registered (it works without the daemon). `zone mcp uninstall --all` takes it out of them.");
+        }
         Command::Open { print } => admin::open(print)?,
         Command::Dev { action } => match action {
             DevAction::FakePhone {

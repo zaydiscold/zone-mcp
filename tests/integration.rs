@@ -52,11 +52,27 @@ impl Sandbox {
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_DATA_HOME", self.home.join(".local").join("share"))
             .env("ZONE_NAME", "Test Computer")
+            .env("PATH", self.search_path())
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CODEX_HOME")
+            .env_remove("HERMES_HOME")
             .env_remove("ZONE_PORT")
             .env_remove("ZONE_RELAY_URL");
         command
+    }
+
+    /// A PATH with the sandbox's own `bin` folder and the system's basic tools only, so no
+    /// AI client installed on the real computer is found or run.
+    fn search_path(&self) -> std::ffi::OsString {
+        let bin = self.home.join("bin");
+        #[cfg(windows)]
+        let system = {
+            let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+            vec![PathBuf::from(format!(r"{root}\System32")), PathBuf::from(root)]
+        };
+        #[cfg(not(windows))]
+        let system = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin"), PathBuf::from("/usr/sbin"), PathBuf::from("/sbin")];
+        std::env::join_paths(std::iter::once(bin).chain(system)).unwrap()
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -1076,58 +1092,215 @@ fn mcp_install_edits_only_the_sandbox_configs() {
     let config: Value = serde_json::from_str(&std::fs::read_to_string(&desktop).unwrap()).unwrap();
     assert_eq!(config["mcpServers"]["zone"]["args"], json!(["mcp", "--read-only"]));
 
-    // Codex: a TOML file.
-    sandbox.ok(&["mcp", "install", "codex"]);
+    // Codex: a TOML file. Two clients in one command.
+    sandbox.ok(&["mcp", "install", "codex", "gemini"]);
     let codex = std::fs::read_to_string(sandbox.home.join(".codex").join("config.toml")).unwrap();
     assert!(codex.contains("[mcp_servers.zone]") && codex.contains("args = [\"mcp\"]"), "{codex}");
+    assert!(sandbox.home.join(".gemini").join("settings.json").exists());
 
-    let status = sandbox.ok(&["mcp", "status"]);
-    assert!(status.contains("Cursor          registered"), "{status}");
-    assert!(status.contains("Claude Desktop  registered (read-only)"), "{status}");
-    assert!(status.contains("Codex           registered"), "{status}");
-    assert!(status.contains("Claude Code     not registered"), "{status}");
+    let status = sandbox.json(&["mcp", "status", "--json"]);
+    let state = |client: &str| -> String {
+        status["clients"].as_array().unwrap().iter().find(|c| c["client"] == client).unwrap_or_else(|| panic!("{client} in {status}"))["state"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(state("cursor"), "registered");
+    assert_eq!(state("claude-desktop"), "registered_read_only");
+    assert_eq!(state("codex"), "registered");
+    assert_eq!(state("claude-code"), "not_registered");
+    let text = sandbox.ok(&["mcp", "status"]);
+    assert!(text.contains("registered, read-only") && text.contains("Not found on this computer:"), "{text}");
 
     sandbox.ok(&["mcp", "uninstall", "cursor"]);
-    sandbox.ok(&["mcp", "uninstall", "codex"]);
-    sandbox.ok(&["mcp", "uninstall", "claude-desktop"]);
+    sandbox.ok(&["mcp", "uninstall", "codex", "claude-desktop"]);
     let config: Value = serde_json::from_str(&std::fs::read_to_string(&cursor).unwrap()).unwrap();
     assert_eq!(config, json!({ "mcpServers": { "other": { "command": "other-server" } } }));
     assert!(!std::fs::read_to_string(sandbox.home.join(".codex").join("config.toml")).unwrap().contains("zone"));
+    assert_eq!(sandbox.json(&["mcp", "status", "--json"])["clients"].as_array().unwrap().iter().find(|c| c["client"] == "cursor").unwrap()["state"], "removed_by_you");
 
     let unknown = sandbox.run(&["mcp", "install", "emacs"]);
     assert!(!unknown.status.success());
+    let nothing = sandbox.run(&["mcp", "install"]);
+    assert!(!nothing.status.success());
+    assert!(String::from_utf8_lossy(&nothing.stderr).contains("--all"));
 }
 
-/// Claude Code is registered through its own command. A stand-in `claude` records what it
-/// was asked, so the real one is never run.
+/// The places a sandbox has clients in, the way they look on a real computer: a Claude Code
+/// profile besides the default, Zed's settings with comments, a commented Hermes config.
+fn sandbox_with_clients(sandbox: &Sandbox) -> (PathBuf, PathBuf, String, PathBuf, String) {
+    let home = &sandbox.home;
+    std::fs::write(home.join(".claude.json"), "{\n  \"numStartups\": 2\n}\n").unwrap();
+    std::fs::create_dir_all(home.join(".claude_work")).unwrap();
+    std::fs::write(home.join(".claude_work").join(".claude.json"), "{}").unwrap();
+    std::fs::create_dir_all(home.join(".gemini")).unwrap();
+    let zed = home.join(".config").join("zed").join("settings.json");
+    std::fs::create_dir_all(zed.parent().unwrap()).unwrap();
+    let zed_text = "// Zed settings\n{\n  \"theme\": \"One Dark\", // dark\n  \"context_servers\": {},\n}\n".to_string();
+    std::fs::write(&zed, &zed_text).unwrap();
+    let hermes = home.join(".hermes").join("config.yaml");
+    std::fs::create_dir_all(hermes.parent().unwrap()).unwrap();
+    let hermes_text = "model:\n  default: some-model # the usual\nmcp_servers:\n  files:\n    command: npx\n    args:\n      - files\n\n# voice\nvoice:\n  enabled: false\n".to_string();
+    std::fs::write(&hermes, &hermes_text).unwrap();
+    (home.join(".claude.json"), zed, zed_text, hermes, hermes_text)
+}
+
+fn line_for<'a>(output: &'a str, label: &str) -> &'a str {
+    output.lines().find(|l| l.trim_start().starts_with(label)).unwrap_or_else(|| panic!("no line for {label} in:\n{output}"))
+}
+
+#[test]
+fn mcp_install_all_registers_every_client_found_and_respects_removals() {
+    let sandbox = Sandbox::new();
+    let (claude, zed, zed_text, hermes, hermes_text) = sandbox_with_clients(&sandbox);
+    let exe = zone_exe();
+    let exe = exe.to_string_lossy().to_string();
+
+    let out = sandbox.ok(&["mcp", "install", "--all"]);
+    for label in ["Claude Code (default)", "Claude Code (~", "Gemini CLI", "Zed", "Hermes"] {
+        assert!(line_for(&out, label).contains("  registered"), "{label}:\n{out}");
+    }
+    assert!(line_for(&out, "Goose").contains("skipped: not installed"), "{out}");
+    assert!(line_for(&out, "Cursor").contains("skipped: not installed"), "{out}");
+
+    // With no `claude` command the profiles' files are edited the way `claude mcp add` would.
+    for file in [claude.clone(), sandbox.home.join(".claude_work").join(".claude.json")] {
+        let config: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(config["mcpServers"]["zone"]["type"], "stdio");
+        assert_eq!(config["mcpServers"]["zone"]["command"], exe.as_str());
+    }
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(&claude).unwrap()).unwrap();
+    assert_eq!(config["numStartups"], 2);
+    let zed_now = std::fs::read_to_string(&zed).unwrap();
+    assert!(zed_now.starts_with("// Zed settings\n{\n  \"theme\": \"One Dark\", // dark\n  \"context_servers\": {\n    \"zone\": {\n"), "{zed_now}");
+    let hermes_now = std::fs::read_to_string(&hermes).unwrap();
+    assert!(hermes_now.contains("      - files\n  zone:\n    command: "), "{hermes_now}");
+    assert!(hermes_now.ends_with("\n# voice\nvoice:\n  enabled: false\n"), "{hermes_now}");
+
+    // Again: nothing changes. `detected` means the same as --all.
+    let out = sandbox.ok(&["mcp", "install", "detected"]);
+    assert!(line_for(&out, "Zed").contains("already registered"), "{out}");
+    assert_eq!(std::fs::read_to_string(&zed).unwrap(), zed_now);
+
+    // Taken out of Zed on purpose: --all leaves Zed alone from then on.
+    let out = sandbox.ok(&["mcp", "uninstall", "zed"]);
+    assert!(line_for(&out, "Zed").contains("removed"), "{out}");
+    assert_eq!(std::fs::read_to_string(&zed).unwrap(), zed_text);
+    let out = sandbox.ok(&["mcp", "install", "--all"]);
+    assert!(line_for(&out, "Zed").contains("skipped: you removed zone here"), "{out}");
+    assert_eq!(std::fs::read_to_string(&zed).unwrap(), zed_text);
+    // Naming it puts it back.
+    sandbox.ok(&["mcp", "install", "zed"]);
+    assert!(std::fs::read_to_string(&zed).unwrap().contains("\"zone\""));
+
+    // --all takes zone out of every one, leaving each file as it was.
+    let out = sandbox.ok(&["mcp", "uninstall", "--all"]);
+    assert!(line_for(&out, "Hermes").contains("removed"), "{out}");
+    assert_eq!(std::fs::read_to_string(&zed).unwrap(), zed_text);
+    assert_eq!(std::fs::read_to_string(&hermes).unwrap(), hermes_text);
+    let status = sandbox.json(&["mcp", "status", "--json"]);
+    assert!(status["clients"].as_array().unwrap().iter().all(|c| !c["state"].as_str().unwrap().starts_with("registered")), "{status}");
+    assert_eq!(status["automatic"], false);
+    // The originals were kept beside the files.
+    assert_eq!(std::fs::read_to_string(format!("{}.before-zone", zed.display())).unwrap(), zed_text);
+}
+
+/// Claude Code is registered through its own command when there is one, once per profile. A
+/// stand-in `claude` records what it was asked (and writes the entry, as the real one does),
+/// so the real one is never run.
 #[cfg(unix)]
 #[test]
-fn mcp_install_claude_code_calls_claude_mcp_add() {
+fn mcp_install_claude_code_calls_claude_mcp_add_for_each_profile() {
     use std::os::unix::fs::PermissionsExt;
     let sandbox = Sandbox::new();
     let bin = sandbox.home.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(sandbox.home.join(".claude_work")).unwrap();
+    std::fs::write(sandbox.home.join(".claude_work").join(".claude.json"), "{}").unwrap();
     let record = sandbox.home.join("claude-calls.txt");
-    let script = format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n", record.display());
+    let script = format!(
+        "#!/bin/sh\nprintf '%s|%s\\n' \"${{CLAUDE_CONFIG_DIR:-unset}}\" \"$*\" >> '{}'\n\
+         file=\"${{CLAUDE_CONFIG_DIR:-$HOME}}/.claude.json\"\n\
+         if [ \"$2\" = add ]; then while [ \"$1\" != -- ]; do shift; done; shift; printf '{{\"mcpServers\":{{\"zone\":{{\"type\":\"stdio\",\"command\":\"%s\",\"args\":[\"%s\"]}}}}}}' \"$1\" \"$2\" > \"$file\"; fi\n",
+        record.display()
+    );
     let fake = bin.join("claude");
     std::fs::write(&fake, script).unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    // Only the stand-in is on PATH.
-    let output = sandbox.zone().env("PATH", &bin).args(["mcp", "install", "claude-code"]).output().unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = sandbox.zone().args(["mcp", "install", "claude-code"]).output().unwrap();
+    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     let calls = std::fs::read_to_string(&record).unwrap();
     let exe = zone_exe();
-    let expected = format!("mcp add --scope user zone --env ZONE_HOME={} -- {} mcp", sandbox.zone_home.display(), exe.display());
-    assert!(calls.lines().any(|line| line == expected), "expected:\n{expected}\ngot:\n{calls}");
+    let add = format!("mcp add --scope user zone --env ZONE_HOME={} -- {} mcp", sandbox.zone_home.display(), exe.display());
+    let expected = format!("unset|{add}\n{}|{add}\n", sandbox.home.join(".claude_work").display());
+    assert_eq!(calls, expected);
+    let status = sandbox.ok(&["mcp", "status"]);
+    assert!(line_for(&status, "Claude Code (default)").contains("registered"), "{status}");
+    assert!(line_for(&status, "Claude Code (~").contains("registered"), "{status}");
+}
 
-    // With no `claude` at all, it explains the command to run by hand.
-    let empty = sandbox.home.join("empty-bin");
-    std::fs::create_dir_all(&empty).unwrap();
-    let output = sandbox.zone().env("PATH", &empty).args(["mcp", "install", "claude-code"]).output().unwrap();
-    assert!(!output.status.success());
-    let explained = String::from_utf8_lossy(&output.stdout).to_string();
-    assert!(explained.contains("claude mcp add --scope user zone"), "{explained}");
+#[test]
+fn install_registers_with_clients_and_doctor_names_the_missing_ones() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.home.join(".cursor")).unwrap();
+    let out = sandbox.ok(&["install", "--no-start"]);
+    assert!(out.contains("Registering zone with the AI clients"), "{out}");
+    assert!(line_for(&out, "Cursor").contains("registered"), "{out}");
+    let state: Value = serde_json::from_slice(&std::fs::read(sandbox.zone_home.join("mcp-clients.json")).unwrap()).unwrap();
+    assert_eq!(state["auto"], true);
+
+    // A client installed later: doctor names it and gives the command.
+    std::fs::create_dir_all(sandbox.home.join(".gemini")).unwrap();
+    let doctor = String::from_utf8(sandbox.run(&["doctor"]).stdout).unwrap();
+    let line = line_for(&doctor, "[note] AI clients");
+    assert!(line.contains("installed but without zone: Gemini CLI"), "{doctor}");
+    assert!(doctor.contains("zone mcp install --all"), "{doctor}");
+    // No daemon runs in the sandbox, so doctor exits 1; its report is still JSON.
+    let report: Value = serde_json::from_slice(&sandbox.run(&["doctor", "--json"]).stdout).unwrap();
+    let check = report["checks"].as_array().unwrap().iter().find(|c| c["check"] == "AI clients").unwrap().clone();
+    assert_eq!(check["result"], "warn");
+
+    // --no-mcp: nothing is registered and the daemon will not either.
+    let other = Sandbox::new();
+    std::fs::create_dir_all(other.home.join(".cursor")).unwrap();
+    let out = other.ok(&["install", "--no-start", "--no-mcp"]);
+    assert!(out.contains("--no-mcp"), "{out}");
+    assert!(!other.home.join(".cursor").join("mcp.json").exists());
+    sandbox.ok(&["uninstall", "--no-stop"]);
+    let state: Value = serde_json::from_slice(&std::fs::read(sandbox.zone_home.join("mcp-clients.json")).unwrap()).unwrap();
+    assert_eq!(state["auto"], false);
+}
+
+#[test]
+fn serve_registers_with_new_clients_but_never_where_zone_was_taken_out() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.home.join(".cursor")).unwrap();
+    std::fs::create_dir_all(sandbox.home.join(".gemini")).unwrap();
+    sandbox.ok(&["install", "--no-start"]);
+    // Cursor's entry removed by hand, Gemini's with the command, and Qwen installed since.
+    let cursor = sandbox.home.join(".cursor").join("mcp.json");
+    std::fs::write(&cursor, "{\"mcpServers\": {}}").unwrap();
+    sandbox.ok(&["mcp", "uninstall", "gemini"]);
+    std::fs::create_dir_all(sandbox.home.join(".qwen")).unwrap();
+
+    let _daemon = Daemon::start(&sandbox);
+    let qwen = sandbox.home.join(".qwen").join("settings.json");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !qwen.exists() {
+        assert!(Instant::now() < deadline, "zone serve did not register with the new client");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(&qwen).unwrap()).unwrap();
+    assert_eq!(config["mcpServers"]["zone"]["args"], json!(["mcp"]));
+    // Give it time to finish, then check it left the others alone.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(std::fs::read_to_string(&cursor).unwrap(), "{\"mcpServers\": {}}");
+    let gemini: Value = serde_json::from_str(&std::fs::read_to_string(sandbox.home.join(".gemini").join("settings.json")).unwrap()).unwrap();
+    assert!(gemini["mcpServers"].get("zone").is_none());
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
+    assert!(log.contains("mcp: registered with Qwen Code"), "{log}");
+    assert!(log.contains("taken out of Cursor by hand"), "{log}");
 }
 
 /// `zone mcp status | head -4` used to panic with "failed printing to stdout: Broken pipe".

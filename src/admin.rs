@@ -509,6 +509,30 @@ fn backup_folder_check(db: &Db, folder: &str, daemon: Option<&DaemonInfo>, now: 
     }
 }
 
+/// Which AI clients on this computer can use zone, and the one command that fixes the rest.
+fn ai_clients_check() -> Check {
+    let Some(crate::clients::Summary { registered, missing, other_copy: other, unreadable }) = crate::clients::doctor_summary() else {
+        return warn("AI clients", "could not check", "Run `zone mcp status`.");
+    };
+    let mut problems = Vec::new();
+    if !missing.is_empty() {
+        problems.push(format!("installed but without zone: {}", missing.join(", ")));
+    }
+    if !other.is_empty() {
+        problems.push(format!("starting another copy of zone: {}", other.join(", ")));
+    }
+    if !problems.is_empty() {
+        return warn("AI clients", problems.join("; "), "Run `zone mcp install --all` to register zone with every one of them.");
+    }
+    if !unreadable.is_empty() {
+        return warn("AI clients", unreadable.join("; "), "Fix the file named above, then run `zone mcp install --all`.");
+    }
+    match registered {
+        0 => ok("AI clients", "none found on this computer (zone registers with one when you run `zone mcp install --all`)"),
+        n => ok("AI clients", format!("zone is registered in {n} {}", if n == 1 { "place" } else { "places" })),
+    }
+}
+
 fn run_checks() -> Vec<Check> {
     let mut checks = Vec::new();
     let dir = match paths::data_dir() {
@@ -624,6 +648,9 @@ fn run_checks() -> Vec<Check> {
         Ok(service::Installed::No) => checks.push(warn("Start at login", "not installed", "Run `zone install` so zone starts by itself when you log in.")),
         Err(error) => checks.push(warn("Start at login", format!("could not check ({error:#})"), "Run `zone install`.")),
     }
+
+    // AI clients
+    checks.push(ai_clients_check());
 
     // Phones
     if let Some(db) = &db {

@@ -85,6 +85,16 @@ pub async fn run(options: Options) -> Result<()> {
     let link_task = tokio::spawn(link::accept_loop(endpoint.clone(), LinkState::new(db.clone(), computer_name)));
     let info_task = tokio::spawn(keep_info_fresh(endpoint.clone(), info.clone(), dir.clone()));
     let backup_task = tokio::spawn(watch_backup_folder(db.clone(), info.clone(), dir.clone()));
+    // When `zone install` asked for it: register with AI clients installed since. This only
+    // adds zone where it never was; see clients.rs.
+    tokio::task::spawn_blocking({
+        let dir = dir.clone();
+        move || {
+            for line in crate::clients::register_on_start(&dir) {
+                info!("mcp: {line}");
+            }
+        }
+    });
 
     wait_for_stop().await;
     info!("zone is stopping");
