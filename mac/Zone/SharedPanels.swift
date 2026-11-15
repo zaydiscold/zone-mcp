@@ -10,6 +10,9 @@ struct PairPanel: View {
     /// The popover is narrow: the code sits above the words. The welcome window is wide:
     /// they sit side by side.
     var wide = false
+    /// True where "Pair" always means a new code (the popover). The guide keeps showing a
+    /// phone it just paired when the person steps back and forth.
+    var startsFresh = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -34,6 +37,7 @@ struct PairPanel: View {
         }
         .animation(Zone.settle, value: model.pairing)
         .task {
+            if startsFresh, case .waiting = model.pairing {} else if startsFresh { model.stopPairing() }
             if model.pairing == .idle { await model.startPairing() }
         }
     }

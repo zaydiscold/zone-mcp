@@ -704,6 +704,6 @@ final class AppModel {
     func finishWelcome() {
         state.welcomeDone = true
         state.welcomeStep = 0
-        if pairing != .idle, pairedPhone == nil { pairing = .idle }
+        pairing = .idle
     }
 }

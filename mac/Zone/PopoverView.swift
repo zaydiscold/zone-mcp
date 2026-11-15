@@ -583,7 +583,7 @@ private struct PairPage: View {
             PageHeader(title: "Pair an iPhone", navigation: navigation) {
                 model.stopPairing()
             }
-            PairPanel(model: model)
+            PairPanel(model: model, startsFresh: true)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 20)
             Hairline()

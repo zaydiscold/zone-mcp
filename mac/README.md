@@ -21,6 +21,10 @@ Everything pictured here is a made-up library.
 running. A pulsing dot with a ring: something is arriving right now. A faded Z with a hollow
 dot: zone is not running. An exclamation mark: something needs you.
 
+<p align="center">
+  <img src="../docs/media/mac-menubar.png" width="600" alt="The menu bar icon's four faces on a dark and a light menu bar: running, receiving, not running, needs you">
+</p>
+
 **Click it.**
 
 - Each paired phone: when it last synced, how many items it has sent, and whether the last
@@ -35,7 +39,9 @@ dot: zone is not running. An exclamation mark: something needs you.
   backup folder, start at login, the `zone` command, who runs zone, updates, the setup guide.
 
 <p align="center">
-  <img src="../docs/media/mac-pairing.gif" width="640" alt="The pairing step: a stand-in phone scans the code and its library arrives">
+  <img src="../docs/media/mac-popover.gif" width="372" alt="Three dictations arrive: the window says Receiving, the counts go up and the new items appear">
+  &nbsp;
+  <img src="../docs/media/mac-popover-hidden.png" width="372" alt="The same window with Hide text on: the words are covered">
 </p>
 
 **The floating window.** "Keep these in a floating window" opens a small window that stays
@@ -43,12 +49,22 @@ above your other windows and shows what you said as it arrives, with a search ov
 whole library and filters for dictations, notes and meetings. Clicking a row copies it
 without taking the keyboard away from the app you are working in.
 
+<p align="center">
+  <img src="../docs/media/mac-floating.png" width="360" alt="The floating window: search, filters, and the latest things said, grouped by day">
+</p>
+
 **The setup guide**, the first time you open the app (and any time later, under More):
 welcome, get Zone on your iPhone, pair, connect your AI agents, done. Every step can be
 skipped, and closing the window half way keeps your place.
 
 <p align="center">
   <img src="../docs/media/mac-welcome.png" width="640" alt="The welcome window">
+</p>
+<p align="center">
+  <img src="../docs/media/mac-pairing.gif" width="640" alt="The pairing step: a stand-in phone scans the code and its library arrives">
+</p>
+<p align="center">
+  <img src="../docs/media/mac-welcome-agents.png" width="640" alt="The agents step: Claude Code, Claude Desktop, Codex, Cursor and Gemini CLI, each with a switch">
 </p>
 
 ## Install
@@ -170,7 +186,8 @@ mac/scripts/dev-sandbox.sh stop
 
 The stand-in phone is `zone dev fake-phone`: it pairs with the very code the app is showing
 and sends items over real iroh. The commands are listed in `Zone/ZoneApp.swift`
-(`run(command:)`). `--front` shows the windows on screen like a normal run.
+(`run(command:)`). `--front` shows the windows on screen like a normal run. Every picture in
+this file was taken this way.
 
 ### Where things are
 
