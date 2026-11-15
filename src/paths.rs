@@ -47,6 +47,28 @@ fn default_data_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".local").join("share").join("zone"))
 }
 
+/// Where this program is, as a path people and other programs can use.
+///
+/// On Windows the fully resolved form of a path starts with `\\?\`, which the system itself
+/// accepts but scripts and some programs do not, so that prefix is taken off.
+pub fn current_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot find where zone is installed")?;
+    let resolved = std::fs::canonicalize(&exe).unwrap_or(exe);
+    Ok(PathBuf::from(without_verbatim_prefix(&resolved.to_string_lossy())))
+}
+
+/// `\\?\C:\dir\file` becomes `C:\dir\file`, and `\\?\UNC\server\share` becomes
+/// `\\server\share`. Anything else is returned as it is.
+pub fn without_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => path.to_string(),
+    }
+}
+
 /// A non-empty environment variable as a path.
 pub fn env_path(name: &str) -> Option<PathBuf> {
     match std::env::var_os(name) {
@@ -241,6 +263,17 @@ pub fn computer_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_verbatim_prefix_is_taken_off() {
+        assert_eq!(without_verbatim_prefix(r"\\?\C:\Users\Zed\zone.exe"), r"C:\Users\Zed\zone.exe");
+        assert_eq!(without_verbatim_prefix(r"\\?\UNC\server\share\zone.exe"), r"\\server\share\zone.exe");
+        assert_eq!(without_verbatim_prefix(r"C:\Users\Zed\zone.exe"), r"C:\Users\Zed\zone.exe");
+        assert_eq!(without_verbatim_prefix("/usr/local/bin/zone"), "/usr/local/bin/zone");
+        // A device path is not a file path with a prefix: left alone.
+        assert_eq!(without_verbatim_prefix(r"\\?\Volume{1234}\zone.exe"), r"\\?\Volume{1234}\zone.exe");
+        assert!(current_exe().unwrap().is_absolute());
+    }
 
     #[test]
     fn hex_round_trip() {

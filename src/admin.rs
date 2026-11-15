@@ -302,6 +302,8 @@ pub fn backup_folder(path: Option<&Path>, clear: bool) -> Result<()> {
     let wanted = path.to_path_buf();
     let work = move || -> Result<(PathBuf, Vec<backup::Scanned>)> {
         let absolute = std::fs::canonicalize(&wanted).with_context(|| format!("cannot find {}", wanted.display()))?;
+        // Windows writes a resolved path as \\?\C:\..., which is no good to show or to store.
+        let absolute = PathBuf::from(paths::without_verbatim_prefix(&absolute.to_string_lossy()));
         let scanned = backup::scan(&absolute, &backup::Seen::new())?;
         Ok((absolute, scanned))
     };

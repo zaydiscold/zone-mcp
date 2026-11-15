@@ -103,8 +103,7 @@ pub struct Launch {
 
 impl Launch {
     pub fn current(read_only: bool) -> Result<Launch> {
-        let exe = std::env::current_exe().context("cannot find where zone is installed")?;
-        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+        let exe = paths::current_exe()?;
         let mut args = vec!["mcp".to_string()];
         if read_only {
             args.push("--read-only".to_string());

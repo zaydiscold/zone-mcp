@@ -41,8 +41,7 @@ pub struct Plan {
 
 impl Plan {
     pub fn current() -> Result<Plan> {
-        let exe = std::env::current_exe().context("cannot find where zone is installed")?;
-        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+        let exe = paths::current_exe()?;
         Ok(Plan { exe, data_dir: paths::ensure_data_dir()?, zone_home: paths::env_path(paths::ENV_HOME) })
     }
 }
@@ -309,7 +308,7 @@ pub fn status() -> Result<Installed> {
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Ok(Installed::No);
     };
-    let exe = std::env::current_exe().ok().map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+    let exe = paths::current_exe().ok();
     match exe {
         Some(exe) if !contents.contains(&*exe.to_string_lossy()) && !contents.contains(&xml(&exe.to_string_lossy())) => {
             Ok(Installed::Stale(path, "starts a different copy of zone than the one you are running".to_string()))
@@ -340,7 +339,9 @@ mod tests {
         assert!(text.contains("<string>serve</string>\n        <string>--quiet</string>"));
         assert!(text.contains("<key>RunAtLoad</key>\n    <true/>"));
         assert!(text.contains("<key>SuccessfulExit</key>\n        <false/>"));
-        assert!(text.contains("<string>/Users/zed/Library/Application Support/Zone/launchd.log</string>"));
+        // Joined with this platform's separator, so the test also passes when run on Windows.
+        let log = Path::new("/Users/zed/Library/Application Support/Zone").join("launchd.log");
+        assert!(text.contains(&format!("<string>{}</string>", log.display())));
         assert!(!text.contains("EnvironmentVariables"));
         assert_eq!(text.matches("<dict>").count(), text.matches("</dict>").count());
         assert_eq!(text.matches("<key>").count(), text.matches("</key>").count());
