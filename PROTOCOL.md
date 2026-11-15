@@ -34,10 +34,11 @@ One item is one JSON object. Unknown fields are ignored by receivers and never a
 ```
 
 - `id`: the phone's stable UUID for the record, uppercase with hyphens. Primary key together with nothing else: ids are unique across kinds.
-- `kind`: `dictation`, `note` or `meeting`. Required. This is the label agents filter on.
+- `kind`: `dictation`, `note`, `meeting` or `clip`. Required. This is the label agents filter on.
   - `dictation`: something spoken into a text field or the app. Mostly messages and text typed by voice in other apps.
   - `note`: a voice note saved in Zone's own library.
   - `meeting`: a recorded meeting with a transcript.
+  - `clip`: text the person sent to the computer on purpose (see Clips below). Not something they said.
 - `source`: for dictations, where it was spoken: `keyboard`, `app`, `note`, or any other raw value the phone uses (pass through unchanged). Null for notes and meetings.
 - `created_at`, `updated_at`: Unix seconds (since 1970-01-01 UTC), fractional. `updated_at` may equal `created_at`.
 - `text`: the full text. For a meeting, the whole transcript as readable text, one line per segment, `Speaker name: words` when speakers are known.
@@ -53,6 +54,22 @@ Merge rule on the computer:
 
 - From the phone itself (Link and Flash), the phone is the source of truth: an incoming item always replaces the stored row, and an incoming live item brings back a row that was deleted (the person restored it on the phone).
 - From a backup folder (which can be stale): insert when the id is new; otherwise replace only when the incoming `updated_at` is greater than or equal to the stored one, and never bring back a deleted row.
+
+## Clips
+
+A clip is a piece of text the person chose to send from the phone to the computer: what was on the phone's clipboard, something shared from another app, or something typed. It is an ordinary item with `kind` `clip`, so every carrier moves it and every reader can list it.
+
+- `source`: how it was sent: `clipboard`, `share`, `shortcut` or `typed`.
+- `text`: the text, at most 256 kB of UTF-8. `title`, `duration_s`, `engine` and `status` are null.
+- `created_at`: when the person sent it.
+- The phone sends a clip at once (no waiting, unlike other changes) and holds it until the computer acknowledges it. A clip goes to every paired computer whose sending is switched on.
+- Clips are not part of the phone's library and are not in a backup folder. Deleting one on the phone is not sent as a deletion.
+
+On the computer:
+
+- A clip is stored like any item. `zone clip` prints the newest one, `zone clip --copy` also puts it on the computer's clipboard.
+- With the clipboard setting on (`zone clipboard on`, off until the person turns it on), a clip that arrives over Link and whose `created_at` is less than 120 seconds old is put on the computer's clipboard as it arrives. Older clips (a resend, a Flash, a phone that was offline) are stored and never touch the clipboard.
+- The activity feed records that a clip arrived and its length, never its text.
 
 ## Carrier 1: Link (iroh)
 
