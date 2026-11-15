@@ -20,7 +20,9 @@ if [ "${1:-}" = "--committed" ]; then
     source="$mac/build/zone-source"
     if [ -d "$source" ]; then mv "$source" "$source.previous.$$"; fi
     mkdir -p "$source"
-    git -C "$repo" archive HEAD -- Cargo.toml Cargo.lock src assets | tar -x -C "$source"
+    # Everything the Rust build may read (it includes files from the top folder), without
+    # the app, the pictures and the tests.
+    git -C "$repo" archive HEAD -- . ':(exclude)mac' ':(exclude)docs' ':(exclude)tests' ':(exclude).github' | tar -x -C "$source"
     echo "Building zone as committed at $(git -C "$repo" rev-parse --short HEAD)"
 fi
 out="${1:-$mac/build/zone}"
