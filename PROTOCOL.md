@@ -119,6 +119,8 @@ For networks that block everything, and for the fun of it. The phone shows a rap
 
 The computer accepts a flash from a paired phone, or from a phone that has scanned a still-valid pairing code (the payload opens with that offer's flash key, which pairs the phone by its `phone.id`). Flash items are merged like Link items.
 
+A phone that paired by Flash has never shown the computer its iroh endpoint id. On its first Link connection it sends `pair` with the same secret, as after any scan. The computer accepts that secret once more, only from a `hello` whose `phone.id` is the one the flash carried, and from then on knows the phone by its endpoint id. Without `pair` that first connection is `refused not_paired`.
+
 ## Carrier 3: Backup folder
 
 Zone can already keep a backup in any Files location (iCloud Drive, OneDrive, Dropbox). The package is a folder named `<something>.zonebackup` containing `library.json`:

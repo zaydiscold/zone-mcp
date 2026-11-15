@@ -19,9 +19,10 @@ The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 | Link (iroh), computer side | Built. Tested against a stand-in phone over real iroh: direct, relay only, and found by endpoint id alone. |
 | Backup folder import | Built. Tested on synthetic backups and on one real Zone backup. |
 | MCP server, command line, web page | Built and tested on macOS. |
-| Flash (animated QR, carrier 2) | **Not built.** `/flash` on the web page answers "not built yet". Only its key is derived and kept at pairing, so phones paired now will not have to pair again when Flash arrives. |
-| A real iPhone | **Not tested.** The iPhone side of Link is being built separately. Until both meet, treat pairing with a real phone as unproven. |
-| Windows and Linux | The program compiles for both (cross-compiled from macOS). It has **not been run** on either, so `zone install` there is untested. |
+| Flash (QR codes from the phone's screen to the computer's camera) | Built, computer side. Tested with pictures of the codes: ones drawn by this program, ones written by the iPhone app's own code, and a video of them played to a browser as if it were the camera. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is unknown. |
+| A real iPhone | **Not tested.** The iPhone side is being built separately. Until both meet, treat pairing with a real phone as unproven. |
+| Windows | Built and run on Windows 10: see [Windows](#windows) for exactly what was checked. |
+| Linux | The program compiles for it (cross-compiled from macOS). It has **not been run** there, so `zone install` on Linux is untested. |
 
 ## Install
 
@@ -41,6 +42,40 @@ zone doctor      # checks the setup and says how to fix anything that is off
 ```
 
 To run it by hand instead: `zone serve`.
+
+### Windows
+
+You need Rust with the MSVC toolchain (what `rustup` installs by default on Windows, together
+with the Visual Studio C++ build tools). In PowerShell:
+
+```powershell
+# in a checkout of this repository
+cargo build --release                      # about four minutes the first time
+# copy target\release\zone.exe to any folder on your PATH, then:
+zone install                               # start at login, no admin rights needed
+zone doctor
+```
+
+`zone install` writes a small script, `zone-serve.vbs`, into the data folder
+(`%LOCALAPPDATA%\Zone`) and adds a per-user entry named `Zone` under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` that runs it at login. The script starts
+`zone serve` without opening a window. `zone uninstall` removes both and stops zone.
+
+What was checked on a Windows 10 computer (Rust 1.97, MSVC), and what was not:
+
+- Checked: the build (`zone.exe` is about 7.7 MB), the whole test suite, `zone status`,
+  `zone doctor`, `zone serve`, `zone pair`, `zone stats`, `zone search`, and reading Flash pictures
+  with `zone dev flash-decode`.
+- Checked across two computers: a stand-in phone on a Mac paired with the Windows computer and sent
+  it items, once the normal way (it began on the relay and moved to a direct connection) and once
+  forced through the relay only. The counts on Windows matched what was sent.
+- Checked: `zone install --no-start` writes the script, and running the script starts zone in the
+  background.
+- Not checked: the login entry itself (`zone install` without `--no-start`, then logging out and
+  in), `zone uninstall`, `zone open` launching a browser, and the Flash page with a Windows camera.
+
+If the web page's usual port (47813) is taken by another program, zone picks a free one and
+`zone status` shows which. `zone open` always uses the right one.
 
 ## Pair your iPhone
 
@@ -72,15 +107,50 @@ All three end in the same merge into the same database, so they can be mixed fre
    zone backup-folder ~/Library/Mobile\ Documents/com~apple~CloudDocs/Zone\ Backups
    zone import path/to/Zone\ library.zonebackup     # or read one once
    ```
-3. **Flash.** The phone shows a fast sequence of QR codes and the computer's camera reads them. No
-   network at all. Not built yet.
+3. **Flash.** The phone shows a fast series of QR codes and the computer's camera reads them. No
+   network at all. See the next section.
 
-The merge rule: a new id is inserted. After that, the phone itself (Link and Flash) is the source of
-truth: what it sends always replaces the stored copy, a deletion on the phone keeps the row and
-drops its text, and an item the phone sends again after deleting it comes back. A backup folder can
-be stale, so its copy replaces the stored one only when it is as new or newer, and it never brings
-back an item that was deleted. Items the phone merely aged out of its own history are kept here:
-the computer is the long-term copy.
+### When the three disagree
+
+Whatever the phone itself sends, over Link or Flash, wins: it replaces the copy on the computer,
+even if the computer's copy looks newer. If you delete something on the phone, the computer keeps
+a record that it existed but drops its words, and if you bring it back on the phone it comes back
+here too. A backup folder is treated with more care, because a backup can be old: an item from a
+backup replaces the computer's copy only when it is at least as new, and a backup never brings
+back something you deleted. Things the phone simply stopped keeping because they got old are never
+removed here. The computer is the long-term copy.
+
+## Flash: sync with no network
+
+Flash moves your library from the phone's screen to the computer's camera. Use it when the phone
+and the computer cannot reach each other at all: a network that blocks everything, a plane, a
+computer you keep offline. When Link works, Link is easier, because it is automatic.
+
+1. Run `zone open` and choose **Flash** at the top of the page (or go straight to
+   `http://127.0.0.1:47813/flash` once the page is unlocked).
+2. Allow the camera when the browser asks. The pictures never leave your computer: the page hands
+   them to zone on the same machine, and nothing is loaded from the internet.
+3. On the iPhone, start Flash in Zone's computer sync settings and hold the screen up to the
+   camera so the code fills most of the square on the page. Turn the phone's brightness up.
+4. Watch the bar. The page shows how many codes it has read and how many pieces of the library it
+   has out of the total. When it says Done, it also says how many items were new, changed, or
+   already here. Then tap Done on the phone.
+
+You do not have to catch every code. Any code helps, in any order, so if the camera misses some
+the phone just keeps going until the computer has enough. If you put the phone down early,
+nothing is stored and you can start again.
+
+The phone has to be paired with the computer first, because the codes are encrypted with a key
+both sides get at pairing. Pairing does not need a network either: scanning the code from
+`zone pair` (or "Pair a phone" on the page) is enough, and the first flash then completes the
+pairing.
+
+How fast: the phone shows 12 codes a second, each carrying 300 bytes of compressed, encrypted
+data. That is about 3.6 kilobytes a second, which for ordinary speech is over a thousand words a
+second. A day of dictation takes a few seconds and a library of a thousand items a minute or two.
+Those figures come from the code sizes, not from a stopwatch: with a real camera some codes will
+be missed, so expect it to take somewhat longer. Reading the codes is not the slow part: zone
+reads a camera picture in about a fiftieth of a second.
 
 ## See your transcriptions
 
@@ -165,6 +235,9 @@ The three kinds of item:
   internet.
 - **Agents read what you let them.** An MCP client that has zone registered can read the whole
   library. The one thing it can change is the processed flag.
+- **Flash stays in the room.** The camera pictures go from the browser to zone on the same
+  computer and are thrown away once read. What the phone shows is encrypted, so someone filming
+  the screen gets nothing they can open.
 - **Logs never contain your words.** `zone.log` records events and counts only.
 
 One limit worth knowing: the page's key is kept in a cookie for `127.0.0.1`, and browsers do not
@@ -209,6 +282,19 @@ Every test runs in a temporary `ZONE_HOME` and a temporary home folder. A hidden
 `zone dev fake-phone`, plays the phone's side of Link over real iroh: it pairs with a link or
 reconnects with a saved identity, sends synthetic items or a JSONL file in frames, and prints the
 acks. `--relay-only` removes its IP transports so every packet goes through the relay.
+
+Flash can be tested without a phone or a camera. `zone dev flash-encode` draws the codes a phone
+would show as numbered PNG pictures, and `zone dev flash-decode` reads a folder of such pictures
+back, whatever the files are called and whatever size the codes are drawn at:
+
+```sh
+zone dev flash-encode --out /tmp/frames --secret <64 hex characters> --count 200
+zone dev flash-decode /tmp/frames --secret <the same 64 hex characters>            # prints counts only
+ZONE_HOME=$(mktemp -d) zone dev flash-decode /tmp/frames --secret <...> --import   # also stores the items
+```
+
+Without `--secret`, flash-decode tries the keys of the phones paired with this library, the way
+the page does. `scripts/flash_reference.py` is the reference for how the codes are made.
 
 iroh is pinned to the 1.4 line, the same one the phone's Swift binding (`iroh-ffi` 1.2.0) uses.
 Endpoint ids are written the way iroh 1.x prints them: 64 lowercase hexadecimal characters.
