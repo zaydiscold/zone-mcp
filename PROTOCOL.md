@@ -80,10 +80,10 @@ zone://pair?v=1&n=<endpoint id>&s=<secret>&name=<computer name>&r=<relay url>
 
 Every object has `t`. Phone speaks first.
 
-1. Phone: `{"t":"hello","v":1,"phone":{"id":"<install UUID>","name":"Zayd's iPhone","app":"1.0.3 (2026111401)"},"pair":"<secret hex>"}`
+1. Phone: `{"t":"hello","v":1,"phone":{"id":"<install UUID>","name":"My iPhone","app":"1.0.3 (2026111401)"},"pair":"<secret hex>"}`
    - `pair` is present only on the first connection after scanning a pairing link.
 2. Computer, one of:
-   - `{"t":"welcome","v":1,"computer":{"id":"<database UUID>","name":"frostbyte","os":"macos","version":"0.1.0"},"items":1629,"resend_all":false}`
+   - `{"t":"welcome","v":1,"computer":{"id":"<database UUID>","name":"studio","os":"macos","version":"0.1.0"},"items":1629,"resend_all":false}`
    - `{"t":"refused","reason":"not_paired"}` then close. Reasons: `not_paired`, `bad_secret`, `version`, `busy`.
 3. Phone, zero or more: `{"t":"items","seq":1,"items":[ ... ]}`. At most 500 items and 1 MiB of JSON per frame; `seq` starts at 1 and counts up within the session.
 4. Computer, for each: `{"t":"ack","seq":1,"stored":500}` after the batch is committed to disk.
