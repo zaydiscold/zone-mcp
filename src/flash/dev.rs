@@ -93,6 +93,8 @@ fn png_files(dir: &Path) -> Result<Vec<PathBuf>> {
         .with_context(|| format!("cannot read the folder {}", dir.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.is_file() && path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("png")).unwrap_or(false))
+        // Not the hidden companions macOS adds when a folder is copied or archived (._name.png).
+        .filter(|path| !path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with('.')).unwrap_or(true))
         .collect();
     files.sort();
     Ok(files)
@@ -281,6 +283,7 @@ mod tests {
             }
         }
         std::fs::write(out.join("notes.txt"), b"not a picture").unwrap();
+        std::fs::write(out.join("._0001-shot.PNG"), b"what macOS leaves beside a copied file").unwrap();
         std::fs::write(out.join("broken.png"), b"not a picture either").unwrap();
         qr::write_png(&out.join("other-code.png"), &qr::draw(b"zone://pair?v=1", 4, 4).unwrap()).unwrap();
         qr::write_png(&out.join("blank.png"), &qr::Gray::new(50, 50, vec![255; 2500]).unwrap()).unwrap();
