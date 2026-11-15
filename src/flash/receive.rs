@@ -129,6 +129,8 @@ pub struct PictureRead {
     pub frames: usize,
     /// Of those, frames that brought the decoder a new row.
     pub useful: usize,
+    /// True when it was a color picture, read channel by channel.
+    pub color: bool,
 }
 
 /// What one frame did.
@@ -151,6 +153,8 @@ pub struct Receiver {
     /// Pictures looked at, and how many of them had a code in them.
     pub pictures: u64,
     pub pictures_with_code: u64,
+    /// Pictures read as color pictures, channel by channel.
+    pub color_pictures: u64,
     /// Frames of a flash read, in any picture, and how many of them were useful.
     pub frames_read: u64,
     pub frames_useful: u64,
@@ -240,8 +244,9 @@ impl Receiver {
             "with_code": self.pictures_with_code,
             "frames": self.frames_read,
             "useful": self.frames_useful,
+            "color": self.color_pictures,
         });
-        let last = self.last_picture.map(|p| json!({ "codes": p.codes, "frames": p.frames, "useful": p.useful }));
+        let last = self.last_picture.map(|p| json!({ "codes": p.codes, "frames": p.frames, "useful": p.useful, "color": p.color }));
         let Some((shape, session)) = self.sessions.iter().max_by_key(|(_, s)| s.touched) else {
             return json!({ "state": "waiting", "pictures": pictures, "last": last });
         };

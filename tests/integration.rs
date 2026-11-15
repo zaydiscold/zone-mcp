@@ -597,6 +597,63 @@ fn flash_pictures_through_the_command_line_and_the_daemon() {
     assert_eq!(total_items(&sandbox), 130);
 }
 
+fn read_rgb_png(path: &Path) -> (usize, usize, Vec<u8>) {
+    let decoder = png::Decoder::new(BufReader::new(std::fs::File::open(path).unwrap()));
+    let mut reader = decoder.read_info().unwrap();
+    let mut pixels = vec![0u8; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!((frame.color_type, frame.bit_depth), (png::ColorType::Rgb, png::BitDepth::Eight));
+    pixels.truncate(frame.buffer_size());
+    (frame.width as usize, frame.height as usize, pixels)
+}
+
+/// Color Flash: three frames to a picture, drawn by `flash-encode --color`, read back by
+/// `flash-decode`, and taken by the daemon as color camera pictures.
+#[test]
+fn color_flash_pictures_through_the_command_line_and_the_daemon() {
+    let sandbox = Sandbox::new();
+    let _daemon = Daemon::start(&sandbox);
+    let port = sandbox.daemon_info().unwrap()["http_port"].as_u64().unwrap() as u16;
+    let url = pair_url(&sandbox);
+    let secret = url.split("&s=").nth(1).unwrap().split('&').next().unwrap().to_string();
+    let pictures = sandbox.home.join("color");
+    let dir = pictures.to_str().unwrap();
+    let made = sandbox.json(&["dev", "flash-encode", "--color", "--out", dir, "--secret", &secret, "--count", "300", "--chunk", "700", "--scale", "3", "--name", "Color phone"]);
+    let k = made["k"].as_u64().unwrap();
+    let count = made["pictures"].as_u64().unwrap();
+    assert_eq!(made["color"], true);
+    assert_eq!(count, made["frames"].as_u64().unwrap() / 3, "{made}");
+
+    let report = sandbox.json(&["dev", "flash-decode", dir, "--secret", &secret]);
+    assert_eq!((report["complete"].as_bool(), report["items"].as_u64(), report["color_pictures"].as_u64()), (Some(true), Some(300), Some(count)), "{report}");
+    let read = sandbox.ok(&["dev", "flash-read", dir]);
+    let first: Value = serde_json::from_str(read.lines().next().unwrap()).unwrap();
+    assert_eq!((first["color"].as_bool(), first["codes"].as_array().unwrap().len()), (Some(true), 3), "{first}");
+
+    // The daemon, as the page posts them: three bytes a pixel, format=rgb.
+    let cookie = page_cookie(&sandbox, port);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&pictures).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    let mut last = Value::Null;
+    let mut sent = 0u64;
+    for file in &files {
+        let (width, height, pixels) = read_rgb_png(file);
+        let (status, answer) = http_post(port, &format!("/api/flash/picture?w={width}&h={height}&format=rgb"), &cookie, &pixels);
+        assert_eq!(status, 200, "{answer}");
+        sent += 1;
+        last = answer;
+        if last["state"] == "done" {
+            break;
+        }
+        assert_eq!((last["last"]["frames"].as_u64(), last["last"]["color"].as_bool()), (Some(3), Some(true)), "{last}");
+    }
+    assert_eq!(last["state"], "done", "{last}");
+    assert_eq!((last["result"]["new"].as_u64(), last["result"]["paired"].as_bool()), (Some(300), Some(true)));
+    assert!(sent * 3 < k + 10, "a third as many pictures: {sent} for k = {k}");
+    assert_eq!(last["pictures"]["color"].as_u64(), Some(sent));
+    assert_eq!(total_items(&sandbox), 300);
+}
+
 // ------------------------------------------------------------------------- backup import and queries
 
 /// A synthetic backup in the phone's format. Dates are seconds since 2001-01-01 UTC.

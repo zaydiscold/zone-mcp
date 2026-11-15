@@ -4,6 +4,7 @@
 //! - [`fountain`]: the frames and the code that rebuilds the payload from any of them.
 //! - [`seal`]: what is inside: ChaCha20-Poly1305 around raw DEFLATE around JSON.
 //! - [`qr`]: reading QR codes out of camera pictures, and drawing them.
+//! - [`color`]: color pictures, which carry up to three frames, one per channel.
 //! - [`receive`]: the daemon's side: frames in, items in the library out.
 //! - [`dev`]: `zone dev flash-encode` and `flash-decode`, for testing without a phone.
 //!
@@ -15,6 +16,7 @@
 //!
 //! The key opens flashes. It cannot be turned back into the pairing secret.
 
+pub mod color;
 pub mod dev;
 pub mod fountain;
 pub mod qr;

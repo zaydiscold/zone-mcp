@@ -28,6 +28,7 @@ use tokio::net::TcpListener;
 
 use crate::daemon_info::DaemonInfo;
 use crate::db::{Cursor, Db, Filter, Order, Row};
+use crate::flash::color::{ColorRead, Rgb};
 use crate::flash::qr::Gray;
 use crate::flash::receive::{self, Outcome, PictureRead, Receiver, Step};
 use crate::info;
@@ -42,7 +43,8 @@ pub const DEFAULT_PORT: u16 = 47813;
 
 const PAGE: &str = include_str!("../assets/index.html");
 const FLASH_PAGE: &str = include_str!("../assets/flash.html");
-/// The largest request body read: one camera picture, a gray byte per pixel.
+/// The largest request body read: one camera picture, a gray byte per pixel or three for a
+/// color one (1080 by 1080 in color is about 3.5 MB).
 const MAX_BODY: usize = 4 * 1024 * 1024;
 const PAGE_LIMIT: usize = 60;
 const SEARCH_LIMIT: usize = 200;
@@ -311,7 +313,9 @@ fn flash_status(head: &RequestHead, state: &WebState) -> Reply {
     json_reply(StatusCode::OK, &status)
 }
 
-/// A camera picture: `w` times `h` gray bytes. Every QR code in it is taken as a frame.
+/// A camera picture: `w` times `h` gray bytes, or with `format=rgb` three bytes (red, green,
+/// blue) per pixel. Every QR code in it is taken as a frame: a color picture can carry three
+/// (see flash/color.rs).
 ///
 /// The codes are read before the flash is locked, so the pictures the page sends at once are
 /// read side by side, one per processor; only taking their frames is one at a time.
@@ -321,8 +325,20 @@ fn flash_picture(head: &RequestHead, state: &WebState) -> Reply {
     }
     let side = |key: &str| -> Result<usize> { head.query.get(key).and_then(|v| v.parse().ok()).with_context(|| format!("{key} is required")) };
     let thorough = state.flash.lock().map(|r| r.codes_in_view()).unwrap_or(true);
-    let codes = match side("w").and_then(|w| Ok((w, side("h")?))).and_then(|(w, h)| Gray::new(w, h, head.body.to_vec())) {
-        Ok(gray) => crate::flash::qr::read_camera(&gray, thorough),
+    let rgb = match head.query.get("format").map(String::as_str) {
+        None | Some("gray") => false,
+        Some("rgb") => true,
+        Some(other) => return json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("format must be gray or rgb, not {other}") })),
+    };
+    let read = side("w").and_then(|w| Ok((w, side("h")?))).and_then(|(w, h)| {
+        if rgb {
+            Ok(crate::flash::color::read_picture(&Rgb::new(w, h, head.body.to_vec())?, thorough))
+        } else {
+            Ok(ColorRead { codes: crate::flash::qr::read_camera(&Gray::new(w, h, head.body.to_vec())?, thorough), color: false })
+        }
+    });
+    let ColorRead { codes, color } = match read {
+        Ok(read) => read,
         Err(error) => return json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
     };
     flash_guarded(head, state, |receiver| {
@@ -331,7 +347,10 @@ fn flash_picture(head: &RequestHead, state: &WebState) -> Reply {
             receiver.pictures_with_code += 1;
             receiver.last_code_at = Some(std::time::Instant::now());
         }
-        let mut read = PictureRead { codes: codes.len(), ..PictureRead::default() };
+        if color {
+            receiver.color_pictures += 1;
+        }
+        let mut read = PictureRead { codes: codes.len(), color, ..PictureRead::default() };
         for code in &codes {
             let (frame, useful) = flash_take(state, receiver, code);
             read.frames += usize::from(frame);
@@ -879,6 +898,53 @@ mod tests {
         // Before any code is in view the daemon only takes the quick look, which can miss a
         // perfectly sharp first code now and then; after that, every one is read.
         assert!(status["pictures"]["with_code"].as_u64().unwrap() + 2 >= pictures.len() as u64, "{status}");
+    }
+
+    #[test]
+    fn color_pictures_through_the_page_routes() {
+        use crate::flash::fountain::Encoder;
+        use crate::flash::{color, seal};
+
+        let state = state();
+        let secret = "ef".repeat(32);
+        state.db.lock().unwrap().create_offer(&secret, paths::now_unix(), 600.0).unwrap();
+        let key = seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
+        let phone = crate::db::PhoneInfo { id: Some("PHONE-C".into()), name: Some("Color phone".into()), app: None };
+        let sealed = seal::seal(&key, &seal::flash_json(&phone, &crate::fakephone::synthetic_items(5000, 300))).unwrap();
+        let encoder = Encoder::new(0xC010, &sealed, 900).unwrap();
+        let post = |target: &str, body: Vec<u8>| {
+            let mut h = with_cookie(head(Method::POST, target), &state);
+            h.body = Bytes::from(body);
+            route(&h, &state, "n")
+        };
+        // Three frames to a picture, so a third as many pictures.
+        let mut last = Value::Null;
+        let mut sent = 0;
+        for first in (0..encoder.k() as u32 + 30).step_by(3) {
+            let frames: Vec<Vec<u8>> = (0..3).map(|c| encoder.frame(first + c)).collect();
+            let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
+            let picture = color::draw(&refs, 3, 4).unwrap();
+            let reply = post(&format!("/api/flash/picture?w={}&h={}&format=rgb", picture.width, picture.height), picture.pixels);
+            assert_eq!(reply.status(), StatusCode::OK);
+            last = json_body(reply);
+            sent += 1;
+            if last["state"] == "done" {
+                break;
+            }
+            assert_eq!(last["last"], json!({ "codes": 3, "frames": 3, "useful": 3, "color": true }), "{last}");
+        }
+        assert_eq!(last["state"], "done", "{last}");
+        assert_eq!(last["result"]["new"], 300);
+        assert!(sent <= encoder.k().div_ceil(3) + 1, "{sent} pictures for {} frames", encoder.k());
+        assert_eq!(last["pictures"]["color"].as_u64(), Some(sent as u64));
+        // A black and white picture sent as color is still read, in gray.
+        let gray = crate::flash::qr::draw(&encoder.frame(4000), 3, 4).unwrap();
+        let rgb: Vec<u8> = gray.pixels.iter().flat_map(|v| [*v, *v, *v]).collect();
+        let read = json_body(post(&format!("/api/flash/picture?w={}&h={}&format=rgb", gray.width, gray.height), rgb));
+        assert_eq!((read["last"]["codes"].as_u64(), read["last"]["color"].as_bool()), (Some(1), Some(false)), "{read}");
+        // Wrong sizes and formats are refused.
+        assert_eq!(post("/api/flash/picture?w=10&h=10&format=rgb", vec![0; 100]).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(post("/api/flash/picture?w=10&h=10&format=cmyk", vec![0; 100]).status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

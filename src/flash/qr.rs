@@ -44,19 +44,6 @@ impl Gray {
         Gray { width, height, pixels }
     }
 
-    /// The picture mirrored across its diagonal (rows become columns). A QR reader reads a
-    /// mirrored code just as well, but ZXing's search for the three corner squares scans in
-    /// another order, which finds the few codes it missed the first time.
-    fn transposed(&self) -> Gray {
-        let mut pixels = vec![0u8; self.pixels.len()];
-        for (y, row) in self.pixels.chunks(self.width).enumerate() {
-            for (x, pixel) in row.iter().enumerate() {
-                pixels[x * self.height + y] = *pixel;
-            }
-        }
-        Gray { width: self.height, height: self.width, pixels }
-    }
-
     /// Half the size: each pixel the average of four.
     fn halved(&self) -> Gray {
         let (width, height) = (self.width / 2, self.height / 2);
@@ -72,25 +59,20 @@ impl Gray {
     }
 }
 
-/// ZXing's reader (through rxing): fast, and steady with the larger, turned codes a camera
-/// sees. The bytes come from the code's byte segments, exactly as encoded, never through text.
+/// ZXing's reader, through rxing's port of zxing-cpp's detector: fast, and steady with the
+/// larger, turned, soft codes a camera sees. It keeps the decoded bytes of the code exactly as
+/// encoded (for a flash frame, its one byte segment), never going through text.
 fn read_zxing(gray: &Gray) -> Vec<Vec<u8>> {
     use rxing::common::HybridBinarizer;
-    use rxing::qrcode::QRCodeReader;
-    use rxing::{BinaryBitmap, DecodeHints, Luma8Source, RXingResultMetadataType, RXingResultMetadataValue, Reader};
+    use rxing::qrcode::cpp_port::QrReader;
+    use rxing::{BinaryBitmap, DecodeHints, Luma8Source, Reader};
     let Ok(source) = Luma8Source::new_with_slice(&gray.pixels, gray.width as u32, gray.height as u32) else {
         return Vec::new();
     };
-    let mut bitmap = BinaryBitmap::new(HybridBinarizer::new(source));
     let hints = DecodeHints { TryHarder: Some(true), ..DecodeHints::default() };
-    let Ok(result) = QRCodeReader.decode_with_hints(&mut bitmap, &hints) else {
-        return Vec::new();
-    };
-    match result.getRXingResultMetadata().get(&RXingResultMetadataType::BYTE_SEGMENTS) {
-        Some(RXingResultMetadataValue::ByteSegments(segments)) if !segments.is_empty() => vec![segments.concat()],
-        // A code with no byte segment (only digits or letters) is not a flash frame, but it
-        // is still a code the camera saw.
-        _ => vec![result.getText().as_bytes().to_vec()],
+    match QrReader.decode_with_hints(&mut BinaryBitmap::new(HybridBinarizer::new(source)), &hints) {
+        Ok(result) if !result.getRawBytes().is_empty() => vec![result.getRawBytes().to_vec()],
+        _ => Vec::new(),
     }
 }
 
@@ -145,20 +127,15 @@ pub fn read_codes(gray: &Gray) -> Vec<Vec<u8>> {
 /// The bytes of every QR code in a camera picture from the page.
 ///
 /// The page posts many pictures a second, so this is the quick path, at the size the picture
-/// came in: ZXing's reader (about 2 ms for 720 pixels, and steady with turned, soft, noisy
-/// codes), then ZXing on the mirrored picture (which reads most of the sharp codes its first
-/// look misses), then ZXing at half the size, which smooths out sensor noise.
+/// came in: ZXing's reader (about 2.5 ms for 720 pixels, under 2 ms when there is no code),
+/// then once more at half the size, which smooths out sensor noise.
 ///
-/// `thorough` adds quirc's reader before the last step, for whatever is left. It costs about
-/// 10 ms on a picture with no code in it, so the daemon asks for it only while codes are
-/// actually in view, not while the page waits for a phone. [`read_codes`] also tries other
-/// sizes, for files.
+/// `thorough` adds quirc's reader in between, for whatever is left. It costs about 10 ms on a
+/// picture with no code in it, so the daemon asks for it only while codes are actually in
+/// view, not while the page waits for a phone. [`read_codes`] also tries other sizes, for
+/// files.
 pub fn read_camera(gray: &Gray, thorough: bool) -> Vec<Vec<u8>> {
     let found = read_zxing(gray);
-    if !found.is_empty() {
-        return found;
-    }
-    let found = read_zxing(&gray.transposed());
     if !found.is_empty() {
         return found;
     }
@@ -174,7 +151,9 @@ pub fn read_camera(gray: &Gray, thorough: bool) -> Vec<Vec<u8>> {
     read_zxing(&gray.halved())
 }
 
-/// Reads a PNG file as grayscale. Transparent pixels count as white paper.
+/// Reads a PNG file as grayscale. Transparent pixels count as white paper. (Files are read in
+/// color now, see [`super::color::read_png`]; this stays for the tests.)
+#[cfg(test)]
 pub fn read_png(path: &Path) -> Result<Gray> {
     let file = std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
@@ -343,8 +322,7 @@ mod tests {
 
     #[test]
     fn clean_codes_always_read_on_the_camera_path() {
-        // ZXing's finder misses a few percent of perfectly sharp codes of random bytes; the
-        // camera path must still read every one.
+        // Perfectly sharp codes of random bytes, which trip up some finders: every one reads.
         for scale in [2, 3, 4, 6] {
             for seed in 0..60u64 {
                 let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -367,7 +345,7 @@ mod tests {
         // about 520 pixels wide in a 720 pixel picture: what the page posts.
         use crate::flash::dev::{BenchOptions, webcam_picture};
         for chunk in [700, 900] {
-            let options = BenchOptions { chunk, code_px: 520, picture: 720, frames: 1, tilt: 4.0, blur: 1, noise: 6, sample: None };
+            let options = BenchOptions { chunk, code_px: 520, picture: 720, frames: 1, tilt: 4.0, blur: 1, noise: 6, sample: None, color: false, crosstalk: 0.0 };
             for seed in 0..3u64 {
                 let bytes: Vec<u8> = (0..chunk + 17).map(|i| (i as u64 * 131 + seed * 7) as u8).collect();
                 let picture = webcam_picture(&draw(&bytes, 1, 4).unwrap(), &options, seed + 1);

@@ -359,6 +359,9 @@ enum DevAction {
         phone_id: Option<String>,
         #[arg(long)]
         name: Option<String>,
+        /// Color Flash: draw three frames to a picture, in red, green and blue
+        #[arg(long)]
+        color: bool,
     },
     /// Read a folder of PNG pictures of flash frames, rebuild the flash and report counts
     FlashDecode {
@@ -370,6 +373,13 @@ enum DevAction {
         /// Store the items in the library
         #[arg(long)]
         import: bool,
+    },
+    /// Print the codes in each picture of a folder, as hexadecimal JSON lines
+    FlashRead {
+        dir: PathBuf,
+        /// Read a color picture's channels as they are, without undoing the crosstalk
+        #[arg(long)]
+        no_unmix: bool,
     },
     /// Time the QR reader on webcam-like pictures of flash frames of a given size
     FlashBench {
@@ -397,6 +407,12 @@ enum DevAction {
         /// Write the first picture as a PNG here
         #[arg(long)]
         sample: Option<PathBuf>,
+        /// Color Flash: three frames to a picture
+        #[arg(long)]
+        color: bool,
+        /// With --color, how much of each channel the camera sees in its neighbours
+        #[arg(long, default_value_t = 0.15)]
+        crosstalk: f64,
     },
     /// Print synthetic items as JSON Lines
     Synthetic {
@@ -497,17 +513,22 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 let report = runtime()?.block_on(fakephone::run(options))?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
             }
-            DevAction::FlashEncode { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name } => {
+            DevAction::FlashEncode { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name, color } => {
                 let session = match session {
                     Some(text) => Some(u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| anyhow::anyhow!("--session is up to 8 hex characters"))?),
                     None => None,
                 };
-                let options = flash::dev::EncodeOptions { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name };
+                let options = flash::dev::EncodeOptions { out, secret, file, count, start_index, chunk, frames, first_frame, scale, quiet, session, phone_id, name, color };
                 println!("{}", serde_json::to_string_pretty(&flash::dev::encode(&options)?)?);
             }
-            DevAction::FlashBench { chunk, code_px, picture, frames, tilt, blur, noise, sample } => {
-                let options = flash::dev::BenchOptions { chunk, code_px, picture, frames, tilt, blur, noise, sample };
+            DevAction::FlashBench { chunk, code_px, picture, frames, tilt, blur, noise, sample, color, crosstalk } => {
+                let options = flash::dev::BenchOptions { chunk, code_px, picture, frames, tilt, blur, noise, sample, color, crosstalk };
                 println!("{}", serde_json::to_string_pretty(&flash::dev::bench(&options)?)?);
+            }
+            DevAction::FlashRead { dir, no_unmix } => {
+                for line in flash::dev::read_folder(&dir, !no_unmix)? {
+                    println!("{line}");
+                }
             }
             DevAction::FlashDecode { dir, secret, import } => {
                 let report = flash::dev::decode(&flash::dev::DecodeOptions { dir, secret, import })?;

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::fountain::{self, Decoder, Encoder, Shape};
 use super::receive::{self, Outcome};
-use super::{qr, seal};
+use super::{color, qr, seal};
 use crate::db::{Db, Delivery, PhoneInfo};
 use crate::item::Carrier;
 use crate::paths;
@@ -35,6 +35,8 @@ pub struct EncodeOptions {
     pub session: Option<u32>,
     pub phone_id: Option<String>,
     pub name: Option<String>,
+    /// Color Flash: three frames to a picture, one per channel.
+    pub color: bool,
 }
 
 fn key_for_secret(secret: &str) -> Result<[u8; 32]> {
@@ -59,14 +61,25 @@ pub fn encode(options: &EncodeOptions) -> Result<Value> {
     let k = encoder.k();
     let frames = options.frames.unwrap_or(k + 20 + k / 20);
     std::fs::create_dir_all(&options.out).with_context(|| format!("cannot create {}", options.out.display()))?;
-    for n in 0..frames {
-        let index = options.first_frame + n as u32;
-        let picture = qr::draw(&encoder.frame(index), options.scale, options.quiet)?;
-        qr::write_png(&options.out.join(format!("frame-{index:06}.png")), &picture)?;
+    let per_picture = if options.color { 3 } else { 1 };
+    let pictures = frames.div_ceil(per_picture);
+    for p in 0..pictures {
+        let first = options.first_frame + (p * per_picture) as u32;
+        let path = options.out.join(format!("frame-{first:06}.png"));
+        if options.color {
+            // Frames first, first + 1 and first + 2 in red, green and blue.
+            let three: Vec<Vec<u8>> = (0..3).map(|c| encoder.frame(first + c)).collect();
+            let refs: Vec<&[u8]> = three.iter().map(|f| f.as_slice()).collect();
+            color::write_png(&path, &color::draw(&refs, options.scale, options.quiet)?)?;
+        } else {
+            qr::write_png(&path, &qr::draw(&encoder.frame(first), options.scale, options.quiet)?)?;
+        }
     }
     Ok(json!({
         "dir": options.out,
-        "frames": frames,
+        "frames": pictures * per_picture,
+        "pictures": pictures,
+        "color": options.color,
         "first_frame": options.first_frame,
         "k": k,
         "chunk": options.chunk,
@@ -100,17 +113,43 @@ fn png_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// The codes in one picture file: a color picture's channels, or a black and white one's
+/// codes at whatever scale they were saved.
+fn read_file(path: &Path, unmix: bool) -> Result<color::ColorRead> {
+    let rgb = color::read_png(path)?;
+    let read = color::read_picture_with(&rgb, true, unmix);
+    if read.color || !read.codes.is_empty() {
+        return Ok(read);
+    }
+    Ok(color::ColorRead { codes: qr::read_codes(&rgb.luminance()), color: false })
+}
+
 /// Reads the codes of many pictures, on every processor.
-fn read_all(files: &[PathBuf]) -> Vec<Result<Vec<Vec<u8>>>> {
+fn read_all(files: &[PathBuf], unmix: bool) -> Vec<Result<color::ColorRead>> {
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(files.len().max(1));
     let per = files.len().div_ceil(threads).max(1);
     std::thread::scope(|scope| {
-        let handles: Vec<_> = files
-            .chunks(per)
-            .map(|part| scope.spawn(move || part.iter().map(|path| qr::read_png(path).map(|gray| qr::read_codes(&gray))).collect::<Vec<_>>()))
-            .collect();
+        let handles: Vec<_> = files.chunks(per).map(|part| scope.spawn(move || part.iter().map(|path| read_file(path, unmix)).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|handle| handle.join().unwrap_or_default()).collect()
     })
+}
+
+/// `zone dev flash-read`: the codes in each picture of a folder, as hexadecimal, one JSON
+/// object per line. Flash frames are encrypted, so this never shows an item's words.
+pub fn read_folder(dir: &Path, unmix: bool) -> Result<Vec<Value>> {
+    let files = png_files(dir)?;
+    let reads = read_all(&files, unmix);
+    Ok(files
+        .iter()
+        .zip(reads)
+        .map(|(path, read)| {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            match read {
+                Ok(read) => json!({ "file": name, "color": read.color, "codes": read.codes.iter().map(|c| paths::hex(c)).collect::<Vec<_>>() }),
+                Err(error) => json!({ "file": name, "error": format!("{error:#}") }),
+            }
+        })
+        .collect())
 }
 
 pub fn decode(options: &DecodeOptions) -> Result<Value> {
@@ -121,16 +160,18 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
     let mut unreadable = 0usize;
     let mut without_code = 0usize;
     let mut not_flash = 0usize;
+    let mut color_pictures = 0usize;
     let mut sessions: HashMap<Shape, Decoder> = HashMap::new();
-    for codes in read_all(&files) {
-        let Ok(codes) = codes else {
+    for read in read_all(&files, true) {
+        let Ok(read) = read else {
             unreadable += 1;
             continue;
         };
-        if codes.is_empty() {
+        if read.codes.is_empty() {
             without_code += 1;
         }
-        for raw in codes {
+        color_pictures += usize::from(read.color);
+        for raw in read.codes {
             match fountain::parse(&raw) {
                 Ok(frame) => {
                     sessions.entry(frame.shape).or_insert_with(|| Decoder::new(frame.shape)).add(frame.index, frame.body);
@@ -145,6 +186,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
         "pictures_unreadable": unreadable,
         "pictures_without_a_code": without_code,
         "codes_that_are_not_flash_frames": not_flash,
+        "color_pictures": color_pictures,
         "sessions": sessions.len(),
     });
     // The flash with the most frames is the one meant. Others are strays.
@@ -232,6 +274,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
 
 // -------------------------------------------------------------------- flash-bench
 
+#[derive(Clone)]
 pub struct BenchOptions {
     /// Bytes per frame body: what the phone chooses.
     pub chunk: usize,
@@ -248,6 +291,10 @@ pub struct BenchOptions {
     pub noise: u8,
     /// Writes the first picture here, to look at.
     pub sample: Option<PathBuf>,
+    /// Color Flash: three frames to a picture.
+    pub color: bool,
+    /// How much of each channel's light the camera sees in its neighbours (color only).
+    pub crosstalk: f64,
 }
 
 /// A frame as a camera sees it: the code on a phone's lit screen, turned a little, in a dim
@@ -306,6 +353,72 @@ pub fn webcam_picture(code: &qr::Gray, options: &BenchOptions, seed: u64) -> qr:
     picture
 }
 
+/// A color picture as a camera sees it: the same phone and room as [`webcam_picture`], each
+/// channel leaking into the others by `crosstalk` (red into green fully, into blue by half,
+/// and so on), a slight gamma, noise and blur, and color stored at half resolution (4:2:0),
+/// as webcams and their video formats do.
+pub fn webcam_color_picture(frames: &[Vec<u8>], options: &BenchOptions, seed: u64) -> Result<color::Rgb> {
+    let clean = BenchOptions { blur: 0, noise: 0, sample: None, ..*options };
+    let layers: Vec<qr::Gray> = frames.iter().map(|f| qr::draw(f, 1, 4).map(|code| webcam_picture(&code, &clean, seed))).collect::<Result<_>>()?;
+    let side = options.picture;
+    let x = options.crosstalk as f32;
+    let mix = [[1.0, x, x * 0.5], [x, 1.0, x], [x * 0.5, x, 1.0]];
+    let mut channels: Vec<Vec<u8>> = (0..3)
+        .map(|c| {
+            let row: [f32; 3] = mix[c];
+            let sum: f32 = row.iter().sum();
+            (0..side * side)
+                .map(|i| {
+                    let v: f32 = (0..3).map(|j| row[j] * layers[j].pixels[i] as f32 / 255.0).sum::<f32>() / sum;
+                    (v.powf(1.1) * 255.0) as u8
+                })
+                .collect()
+        })
+        .collect();
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    for channel in channels.iter_mut() {
+        if options.noise > 0 {
+            let span = 2 * options.noise as u64 + 1;
+            for pixel in channel.iter_mut() {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *pixel = (*pixel as i32 + (state % span) as i32 - options.noise as i32).clamp(0, 255) as u8;
+            }
+        }
+        if options.blur > 0 {
+            *channel = box_blur(&qr::Gray { width: side, height: side, pixels: std::mem::take(channel) }, options.blur).pixels;
+        }
+    }
+    // 4:2:0: brightness at full resolution, the two color differences averaged over 2 by 2.
+    let mut pixels = vec![0u8; side * side * 3];
+    for by in (0..side).step_by(2) {
+        for bx in (0..side).step_by(2) {
+            let block: Vec<usize> = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|(dx, dy)| (by + dy).min(side - 1) * side + (bx + dx).min(side - 1)).collect();
+            let ycc = |i: usize| {
+                let (r, g, b) = (channels[0][i] as f32, channels[1][i] as f32, channels[2][i] as f32);
+                let y = 0.299 * r + 0.587 * g + 0.114 * b;
+                (y, b - y, r - y)
+            };
+            let (mut cb, mut cr) = (0.0, 0.0);
+            for &i in &block {
+                let (_, b, r) = ycc(i);
+                cb += b / 4.0;
+                cr += r / 4.0;
+            }
+            for &i in &block {
+                let (y, _, _) = ycc(i);
+                let (r, b) = (y + cr, y + cb);
+                let g = (y - 0.299 * r - 0.114 * b) / 0.587;
+                pixels[i * 3] = r.clamp(0.0, 255.0) as u8;
+                pixels[i * 3 + 1] = g.clamp(0.0, 255.0) as u8;
+                pixels[i * 3 + 2] = b.clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    color::Rgb::new(side, side, pixels)
+}
+
 fn box_blur(picture: &qr::Gray, radius: usize) -> qr::Gray {
     let (w, h) = (picture.width, picture.height);
     let pass = |source: &[u8], horizontal: bool| -> Vec<u8> {
@@ -338,7 +451,17 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
     let frames = options.frames.max(4);
     // A payload of about two thirds as many chunks as frames, so the flash completes.
     let k = (frames * 2 / 3).max(2);
-    let payload: Vec<u8> = (0..k * options.chunk).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+    // Random-looking bytes, as a sealed payload is (a regular pattern can make neighbouring
+    // chunks look alike, which would flatter a color picture).
+    let mut state = 0x5EED_5EED_5EED_5EEDu64;
+    let payload: Vec<u8> = (0..k * options.chunk)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        })
+        .collect();
     let encoder = Encoder::new(0x5EED_0001, &payload, options.chunk).map_err(|e| anyhow!(e))?;
     let first = encoder.frame(0);
     let modules = qr::modules(&first)?.len();
@@ -347,27 +470,46 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
     let mut times = Vec::with_capacity(frames);
     let mut read = 0usize;
     let mut complete_after = None;
-    for index in 0..frames as u32 {
-        let bytes = encoder.frame(index);
-        let code = qr::draw(&bytes, 1, 4)?;
-        let picture = webcam_picture(&code, options, index as u64 + 1);
-        if index == 0
-            && let Some(path) = &options.sample
-        {
-            qr::write_png(path, &picture)?;
-        }
-        let started = std::time::Instant::now();
-        let codes = qr::read_camera(&picture, true);
+    let per_picture = if options.color { 3 } else { 1 };
+    let mut pictures = 0usize;
+    let mut index = 0u32;
+    while (index as usize) < frames {
+        let shown: Vec<Vec<u8>> = (0..per_picture as u32).map(|c| encoder.frame(index + c)).collect();
+        let started;
+        let codes = if options.color {
+            let picture = webcam_color_picture(&shown, options, index as u64 + 1)?;
+            if index == 0
+                && let Some(path) = &options.sample
+            {
+                color::write_png(path, &picture)?;
+            }
+            started = std::time::Instant::now();
+            color::read_picture(&picture, true).codes
+        } else {
+            let picture = webcam_picture(&qr::draw(&shown[0], 1, 4)?, options, index as u64 + 1);
+            if index == 0
+                && let Some(path) = &options.sample
+            {
+                qr::write_png(path, &picture)?;
+            }
+            started = std::time::Instant::now();
+            qr::read_camera(&picture, true)
+        };
         times.push(started.elapsed().as_secs_f64() * 1000.0);
-        if codes.contains(&bytes) {
-            read += 1;
-            let frame = fountain::parse(&bytes).map_err(|e| anyhow!("{e}"))?;
-            decoder.add(frame.index, frame.body);
-            if decoder.is_complete() && complete_after.is_none() {
-                complete_after = Some(index as usize + 1);
+        pictures += 1;
+        for bytes in &shown {
+            if codes.contains(bytes) {
+                read += 1;
+                let frame = fountain::parse(bytes).map_err(|e| anyhow!("{e}"))?;
+                decoder.add(frame.index, frame.body);
+                if decoder.is_complete() && complete_after.is_none() {
+                    complete_after = Some(pictures);
+                }
             }
         }
+        index += per_picture as u32;
     }
+    let frames = pictures * per_picture;
     // A picture with no code at all: what every picture costs while the phone is not up yet
     // (the quick look), and right after codes were in view (the thorough one).
     let empty = qr::Gray { width: options.picture, height: options.picture, pixels: vec![60; options.picture * options.picture] };
@@ -387,7 +529,8 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
     let median = percentile(&sorted, 0.5);
     let success = read as f64 / frames as f64;
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    let rate = |fps: f64| (fps * options.chunk as f64 * success).round();
+    // Codes a second: pictures a second, times the frames each picture carries.
+    let rate = |fps: f64| (fps * per_picture as f64 * options.chunk as f64 * success).round();
     Ok(json!({
         "chunk": options.chunk,
         "frame_bytes": first.len(),
@@ -399,10 +542,13 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
         "tilt_degrees": options.tilt,
         "blur_px": options.blur,
         "noise": options.noise,
+        "color": options.color,
+        "crosstalk": if options.color { Some(options.crosstalk) } else { None },
+        "pictures": pictures,
         "frames": frames,
         "read": read,
         "read_rate": (success * 1000.0).round() / 1000.0,
-        "complete_after_frames": complete_after,
+        "complete_after_pictures": complete_after,
         "k": k,
         "decode_ms": {
             "min": (sorted[0] * 10.0).round() / 10.0,
@@ -413,7 +559,7 @@ pub fn bench(options: &BenchOptions) -> Result<Value> {
         "decode_ms_without_a_code": { "waiting": time_empty(false), "codes_in_view": time_empty(true) },
         "pictures_per_second_one_core": (1000.0 / median).round(),
         "cores": cores,
-        "bytes_per_second_if_every_shown_frame_is_read": { "12_fps": rate(12.0), "20_fps": rate(20.0), "30_fps": rate(30.0) },
+        "bytes_per_second_at_pictures_a_second": { "12": rate(12.0), "20": rate(20.0), "30": rate(30.0) },
     }))
 }
 
@@ -438,7 +584,41 @@ mod tests {
             session: Some(0x0A0B_0C0D),
             phone_id: None,
             name: None,
+            color: false,
         }
+    }
+
+    #[test]
+    fn color_pictures_carry_three_frames_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("color");
+        let mut options = encode_options(&out);
+        options.color = true;
+        options.chunk = 900;
+        options.count = 400;
+        let made = encode(&options).unwrap();
+        let k = made["k"].as_u64().unwrap() as usize;
+        let pictures = made["pictures"].as_u64().unwrap() as usize;
+        assert_eq!((made["color"].as_bool(), pictures), (Some(true), (k + 20 + k / 20).div_ceil(3)));
+        assert_eq!(png_files(&out).unwrap().len(), pictures);
+        // A third as many pictures as a black and white flash, and they open just the same.
+        let report = decode(&DecodeOptions { dir: out.clone(), secret: Some(SECRET.to_string()), import: false }).unwrap();
+        assert_eq!((report["complete"].as_bool(), report["items"].as_u64()), (Some(true), Some(400)), "{report}");
+        assert_eq!(report["color_pictures"].as_u64(), Some(pictures as u64));
+        assert!(report["frames"].as_u64().unwrap() as usize >= k);
+        // flash-read lists the three codes of each picture.
+        let lines = read_folder(&out, true).unwrap();
+        assert_eq!(lines.len(), pictures);
+        assert!(lines.iter().all(|l| l["color"] == true && l["codes"].as_array().unwrap().len() == 3), "{:?}", lines[0]);
+        // Mixed with black and white pictures of the same flash, everything still adds up.
+        let mut gray = encode_options(&out);
+        gray.chunk = 900;
+        gray.count = 400;
+        gray.first_frame = 5000;
+        gray.frames = Some(4);
+        encode(&gray).unwrap();
+        let report = decode(&DecodeOptions { dir: out, secret: Some(SECRET.to_string()), import: false }).unwrap();
+        assert_eq!((report["complete"].as_bool(), report["color_pictures"].as_u64()), (Some(true), Some(pictures as u64)));
     }
 
     #[test]

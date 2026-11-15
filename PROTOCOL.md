@@ -9,7 +9,7 @@ Three carriers move the same items. All of them end in the same upsert into the 
 | Carrier | Network needed | Phone change needed | Automatic |
 | --- | --- | --- | --- |
 | Link (iroh) | any internet, or the same LAN | yes | yes |
-| Flash (animated QR, phone screen to computer camera) | none | yes | no, you hold the phone up |
+| Flash (animated QR, black and white or color, phone screen to computer camera) | none | yes | no, you hold the phone up |
 | Backup folder (a Zone backup in iCloud Drive, OneDrive, Dropbox) | whatever the folder sync uses | no | when Zone writes the backup |
 
 ## Items
@@ -117,11 +117,31 @@ For networks that block everything, and for the fun of it. The phone shows a rap
 
   | `c` | Frame | QR code | Read time, median | Codes read | Data at 12, 20, 30 codes a second |
   | --- | --- | --- | --- | --- | --- |
-  | 300 | 317 bytes | version 11, 61 modules | 1.7 ms | 100% | 3.6, 6.0, 9.0 kB/s |
-  | 700 | 717 bytes | version 18, 89 modules | 1.9 ms | 100% | 8.4, 14, 21 kB/s |
-  | 900 | 917 bytes | version 21, 101 modules | 2.0 ms | 100% | 10.8, 18, 27 kB/s |
+  | 300 | 317 bytes | version 11, 61 modules | 2.0 ms | 100% | 3.6, 6.0, 9.0 kB/s |
+  | 700 | 717 bytes | version 18, 89 modules | 2.3 ms | 100% | 8.4, 14, 21 kB/s |
+  | 900 | 917 bytes | version 21, 101 modules | 2.5 ms | 100% | 10.8, 18, 27 kB/s |
 
-  With the code only 450 pixels wide (about 4 pixels per module at `c` = 900), 97 to 100% are read. A picture with no code in it costs 3 ms while the page waits for a phone, and about 13 ms while codes are in view, when a second reader takes a look too. Sent at the full 1080 pixel square of a 1080p camera, a picture takes 3.7 ms. In a harsh case (turned 10 degrees, blur radius 2, noise plus or minus 10) 75% of the version 18 codes are read. The data rate counts compressed, sealed bytes: ordinary speech compresses to well under half its size.
+  With the code only 450 pixels wide (about 4 pixels per module at `c` = 900), all are still read, and so are all of the version 18 codes in a harsh case (turned 10 degrees, blur radius 2, noise plus or minus 10). A picture with no code in it costs under 2 ms while the page waits for a phone, and about 12 ms while codes are in view, when a second reader takes a look too. Sent at the full 1080 pixel square of a 1080p camera, a picture takes about 4 ms. A color picture (below) carries three codes and takes 11 to 19 ms. The data rate counts compressed, sealed bytes: ordinary speech compresses to well under half its size.
+
+### Color Flash
+
+A picture may carry up to three frames at once, one in each color channel. Each is an ordinary frame as above (same `ZF1` format, same session); nothing in a frame says it travelled in color.
+
+- In a channel, a light module is 255 and a dark module 0. A picture holding frames A, B and C is red from A, green from B and blue from C, so every module is one of eight colors: black, white, red, green, blue, cyan, magenta or yellow.
+- The frames of one picture have the same length, so their QR codes are the same version and their finder patterns, timing patterns, alignment patterns and quiet zone line up: black where all three are dark, white where all three are light. A picture with fewer than three frames repeats one of them in the spare channels.
+- Which frame goes in which channel, and which frames share a picture, is the sender's choice. The receiver must not depend on either: it reads each channel as a code of its own and keeps frames by `(session, i)` as always, so a frame seen twice counts once.
+- Senders may still send black and white pictures, and may mix the two in one flash. The receiver reads a picture in gray when it is not colorful.
+- A color picture carries three frames, so it moves three times the data of a black and white one at the same QR version and the same pictures a second.
+
+What the receiver has to undo: a camera sees each of the phone's colors partly in its neighbouring channels (crosstalk, commonly 10 to 30%), and webcams store color at half the resolution of brightness (4:2:0). The computer estimates the camera's 3 by 3 mixing and black level from each picture (its pixels gather around the eight colors) and turns the mixing around before reading the channels (`src/flash/color.rs`). Measured with `zone dev flash-bench --color` (version 21 codes, `c` = 900, turned 3 to 6 degrees, blur radius 1, noise plus or minus 6 to 10, 4:2:0, the picture 1.4 times the code's width; one core of an Apple M4 Pro):
+
+| Code width | Crosstalk 0.15 | Crosstalk 0.3 | Crosstalk 0.3, blur radius 2 | Read time per picture |
+| --- | --- | --- | --- | --- |
+| 450 px | 90 of 90 codes | 90 of 90 | 1 of 90 | 11 ms |
+| 550 px | 90 of 90 | 90 of 90 | 79 of 90 | 14 ms |
+| 700 px | 90 of 90 | 90 of 90 | 90 of 90 | 19 ms |
+
+So a color code wants a little more of the camera's picture than a black and white one: about 550 pixels across for version 21. None of this has been filmed with a real phone and camera yet.
 
 `scripts/flash_reference.py` is the reference encoder and decoder. Both implementations must reproduce its vector: session `0x01020304`, payload byte `i` = `(i*7+3) mod 256` for 1280 bytes, `c` = 300, so `k` = 5. The chunk sets of frames 5 to 12 are `[1] [0,3] [1] [0,3,4] [1,2,4] [1] [1,2,3] [2,4]`, and the SHA-256 of frames 0 to 39 concatenated is `16e659e1a7b1a24735a6f04aeca9514d3ab1a59f285993c2b1e6e97a00c39b12`.
 

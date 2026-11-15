@@ -20,7 +20,7 @@ The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 | Link (iroh), computer side | Built. Tested against a stand-in phone over real iroh: direct, relay only, and found by endpoint id alone. |
 | Backup folder import | Built. Tested on synthetic backups and on one real Zone backup. |
 | MCP server, command line, web page | Built and tested on macOS. |
-| Flash (QR codes from the phone's screen to the computer's camera) | Built, computer side. Tested with pictures of the codes: ones drawn by this program, ones written by the iPhone app's own code, and a video of them played to a browser as if it were the camera. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is unknown. |
+| Flash (QR codes, black and white or color, from the phone's screen to the computer's camera) | Built, computer side. Tested with pictures of the codes: ones drawn by this program, ones written by the iPhone app's own code, and a video of them played to a browser as if it were the camera. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is unknown. |
 | A real iPhone | **Not tested.** The iPhone side is being built separately. Until both meet, treat pairing with a real phone as unproven. |
 | Windows | Built and run on Windows 10: see [Windows](#windows) for exactly what was checked. |
 | Linux | The program compiles for it (cross-compiled from macOS). It has **not been run** there, so `zone install` on Linux is untested. |
@@ -141,6 +141,11 @@ computer you keep offline. When Link works, Link is easier, because it is automa
    the page says Assembled, it also says how many items were new, changed, or already here. Then
    tap Done on the phone.
 
+The phone can also flash in color: each picture is three codes at once, one in each of red,
+green and blue, so the same pictures carry three times as much. The page reads color pictures
+on its own, says "Color Flash: 3 codes a picture" while it does, and undoes the way a camera
+blurs the three colors into each other before reading them.
+
 The page guides you as it goes. It says when the camera is not allowed and how to allow it,
 suggests moving closer, turning the brightness up or tilting away a glare when it sees no code
 for a few seconds, says when a QR code in view is not a Zone flash, and says plainly what to do
@@ -161,7 +166,8 @@ a second. At 900 bytes a code and 20 codes a second it is about 18 kilobytes of 
 encrypted data a second; at 300 bytes and 12 a second, 3.6. Ordinary speech compresses to well
 under half its size, so even the slower one is over a thousand words a second. The page sends
 every picture the camera takes (up to 1080 pixels square, two at a time) and zone reads one in
-about 2 milliseconds, so the computer keeps up with the camera. Those figures come from code
+about 2.5 milliseconds, so the computer keeps up with the camera. In color, each picture carries
+three codes, so the same rate moves three times as much. Those figures come from code
 sizes and from pictures made to look like a webcam's (`zone dev flash-bench`, and the table in
 [PROTOCOL.md](PROTOCOL.md#carrier-2-flash)), not from a stopwatch with a real phone: glare, blur
 and distance will cost some codes, so expect it to take longer.
@@ -356,13 +362,19 @@ ZONE_HOME=$(mktemp -d) zone dev flash-decode /tmp/frames --secret <...> --import
 Without `--secret`, flash-decode tries the keys of the phones paired with this library, the way
 the page does. `scripts/flash_reference.py` is the reference for how the codes are made.
 
+`--color` draws color pictures instead, three frames to a picture, and flash-decode reads them
+just the same. `zone dev flash-read <folder>` prints the codes found in each picture, as
+hexadecimal (flash frames are encrypted, so this shows no words).
+
 `zone dev flash-bench` times the page's QR reader on pictures made to look like a webcam's: a
-code of the chosen size, scaled to a given width, turned, blurred and noisy. It prints the read
-time and how many codes were read:
+code of the chosen size, scaled to a given width, turned, blurred and noisy (and with `--color`,
+the three channels leaking into each other and color stored at half resolution, as webcams do).
+It prints the read time and how many codes were read:
 
 ```sh
 zone dev flash-bench --chunk 900 --code-px 450                   # 900 byte codes, 450 pixels wide
 zone dev flash-bench --chunk 700 --tilt 10 --blur 2 --noise 10   # a harder picture
+zone dev flash-bench --color --crosstalk 0.3 --code-px 550 --picture 770   # color Flash
 zone dev flash-bench --chunk 900 --sample /tmp/look.png          # and save one picture to look at
 ```
 
