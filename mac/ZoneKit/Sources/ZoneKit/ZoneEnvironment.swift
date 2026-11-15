@@ -73,7 +73,10 @@ public struct ZoneEnvironment: Equatable, Sendable {
                 // system command (a pretend `open` that notes the link instead of starting
                 // the browser).
                 searchPath: "\(root.appendingPathComponent("bin").path):/usr/bin:/bin:/usr/sbin:/sbin",
-                isSandbox: true
+                isSandbox: true,
+                // A test run never writes the real clipboard: what zone would put there for
+                // an arriving clip goes to the file `clipboard` in the sandbox folder.
+                passthrough: ["ZONE_CLIPBOARD_COMMAND": "cat > '\(root.appendingPathComponent("clipboard").path)'"]
             )
         }
         let zoneHome = value("ZONE_HOME").map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -108,6 +111,11 @@ public struct ZoneEnvironment: Equatable, Sendable {
         if let port { env["ZONE_PORT"] = String(port) }
         if let computerName { env["ZONE_NAME"] = computerName }
         return env
+    }
+
+    /// Sandbox only: the file that stands in for the clipboard.
+    public var pretendClipboard: URL? {
+        isSandbox ? dataDirectory.deletingLastPathComponent().appendingPathComponent("clipboard") : nil
     }
 
     public var logFile: URL { dataDirectory.appendingPathComponent("zone.log") }

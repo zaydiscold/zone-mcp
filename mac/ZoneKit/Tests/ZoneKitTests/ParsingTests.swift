@@ -306,7 +306,7 @@ final class ParsingTests: XCTestCase {
         XCTAssertFalse(AgentView.everything.isLimited)
         XCTAssertTrue(AgentView.notesAndMeetings.isLimited)
         XCTAssertEqual(AgentView.custom(kinds: ["dictation", "note"], excludeSources: []).words, "dictations and notes only")
-        XCTAssertEqual(AgentView.custom(kinds: AgentView.allKinds, excludeSources: ["app"]).words, "no app dictations")
+        XCTAssertEqual(AgentView.custom(kinds: [], excludeSources: ["app"]).words, "no app dictations")
         XCTAssertEqual(AgentView.custom(kinds: ["note"], excludeSources: []).detail, "Notes only.")
     }
 

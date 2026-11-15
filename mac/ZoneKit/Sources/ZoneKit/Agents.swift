@@ -60,14 +60,17 @@ public struct AgentSurvey: Decodable, Equatable, Sendable {
     public struct Scope: Decodable, Equatable, Sendable {
         public var kinds: [String]
         public var excludeSources: [String]
+        /// False when zone itself says this is the whole library. Nil when it does not say.
+        public var limited: Bool?
 
-        public init(kinds: [String] = AgentView.allKinds, excludeSources: [String] = []) {
+        public init(kinds: [String] = AgentView.allKinds, excludeSources: [String] = [], limited: Bool? = nil) {
             self.kinds = kinds
             self.excludeSources = excludeSources
+            self.limited = limited
         }
 
         enum CodingKeys: String, CodingKey {
-            case kinds
+            case kinds, limited
             case excludeSources = "exclude_sources"
         }
 
@@ -75,6 +78,7 @@ public struct AgentSurvey: Decodable, Equatable, Sendable {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             kinds = try c.decodeIfPresent([String].self, forKey: .kinds) ?? AgentView.allKinds
             excludeSources = try c.decodeIfPresent([String].self, forKey: .excludeSources) ?? []
+            limited = try c.decodeIfPresent(Bool.self, forKey: .limited)
         }
     }
 
@@ -106,26 +110,42 @@ public enum AgentView: Equatable, Sendable {
     /// Everything except what was typed by voice into other apps (messages, emails, searches).
     case noKeyboard
     /// Some other limit, set with `zone mcp install --kinds ... --exclude-sources ...`.
+    /// No kinds means every kind.
     case custom(kinds: [String], excludeSources: [String])
 
+    /// The kinds of thing a person says. A zone that has clips (text sent from the phone
+    /// on purpose) has a fourth kind, "clip".
     public static let allKinds = ["dictation", "note", "meeting"]
     /// The views the app offers, in the order they are listed.
     public static let choices: [AgentView] = [.everything, .notesAndMeetings, .noKeyboard]
 
-    public init(_ scope: AgentSurvey.Scope) {
-        let kinds = Self.allKinds.filter(scope.kinds.contains)
+    /// Reads a view as zone reports it. `knowsClips` says whether this zone has clips: for
+    /// one that does, "dictation, note, meeting" is a limit (clips stay out), and it is
+    /// kept as that limit, never read as everything.
+    public init(_ scope: AgentSurvey.Scope, knowsClips: Bool = false) {
+        let given = scope.kinds.map { $0.lowercased() }
         let hidden = scope.excludeSources.sorted()
-        switch (kinds, hidden) {
-        case (Self.allKinds, []): self = .everything
-        case (["note", "meeting"], []): self = .notesAndMeetings
-        case (Self.allKinds, ["keyboard"]): self = .noKeyboard
-        default: self = .custom(kinds: kinds, excludeSources: hidden)
+        var universe = Self.allKinds
+        // Three ways to know this zone has clips: the app asked it, an entry names them, or
+        // zone calls the three older kinds alone a limit.
+        let threeIsALimit = scope.limited == true && hidden.isEmpty && Set(given) == Set(Self.allKinds)
+        if knowsClips || given.contains("clip") || threeIsALimit {
+            universe.append("clip")
+        }
+        // In zone's order, and a kind this app has never heard of is kept, not dropped.
+        let kinds = universe.filter(given.contains) + given.filter { !universe.contains($0) }
+        let all = scope.limited == false || Set(kinds).isSuperset(of: universe)
+        switch (all, kinds, hidden) {
+        case (true, _, []): self = .everything
+        case (true, _, ["keyboard"]): self = .noKeyboard
+        case (false, ["note", "meeting"], []): self = .notesAndMeetings
+        default: self = .custom(kinds: all ? [] : kinds, excludeSources: hidden)
         }
     }
 
     public var kinds: [String] {
         switch self {
-        case .everything, .noKeyboard: return Self.allKinds
+        case .everything, .noKeyboard: return []
         case .notesAndMeetings: return ["note", "meeting"]
         case let .custom(kinds, _): return kinds
         }
@@ -142,10 +162,11 @@ public enum AgentView: Equatable, Sendable {
     public var isLimited: Bool { self != .everything }
 
     /// The flags that give `zone mcp install` exactly this view. Both are always given:
-    /// installing again without them would quietly go back to everything.
+    /// installing again without them would quietly go back to everything. A list of kinds
+    /// is repeated as it is, never rounded up to "all".
     public var arguments: [String] {
         [
-            "--kinds", kinds == Self.allKinds || kinds.isEmpty ? "all" : kinds.joined(separator: ","),
+            "--kinds", kinds.isEmpty ? "all" : kinds.joined(separator: ","),
             "--exclude-sources", excludeSources.isEmpty ? "none" : excludeSources.joined(separator: ","),
         ]
     }
@@ -163,8 +184,8 @@ public enum AgentView: Equatable, Sendable {
     /// One line under the name of the choice.
     public var detail: String {
         switch self {
-        case .everything: return "Dictations, voice notes and meetings."
-        case .notesAndMeetings: return "Nothing you dictated, in any app."
+        case .everything: return "Your whole library."
+        case .notesAndMeetings: return "Nothing you dictated, and no clips."
         case .noKeyboard: return "Hides what you typed by voice into other apps."
         case .custom: return words.prefix(1).uppercased() + words.dropFirst() + "."
         }
@@ -178,7 +199,7 @@ public enum AgentView: Equatable, Sendable {
         case .noKeyboard: return "all but keyboard dictations"
         case let .custom(kinds, hidden):
             var parts: [String] = []
-            if kinds != Self.allKinds, !kinds.isEmpty {
+            if !kinds.isEmpty {
                 parts.append(Self.list(kinds.map { $0 + "s" }) + " only")
             }
             if !hidden.isEmpty {
@@ -215,6 +236,8 @@ public struct Agent: Equatable, Sendable, Identifiable {
     public var installed: Bool
     public var standing: Standing
     public var places: [AgentSurvey.Place]
+    /// True when this zone has clips, which changes how a list of kinds is read.
+    public var knowsClips = false
 
     /// The places where zone is (whichever copy of it).
     var connectedPlaces: [AgentSurvey.Place] {
@@ -224,14 +247,14 @@ public struct Agent: Equatable, Sendable, Identifiable {
     /// What this agent may read. Nil when it is not connected, when this zone cannot say,
     /// or when its profiles do not agree (see `viewsDiffer`).
     public var view: AgentView? {
-        let views = connectedPlaces.compactMap { $0.scope.map(AgentView.init) }
+        let views = connectedPlaces.compactMap { place in place.scope.map { AgentView($0, knowsClips: knowsClips) } }
         guard let first = views.first, views.count == connectedPlaces.count, views.allSatisfy({ $0 == first }) else { return nil }
         return first
     }
 
     /// True when the profiles of this client were given different views.
     public var viewsDiffer: Bool {
-        let views = connectedPlaces.compactMap { $0.scope.map(AgentView.init) }
+        let views = connectedPlaces.compactMap { place in place.scope.map { AgentView($0, knowsClips: knowsClips) } }
         return views.count > 1 && !views.allSatisfy { $0 == views[0] }
     }
 
@@ -285,7 +308,7 @@ public struct Agent: Equatable, Sendable, Identifiable {
     }
 
     /// The clients on this computer (and any other that has zone), in zone's own order.
-    public static func list(from survey: AgentSurvey) -> [Agent] {
+    public static func list(from survey: AgentSurvey, knowsClips: Bool = false) -> [Agent] {
         var order: [String] = []
         var grouped: [String: [AgentSurvey.Place]] = [:]
         for place in survey.clients {
@@ -310,7 +333,7 @@ public struct Agent: Equatable, Sendable, Identifiable {
             } else {
                 standing = .notConnected
             }
-            let agent = Agent(id: name, title: title(for: places), installed: installed, standing: standing, places: places)
+            let agent = Agent(id: name, title: title(for: places), installed: installed, standing: standing, places: places, knowsClips: knowsClips)
             // A client that is not on this computer and has no zone entry is not worth a row.
             return installed || agent.isOn ? agent : nil
         }

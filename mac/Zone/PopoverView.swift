@@ -70,10 +70,15 @@ private struct MainPage: View {
                     banner
                 }
                 phones
+                if let clip = model.leadingClip {
+                    ClipCard(model: model, clip: clip)
+                        .transition(.opacity.combined(with: .offset(y: -6)))
+                }
                 figures
                 activity
                 recent
             }
+            .animation(Zone.settle, value: model.leadingClip?.id)
             .padding(.horizontal, 14)
             .padding(.top, 14)
             .padding(.bottom, 12)
@@ -246,6 +251,9 @@ private struct MainPage: View {
                 kindLine("waveform", "dictation")
                 kindLine("note.text", "note")
                 kindLine("person.2", "meeting")
+                if (model.status?.items.byKind["clip"] ?? 0) > 0 {
+                    kindLine("doc.on.clipboard", "clip")
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 14)
@@ -480,8 +488,62 @@ private struct ActivityRow: View {
         case .relayLost: return "wifi.exclamationmark"
         case .linkRefused, .flashFailed: return "exclamationmark.triangle"
         case .resyncRequested: return "arrow.triangle.2.circlepath"
+        case .clip: return "doc.on.clipboard"
         case .pairOffered, .unknown: return "circle"
         }
+    }
+}
+
+/// The clip that just arrived, at the top of the menu: where it came from, one line of it,
+/// and a button that copies it.
+private struct ClipCard: View {
+    let model: AppModel
+    let clip: Clip
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let copied = model.copiedID == clip.id
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "doc.on.clipboard")
+                .font(.system(size: 16))
+                .foregroundStyle(Zone.accentText(scheme))
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(clip.title(phone: model.phoneName(for: clip), now: model.now))
+                    .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                    .foregroundStyle(Zone.muted(scheme))
+                    .lineLimit(1)
+                Group {
+                    if model.state.hideText {
+                        Text(clip.preview).redacted(reason: .placeholder)
+                    } else {
+                        Text(clip.preview)
+                    }
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Zone.ink(scheme))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                if model.wasPutOnClipboard(clip) {
+                    Text("Already on this Mac's clipboard")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Zone.muted(scheme))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(copied ? "Copied" : "Copy") {
+                model.copy(clip)
+            }
+            .buttonStyle(ZonePillButtonStyle(filled: true))
+            .help("Copy this clip")
+        }
+        .padding(.vertical, 9)
+        .padding(.leading, 6)
+        .padding(.trailing, 10)
+        .background(Zone.accentGraphic(scheme).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Zone.accentGraphic(scheme).opacity(0.35), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Clip. \(clip.title(phone: model.phoneName(for: clip), now: model.now))")
     }
 }
 
@@ -648,6 +710,17 @@ private struct SettingsPage: View {
                         }
                     }
                 }
+                if model.hasClips {
+                    section("Clips") {
+                        Toggle(isOn: Binding(get: { model.clipboardCopyOn }, set: { model.setClipboardCopy($0) })) {
+                            label("doc.on.clipboard", "Copy to this Mac's clipboard when a clip arrives", clipboardLine)
+                        }
+                        .toggleStyle(ZoneToggleStyle())
+                        .disabled(model.clipboardCopy?.available == false || model.working.contains("clipboard"))
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 10)
+                    }
+                }
                 section("This Mac") {
                     Toggle(isOn: Binding(get: { model.loginItemOn }, set: { model.setLoginItem($0) })) {
                         label("power", "Start Zone when you log in", model.env.isSandbox ? "Test run: no real login item is added." : "So your phone can always reach this Mac.")
@@ -715,6 +788,7 @@ private struct SettingsPage: View {
             .padding(.vertical, 9)
         }
         .animation(Zone.motion, value: model.notice)
+        .task { await model.refreshClipboardSetting() }
     }
 
     private var backupLine: String {
@@ -727,6 +801,13 @@ private struct SettingsPage: View {
         case "error": return "\(path). Cannot be read: \(model.status?.backupState?.message ?? "")"
         default: return path
         }
+    }
+
+    private var clipboardLine: String {
+        if let setting = model.clipboardCopy, !setting.available {
+            return setting.fix ?? "This Mac has no tool that can write the clipboard."
+        }
+        return "A clip is text you send from Zone on your iPhone. With this on, it is ready to paste here a moment later."
     }
 
     private var ownerLine: String {

@@ -8,6 +8,7 @@
 #   dev-sandbox.sh cmd popover:pair        steer the running app (see ZoneApp.swift)
 #   dev-sandbox.sh phone [count]           a stand-in phone scans the code on screen
 #   dev-sandbox.sh send [count]            that phone sends a few more items
+#   dev-sandbox.sh clip "some text"        that phone sends a clip (text for the clipboard)
 #   dev-sandbox.sh zone status             run the sandbox's zone with any arguments
 #   dev-sandbox.sh stop
 #
@@ -110,6 +111,13 @@ send)
     zone dev fake-phone --identity "$box/phone.id" --name "Demo iPhone" --file "$box/phone-items.jsonl" \
         | python3 -c 'import json,sys; r=json.load(sys.stdin); print("sent", r["sent"], "stored", r["stored"], "path", r["path"])'
     ;;
+clip)
+    text="${1:-https://zayd.wtf/zone}"
+    # In a test run nothing writes the real clipboard: what zone or the app would have
+    # put there goes to the file `clipboard` in the sandbox folder.
+    zone dev fake-phone --identity "$box/phone.id" --name "Demo iPhone" --clip "$text" \
+        | python3 -c 'import json,sys; r=json.load(sys.stdin); print("sent a clip:", r.get("clips"), "path", r.get("path"))'
+    ;;
 zone)
     zone "$@"
     ;;
@@ -127,7 +135,7 @@ stop)
     if [ -n "$leftover" ]; then kill "$leftover" 2>/dev/null || true; fi
     ;;
 *)
-    sed -n '2,14p' "$0"
+    sed -n '2,15p' "$0"
     exit 1
     ;;
 esac

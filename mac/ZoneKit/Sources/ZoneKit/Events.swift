@@ -17,6 +17,8 @@ public struct ActivityEvent: Identifiable, Equatable, Sendable {
         case flashFailed = "flash_failed"
         case backupImport = "backup_import"
         case resyncRequested = "resync_requested"
+        /// A clip arrived: text the person sent from the phone on purpose.
+        case clip
         case unknown
     }
 
@@ -45,6 +47,13 @@ public struct ActivityEvent: Identifiable, Equatable, Sendable {
     public var offer: String?
     /// For `daemon_started`: the service's process number.
     public var pid: Int?
+    /// For `clip`: the clip's id, how many characters it has, and whether zone put it on
+    /// this computer's clipboard. Never its text.
+    public var clipID: String?
+    public var length: Int?
+    public var copied: Bool?
+    /// For `clip` that was not copied: "off", "old" or "failed".
+    public var notCopied: String?
     /// The event's name as zone wrote it, for kinds this app does not know yet.
     public var name: String
 
@@ -82,6 +91,7 @@ public struct ActivityEvent: Identifiable, Equatable, Sendable {
     public var broughtItems: Bool {
         switch kind {
         case .linkSession, .flashReceived, .backupImport: return (arrived ?? 0) > 0
+        case .clip: return true
         default: return false
         }
     }
@@ -137,6 +147,14 @@ public enum EventLineDecoder {
         )
         event.offer = object["offer"] as? String
         event.pid = int(object["pid"])
+        if kind == .clip {
+            event.clipID = object["id"] as? String
+            event.length = int(object["length"])
+            event.copied = object["copied"] as? Bool
+            event.notCopied = object["not_copied"] as? String
+            // For a clip, "paired" is not said and "path" is the carrier's business.
+            event.alsoPaired = false
+        }
         let new = int(object["new"])
         let changed = int(object["changed"])
         if new != nil || changed != nil {
@@ -266,7 +284,7 @@ public enum LogLineParser {
 public enum ActivityWords {
     /// "3 dictations", "2 notes and 1 meeting", "40 items".
     public static func count(of kinds: [String: Int], total: Int) -> String {
-        let order = ["dictation", "note", "meeting"]
+        let order = ["dictation", "note", "meeting", "clip"]
         let parts = order.compactMap { kind -> String? in
             guard let n = kinds[kind], n > 0 else { return nil }
             return "\(Formats.number(n)) \(n == 1 ? kind : kind + "s")"
@@ -304,6 +322,10 @@ public enum ActivityWords {
                 return "\(count(of: event.kinds, total: arrived)) from the backup folder"
             }
             return "Backup folder read, nothing new"
+        case .clip:
+            if event.copied == true { return "Clip from \(phone), copied" }
+            if event.notCopied == "failed" { return "Clip from \(phone), not copied" }
+            return "Clip from \(phone)"
         case .paired: return "\(phone) paired"
         case .unpaired: return "\(phone) forgotten"
         case .daemonStarted: return "Zone started"
@@ -387,8 +409,21 @@ public struct ActivityFeed: Equatable, Sendable {
         change(&events[index])
     }
 
-    /// The events a person would call news.
-    public var news: [ActivityEvent] { events.filter(\.isNews) }
+    /// The events a person would call news. A sync that brought nothing but clips is left
+    /// out: each of those clips has its own line, which says more.
+    public var news: [ActivityEvent] { events.filter { $0.isNews && !broughtOnlyClips($0) } }
+
+    /// True when every item a sync brought is a clip that has its own event.
+    func broughtOnlyClips(_ event: ActivityEvent) -> Bool {
+        guard event.kind == .linkSession || event.kind == .flashReceived, let arrived = event.arrived, arrived > 0 else { return false }
+        let clips = events.filter { clip in
+            guard clip.kind == .clip, abs(clip.date.timeIntervalSince(event.date)) < 5 else { return false }
+            if let a = clip.deviceID, let b = event.deviceID { return a == b }
+            if let a = clip.device, let b = event.device { return a == b }
+            return true
+        }
+        return clips.count == arrived
+    }
 
     /// The highest event number seen, to ask zone for only what came after.
     public var lastSeq: Int? { events.compactMap(\.seq).max() }

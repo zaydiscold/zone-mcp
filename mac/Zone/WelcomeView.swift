@@ -13,6 +13,7 @@ struct WelcomeView: View {
     @State private var forward = true
     @State private var startAtLogin = true
     @State private var addCommand = false
+    @State private var copyClips = false
 
     static let size = CGSize(width: 820, height: 590)
     static let appStore = "https://apps.apple.com/app/id6830955448"
@@ -32,7 +33,7 @@ struct WelcomeView: View {
                 case 1: PhoneStep(model: model).transition(slide)
                 case 2: PairStep(model: model).transition(slide)
                 case 3: AgentsStep(model: model).transition(slide)
-                default: DoneStep(model: model, startAtLogin: $startAtLogin, addCommand: $addCommand).transition(slide)
+                default: DoneStep(model: model, startAtLogin: $startAtLogin, addCommand: $addCommand, copyClips: $copyClips).transition(slide)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -47,6 +48,7 @@ struct WelcomeView: View {
         .onAppear {
             startAtLogin = model.loginItemOn || !model.state.welcomeDone
             addCommand = model.commandLinked
+            copyClips = model.clipboardCopyOn
         }
     }
 
@@ -126,6 +128,9 @@ struct WelcomeView: View {
         }
         if addCommand, !model.commandLinked {
             model.installCommand()
+        }
+        if copyClips != model.clipboardCopyOn {
+            model.setClipboardCopy(copyClips)
         }
         model.finishWelcome()
         onDone(true)
@@ -320,10 +325,11 @@ private struct DoneStep: View {
     let model: AppModel
     @Binding var startAtLogin: Bool
     @Binding var addCommand: Bool
+    @Binding var copyClips: Bool
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(spacing: 26) {
+        VStack(spacing: model.hasClips ? 20 : 26) {
             MenuBarPicture()
             StepHeading(
                 eyebrow: "All set",
@@ -347,6 +353,16 @@ private struct DoneStep: View {
                 .disabled(commandLocked)
                 .padding(.vertical, 10)
                 .padding(.horizontal, 14)
+                if model.hasClips {
+                    Hairline().padding(.leading, 44)
+                    Toggle(isOn: $copyClips) {
+                        option("doc.on.clipboard", "Copy to this Mac's clipboard when a clip arrives", "Text you send from Zone on your iPhone, ready to paste here.")
+                    }
+                    .toggleStyle(ZoneToggleStyle())
+                    .disabled(model.clipboardCopy?.available == false)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 14)
+                }
             }
             .zoneCard(padding: 0)
             .frame(width: 470)

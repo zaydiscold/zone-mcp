@@ -199,6 +199,33 @@ public struct ZoneClient: Sendable {
         return output.text.contains("--flash")
     }
 
+    /// True when this zone has clips (`zone clip`, `zone clipboard`).
+    public func hasClips() async -> Bool {
+        guard let output = try? await runner.run(["clipboard", "--help"], timeout: 10) else { return false }
+        return output.status == 0
+    }
+
+    /// The newest clip, with its text. Nil when there is none.
+    public func latestClip() async throws -> Clip? {
+        try await json(ClipAnswer.self, ["clip", "--json"]).clip
+    }
+
+    /// The recent clips, newest first, as short cards without their text.
+    public func clips(limit: Int = 20) async throws -> ClipList {
+        try await json(ClipList.self, ["clip", "list", "--json", "--limit", String(limit)])
+    }
+
+    /// Whether a clip goes on this computer's clipboard as it arrives.
+    public func clipboardSetting() async throws -> ClipboardSetting {
+        try await json(ClipboardSetting.self, ["clipboard", "status", "--json"])
+    }
+
+    /// Turns that on or off, and returns how it stands afterwards.
+    @discardableResult
+    public func setClipboard(_ on: Bool) async throws -> ClipboardSetting {
+        try await json(ClipboardSetting.self, ["clipboard", on ? "on" : "off", "--json"])
+    }
+
     /// The link to the history page, with the key that unlocks it.
     public func historyLink() async throws -> URL {
         let text = try await run(["open", "--print"]).text.trimmingCharacters(in: .whitespacesAndNewlines)

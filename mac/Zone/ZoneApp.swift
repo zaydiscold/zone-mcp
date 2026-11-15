@@ -208,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.minSize = NSSize(width: 300, height: 280)
+        panel.minSize = NSSize(width: 344, height: 280)
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: FloatingView(model: model))
         panel.setContentSize(NSSize(width: 360, height: 520))
@@ -309,6 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 Task { await model.setAgentView(agent, view) }
             }
+        case "clipboard":
+            // clipboard:on puts arriving clips on the clipboard, clipboard:off stops.
+            model.setClipboardCopy(argument != "off")
         case "appearance":
             NSApp.appearance = NSAppearance(named: argument == "light" ? .aqua : .darkAqua)
         case "windows":

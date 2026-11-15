@@ -63,6 +63,13 @@ final class AppModel {
     private(set) var zoneVersion: String?
     /// True when this app's zone has the `events` command.
     private(set) var usesEvents = false
+    /// True when this app's zone has clips (text sent from the phone on purpose).
+    private(set) var hasClips = false
+    /// The newest clip, whenever it arrived.
+    private(set) var latestClip: Clip?
+    /// Whether a clip goes on this Mac's clipboard as it arrives. Nil until zone has said
+    /// (and for a zone without clips).
+    private(set) var clipboardCopy: ClipboardSetting?
     /// The program the old login item starts, when there is one.
     private(set) var legacyProgram: String?
     private(set) var working: Set<String> = []
@@ -175,6 +182,8 @@ final class AppModel {
 
         zoneVersion = try? await client.version()
         usesEvents = await client.hasEvents()
+        hasClips = await client.hasClips()
+        if hasClips { clipboardCopy = try? await client.clipboardSetting() }
         canOpenFlash = await client.hasFlashOpen()
         refreshLoginItem()
         legacyProgram = env.isSandbox ? nil : ProcessLookup.program(inLaunchAgent: env.legacyLaunchAgent)
@@ -280,6 +289,7 @@ final class AppModel {
                     recent = list.items
                     nameKinds()
                 }
+                await readLatestClip()
             }
             if let today = try? await client.today() {
                 todayCount = today.items
@@ -435,6 +445,59 @@ final class AppModel {
         }
     }
 
+    // MARK: Clips
+
+    /// The newest clip: from `zone clip`, or out of the latest items when that says nothing.
+    private func readLatestClip() async {
+        guard hasClips else { return }
+        if let answer = try? await client.latestClip() {
+            latestClip = answer
+        } else if let item = recent.first(where: { $0.kind == "clip" }) {
+            latestClip = Clip(item)
+        }
+    }
+
+    /// The clip that leads the menu: the newest one, while it is fresh.
+    var leadingClip: Clip? {
+        guard let latestClip, latestClip.isRecent(now: now) else { return nil }
+        return latestClip
+    }
+
+    /// The name of the phone a clip came from, when zone knows it.
+    func phoneName(for clip: Clip) -> String? {
+        let phones = status?.phones ?? []
+        if let id = clip.deviceID, let phone = phones.first(where: { $0.endpointID == id }) { return phone.name }
+        if let event = feed.events.first(where: { $0.kind == .clip && $0.clipID == clip.id }), let name = event.device { return name }
+        return phones.count == 1 ? phones[0].name : nil
+    }
+
+    func copy(_ clip: Clip) {
+        guard let text = clip.text else { return }
+        putOnClipboard(text)
+        markCopied(clip.id)
+    }
+
+    /// True when zone itself put this clip on the clipboard as it arrived.
+    func wasPutOnClipboard(_ clip: Clip) -> Bool {
+        feed.events.contains { $0.kind == .clip && $0.clipID == clip.id && $0.copied == true }
+    }
+
+    /// Asks zone how the setting stands (it can be changed from the command line too).
+    func refreshClipboardSetting() async {
+        guard hasClips, let setting = try? await client.clipboardSetting() else { return }
+        clipboardCopy = setting
+    }
+
+    /// True when clips go on this Mac's clipboard as they arrive.
+    var clipboardCopyOn: Bool { clipboardCopy?.enabled ?? false }
+
+    func setClipboardCopy(_ on: Bool) {
+        guard hasClips else { return }
+        act("clipboard") { [self] in
+            clipboardCopy = try await client.setClipboard(on)
+        }
+    }
+
     // MARK: Pairing
 
     func startPairing() async {
@@ -486,7 +549,7 @@ final class AppModel {
 
     func loadAgents() async {
         if let survey = try? await client.agents() {
-            agents = Agent.list(from: survey)
+            agents = Agent.list(from: survey, knowsClips: hasClips)
         }
         agentsLoaded = true
     }
@@ -541,10 +604,23 @@ final class AppModel {
     // MARK: Actions
 
     func copy(_ item: ZoneItem) {
+        putOnClipboard(item.copyText)
+        markCopied(item.id)
+    }
+
+    /// Copies text. A test run writes the sandbox's `clipboard` file instead, so it never
+    /// replaces what the person using the Mac has copied.
+    private func putOnClipboard(_ text: String) {
+        if let file = env.pretendClipboard {
+            try? text.write(to: file, atomically: true, encoding: .utf8)
+            return
+        }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(item.copyText, forType: .string)
-        copiedID = item.id
-        let id = item.id
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func markCopied(_ id: String) {
+        copiedID = id
         Task {
             try? await Task.sleep(for: .seconds(1.4))
             if copiedID == id { copiedID = nil }

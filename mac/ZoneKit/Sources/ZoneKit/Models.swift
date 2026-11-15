@@ -248,7 +248,7 @@ public struct PairCode: Decodable, Equatable, Sendable {
 /// One thing the person said, from `zone list --json` or `zone search --json`.
 public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
     public var id: String
-    /// "dictation", "note" or "meeting".
+    /// "dictation", "note", "meeting" or "clip" (text sent from the phone on purpose).
     public var kind: String
     public var source: String?
     public var createdAt: Double

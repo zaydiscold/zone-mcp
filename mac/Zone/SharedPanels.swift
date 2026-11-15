@@ -430,7 +430,8 @@ struct AgentBadge: View {
     }
 }
 
-/// One thing the person said, as a row: what kind, the words, when. Click to copy.
+/// One thing the person said (or sent as a clip), as a row: what kind, the words, when.
+/// Click to copy.
 struct ItemRow: View {
     let model: AppModel
     let item: ZoneItem
@@ -465,6 +466,7 @@ struct ItemRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         HStack(spacing: 5) {
                             Text(Self.label(for: item))
+                                .foregroundStyle(item.kind == "clip" ? Zone.accentText(scheme) : Zone.muted(scheme))
                             Text("·")
                             Text(Formats.when(item.created, now: model.now))
                             if copied {
@@ -495,6 +497,7 @@ struct ItemRow: View {
         switch kind {
         case "note": return "note.text"
         case "meeting": return "person.2"
+        case "clip": return "doc.on.clipboard"
         default: return "waveform"
         }
     }
@@ -503,6 +506,7 @@ struct ItemRow: View {
         switch item.kind {
         case "note": return "Note"
         case "meeting": return "Meeting"
+        case "clip": return "Clip"
         default: return "Dictation"
         }
     }

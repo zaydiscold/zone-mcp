@@ -12,7 +12,12 @@ struct FloatingView: View {
     @State private var found: [ZoneItem]?
     @State private var searching = false
 
-    private static let kinds = [("all", "All"), ("dictation", "Dictations"), ("note", "Notes"), ("meeting", "Meetings")]
+    private static let spoken = [("all", "All"), ("dictation", "Dictations"), ("note", "Notes"), ("meeting", "Meetings")]
+
+    /// The filters. Clips get one when this zone has them.
+    private var kinds: [(String, String)] {
+        model.hasClips ? Self.spoken + [("clip", "Clips")] : Self.spoken
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,7 +27,7 @@ struct FloatingView: View {
             Hairline()
             footer
         }
-        .frame(minWidth: 300, idealWidth: 360, maxWidth: .infinity, minHeight: 280, idealHeight: 520, maxHeight: .infinity)
+        .frame(minWidth: 344, idealWidth: 360, maxWidth: .infinity, minHeight: 280, idealHeight: 520, maxHeight: .infinity)
         .background(Zone.paper(scheme))
         .ignoresSafeArea()
         .tint(Zone.accentText(scheme))
@@ -68,7 +73,7 @@ struct FloatingView: View {
             .background(Zone.field(scheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Zone.rule(scheme), lineWidth: 1))
             HStack(spacing: 5) {
-                ForEach(Self.kinds, id: \.0) { value, title in
+                ForEach(kinds, id: \.0) { value, title in
                     Button(title) { kind = value }
                         .buttonStyle(ZonePillButtonStyle(filled: kind == value))
                 }
