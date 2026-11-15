@@ -42,6 +42,7 @@ mod serve;
 mod service;
 mod timeparse;
 mod tools;
+mod update;
 mod watch;
 mod web;
 
@@ -263,6 +264,22 @@ enum Command {
         /// Remove the login item but do not stop or unload anything
         #[arg(long)]
         no_stop: bool,
+    },
+    /// See whether a newer zone is out, and install it
+    #[command(long_about = "See whether a newer zone is out, and install it.\n\n\
+                            Asks GitHub once which release is the latest. If it is newer than this one, downloads it, checks \
+                            it against the release's checksums and replaces this program, the same way the install script \
+                            does. zone never looks for updates by itself. Set ZONE_NO_UPDATE_CHECK=1 to turn asking off.")]
+    Update {
+        /// Only say whether a newer version is out
+        #[arg(long)]
+        check: bool,
+        /// Install the latest release again even when this is it
+        #[arg(long, conflicts_with = "check")]
+        force: bool,
+        /// Print JSON instead of text (and install nothing)
+        #[arg(long)]
+        json: bool,
     },
     /// Open the local web page with your transcriptions
     Open {
@@ -579,6 +596,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             println!("AI clients keep zone registered (it works without the daemon). `zone mcp uninstall --all` takes it out of them.");
         }
         Command::Open { print, flash } => admin::open(print, flash)?,
+        Command::Update { check, force, json } => {
+            if !update::run(check, force, json)? {
+                return Ok(ExitCode::from(1));
+            }
+        }
         Command::Dev { action } => match action {
             DevAction::FakePhone {
                 url,

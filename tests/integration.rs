@@ -52,6 +52,8 @@ impl Sandbox {
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_DATA_HOME", self.home.join(".local").join("share"))
             .env("ZONE_NAME", "Test Computer")
+            // No test asks GitHub anything. The ones about updates ask a server of their own.
+            .env("ZONE_NO_UPDATE_CHECK", "1")
             .env("PATH", self.search_path())
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CODEX_HOME")
@@ -1187,6 +1189,460 @@ fn the_feed_tells_what_happened_and_never_the_words() {
     drop(daemon);
 }
 
+// ------------------------------------------------------------------------- installing and updating
+
+/// A tiny web server for one test: what a release on GitHub looks like to the install scripts
+/// and to `zone update`. `routes` maps a path to a redirect (`-> /other`) or to a file.
+struct ReleaseServer {
+    port: u16,
+}
+
+impl ReleaseServer {
+    fn start(routes: Vec<(String, Result<PathBuf, String>)>) -> ReleaseServer {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                if reader.read_line(&mut first).is_err() {
+                    continue;
+                }
+                // The rest of the request head is of no interest.
+                let mut line = String::new();
+                while reader.read_line(&mut line).map(|n| n > 2).unwrap_or(false) {
+                    line.clear();
+                }
+                let path = first.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let head_only = first.starts_with("HEAD");
+                let answer = match routes.iter().find(|(route, _)| *route == path).map(|(_, to)| to) {
+                    Some(Err(location)) => format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes(),
+                    Some(Ok(file)) => {
+                        let body = std::fs::read(file).unwrap_or_default();
+                        let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+                        if !head_only {
+                            answer.extend(body);
+                        }
+                        answer
+                    }
+                    None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+                };
+                let _ = stream.write_all(&answer);
+            }
+        });
+        ReleaseServer { port }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://127.0.0.1:{}{path}", self.port)
+    }
+}
+
+/// The name of this computer's release file, the way the workflow and the scripts spell it.
+fn release_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos-universal"
+    } else if cfg!(windows) {
+        "windows-x86_64"
+    } else if cfg!(target_arch = "aarch64") {
+        "linux-aarch64"
+    } else {
+        "linux-x86_64"
+    }
+}
+
+/// A release made of the program under test, as version 99.0.0: the archive, its checksums,
+/// and the answers GitHub would give about it. Returns the server and the release's folder.
+#[cfg(unix)]
+fn fake_release(sandbox: &Sandbox) -> (ReleaseServer, PathBuf, String) {
+    let folder = sandbox.home.join("release");
+    let staging = folder.join("staging");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::copy(ZONE, staging.join("zone")).unwrap();
+    let asset = format!("zone-99.0.0-{}.tar.gz", release_platform());
+    let packed = Command::new("tar").arg("-czf").arg(folder.join(&asset)).arg("-C").arg(&staging).arg("zone").status().unwrap();
+    assert!(packed.success());
+    // sha256sum on Linux, shasum on macOS: the same two the script accepts.
+    let hash = ["sha256sum", "shasum"]
+        .iter()
+        .find_map(|tool| {
+            let mut command = Command::new(tool);
+            if *tool == "shasum" {
+                command.args(["-a", "256"]);
+            }
+            command.arg(folder.join(&asset)).output().ok().filter(|out| out.status.success())
+        })
+        .map(|out| String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap().to_string())
+        .expect("sha256sum or shasum");
+    std::fs::write(folder.join("SHA256SUMS"), format!("{}  zone-99.0.0-some-other-computer.tar.gz\n{hash}  {asset}\n", "0".repeat(64))).unwrap();
+    std::fs::write(folder.join("newer.json"), json!({ "tag_name": "v99.0.0", "html_url": "https://example.com/releases/v99.0.0" }).to_string()).unwrap();
+    std::fs::write(folder.join("older.json"), json!({ "tag_name": "v0.0.1", "html_url": "https://example.com/releases/v0.0.1" }).to_string()).unwrap();
+    std::fs::write(folder.join("empty"), "").unwrap();
+    let server = ReleaseServer::start(vec![
+        ("/latest".to_string(), Err("/tag/v99.0.0".to_string())),
+        ("/tag/v99.0.0".to_string(), Ok(folder.join("empty"))),
+        (format!("/download/v99.0.0/{asset}"), Ok(folder.join(&asset))),
+        ("/download/v99.0.0/SHA256SUMS".to_string(), Ok(folder.join("SHA256SUMS"))),
+        ("/api/newer".to_string(), Ok(folder.join("newer.json"))),
+        ("/api/older".to_string(), Ok(folder.join("older.json"))),
+    ]);
+    (server, folder, asset)
+}
+
+/// install.sh, against a release served from this computer: it finds the latest version,
+/// checks the download, installs into a temporary home folder, updates in place, and installs
+/// nothing when the download is not what the release says it is.
+#[cfg(unix)]
+#[test]
+fn install_script_installs_checks_and_updates() {
+    let sandbox = Sandbox::new();
+    let (server, folder, _asset) = fake_release(&sandbox);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let run = |extra: &[(&str, &str)]| -> Output {
+        Command::new("sh")
+            .arg(&script)
+            .env_clear()
+            .env("HOME", &sandbox.home)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("SHELL", "/bin/zsh")
+            .env("ZONE_INSTALL_BASE_URL", server.url(""))
+            .env("ZONE_INSTALL_NO_RESTART", "1")
+            .envs(extra.iter().copied())
+            .output()
+            .unwrap()
+    };
+    let installed = sandbox.home.join(".local").join("bin").join("zone");
+
+    let first = run(&[]);
+    let out = String::from_utf8_lossy(&first.stdout).to_string();
+    assert!(first.status.success(), "{out}\n{}", String::from_utf8_lossy(&first.stderr));
+    assert!(out.contains(&format!("Downloading zone 99.0.0 for {}", release_platform())), "{out}");
+    assert!(out.contains(&format!("Installed zone {} in {}", env!("CARGO_PKG_VERSION"), installed.display())), "{out}");
+    // The folder is not on this PATH, so the script says how to add it, for the person's shell.
+    assert!(out.contains("is not on your PATH yet") && out.contains(">> ~/.zshrc"), "{out}");
+    assert!(out.contains("Next:") && out.contains("zone install") && out.contains("zone pair") && out.contains("zone open"), "{out}");
+    assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(ZONE).unwrap());
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777, 0o755);
+    }
+    // What it installed runs, with nothing else in the folder left behind.
+    let version = Command::new(&installed).arg("--version").output().unwrap();
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("zone "));
+    let left: Vec<String> = std::fs::read_dir(installed.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(left, ["zone"]);
+
+    // Again, as an update: the old file is taken away and a new one put in its place (never
+    // written over, which is what gets a running zone killed on macOS).
+    use std::os::unix::fs::MetadataExt;
+    let before = std::fs::metadata(&installed).unwrap().ino();
+    let dir = installed.parent().unwrap().to_str().unwrap().to_string();
+    let again = run(&[("PATH", &format!("{dir}:/usr/bin:/bin:/usr/sbin:/sbin")), ("ZONE_VERSION", "v99.0.0")]);
+    let out = String::from_utf8_lossy(&again.stdout).to_string();
+    assert!(again.status.success(), "{out}");
+    assert!(out.contains("stop it and start it again") && !out.contains("is not on your PATH"), "{out}");
+    assert_ne!(std::fs::metadata(&installed).unwrap().ino(), before, "a new file, not the old one rewritten");
+
+    // A download that is not what the checksums say: refused, and the zone that is there stays.
+    let sums = std::fs::read_to_string(folder.join("SHA256SUMS")).unwrap();
+    let real = sums.lines().last().unwrap().split_whitespace().next().unwrap().to_string();
+    std::fs::write(folder.join("SHA256SUMS"), sums.replace(&real, &"1".repeat(64))).unwrap();
+    let before = std::fs::metadata(&installed).unwrap().ino();
+    let tampered = run(&[]);
+    assert!(!tampered.status.success());
+    assert!(String::from_utf8_lossy(&tampered.stderr).contains("does not match its checksum"), "{}", String::from_utf8_lossy(&tampered.stderr));
+    assert_eq!(std::fs::metadata(&installed).unwrap().ino(), before);
+    // Checksums that do not list the file, and a version that was never released.
+    std::fs::write(folder.join("SHA256SUMS"), format!("{real}  something-else.tar.gz\n")).unwrap();
+    assert!(String::from_utf8_lossy(&run(&[]).stderr).contains("do not list"));
+    let missing = run(&[("ZONE_VERSION", "1.2.3")]);
+    assert!(!missing.status.success() && String::from_utf8_lossy(&missing.stderr).contains("could not download"));
+    let offline = run(&[("ZONE_INSTALL_BASE_URL", "http://127.0.0.1:9")]);
+    assert!(!offline.status.success() && String::from_utf8_lossy(&offline.stderr).contains("Is this computer online?"));
+
+    // A script that was cut off before its last line runs nothing at all.
+    let text = std::fs::read_to_string(&script).unwrap();
+    let cut = sandbox.home.join("cut-off.sh");
+    std::fs::write(&cut, text.trim_end().strip_suffix("main \"$@\"").expect("the script ends by calling main")).unwrap();
+    let elsewhere = sandbox.home.join("elsewhere");
+    let nothing = Command::new("sh").arg(&cut).env("HOME", &elsewhere).env("ZONE_INSTALL_BASE_URL", server.url("")).output().unwrap();
+    assert!(nothing.status.success() && nothing.stdout.is_empty() && !elsewhere.exists());
+}
+
+/// `zone update` and the Version line of `zone doctor`, against a release served from this
+/// computer. A copy of zone outside any build folder stands in for an installed one.
+#[cfg(unix)]
+#[test]
+fn zone_update_asks_once_and_installs_the_newer_release() {
+    let sandbox = Sandbox::new();
+    let (server, _folder, _asset) = fake_release(&sandbox);
+    let bin = sandbox.home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let installed = bin.join("zone");
+    std::fs::copy(ZONE, &installed).unwrap();
+    // A zone program with the sandbox's surroundings, asking this test's server.
+    let zone = |which: &Path, api: &str| -> Command {
+        let mut command = Command::new(which);
+        for (key, value) in sandbox.zone().get_envs() {
+            match value {
+                Some(value) => command.env(key, value),
+                None => command.env_remove(key),
+            };
+        }
+        command.env_remove("ZONE_NO_UPDATE_CHECK").env("ZONE_UPDATE_URL", server.url(api)).env("ZONE_INSTALL_BASE_URL", server.url("")).env("ZONE_INSTALL_NO_RESTART", "1");
+        command
+    };
+    let text = |output: &Output| String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Asking only.
+    let check = zone(&installed, "/api/newer").args(["update", "--check", "--json"]).output().unwrap();
+    assert!(check.status.success());
+    let value: Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!((value["current"].as_str(), value["latest"].as_str(), value["newer"].as_bool(), value["checked"].as_bool()), (Some(env!("CARGO_PKG_VERSION")), Some("99.0.0"), Some(true), Some(true)), "{value}");
+    assert_eq!((value["update_with"].as_str(), value["page"].as_str()), (Some("zone update"), Some("https://example.com/releases/v99.0.0")));
+    let said = text(&zone(&installed, "/api/newer").args(["update", "--check"]).output().unwrap());
+    assert!(said.contains("zone 99.0.0 is out") && said.contains("To update: zone update"), "{said}");
+    use std::os::unix::fs::MetadataExt;
+    let before = std::fs::metadata(&installed).unwrap().ino();
+    assert_eq!(std::fs::metadata(&installed).unwrap().ino(), before, "--check installs nothing");
+
+    // zone doctor says it too, as a note, and how to update (once there is a setup to check).
+    sandbox.ok(&["status"]);
+    let doctor: Value = serde_json::from_slice(&zone(&installed, "/api/newer").args(["doctor", "--json"]).output().unwrap().stdout).unwrap();
+    let version = doctor["checks"].as_array().unwrap().iter().find(|c| c["check"] == "Version").unwrap().clone();
+    assert_eq!(version["result"], "warn");
+    assert!(version["detail"].as_str().unwrap().contains("zone 99.0.0 is out") && version["fix"].as_str().unwrap().contains("To update: zone update"), "{version}");
+
+    // The update itself: the built-in install script downloads, checks and swaps the program.
+    let update = zone(&installed, "/api/newer").arg("update").output().unwrap();
+    let said = text(&update);
+    assert!(update.status.success(), "{said}\n{}", String::from_utf8_lossy(&update.stderr));
+    let resolved = std::fs::canonicalize(&installed).unwrap();
+    assert!(said.contains("zone 99.0.0 is out") && said.contains("Downloading zone 99.0.0") && said.contains(&format!("in {}", resolved.display())), "{said}");
+    assert!(!said.contains("Next:") && !said.contains("PATH"), "an update does not repeat the first steps: {said}");
+    assert_ne!(std::fs::metadata(&installed).unwrap().ino(), before);
+    assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(ZONE).unwrap());
+
+    // Nothing newer: nothing happens, unless forced.
+    let older = zone(&installed, "/api/older").arg("update").output().unwrap();
+    assert!(older.status.success() && text(&older).contains("newer than the latest release (0.0.1)"), "{}", text(&older));
+    let doctor: Value = serde_json::from_slice(&zone(&installed, "/api/older").args(["doctor", "--json"]).output().unwrap().stdout).unwrap();
+    assert_eq!(doctor["checks"].as_array().unwrap().iter().find(|c| c["check"] == "Version").unwrap()["result"], "ok");
+
+    // No answer, and asking turned off: said plainly, and never a failure of doctor's.
+    let offline = zone(&installed, "/api/nothing-here").args(["update", "--check"]).output().unwrap();
+    assert_eq!(offline.status.code(), Some(1));
+    assert!(text(&offline).contains("Could not find out whether a newer zone exists"), "{}", text(&offline));
+    let mut unreachable = zone(&installed, "");
+    unreachable.env("ZONE_UPDATE_URL", "http://127.0.0.1:9/latest");
+    let doctor: Value = serde_json::from_slice(&unreachable.args(["doctor", "--json"]).output().unwrap().stdout).unwrap();
+    let version = doctor["checks"].as_array().unwrap().iter().find(|c| c["check"] == "Version").unwrap().clone();
+    assert_eq!(version["result"], "ok");
+    assert!(version["detail"].as_str().unwrap().contains("could not ask"), "{version}");
+    let off = sandbox.zone().args(["update", "--check"]).output().unwrap();
+    assert!(text(&off).contains("turned off"), "{}", text(&off));
+
+    // A build in a checkout is not replaced: it is told how it updates.
+    let checkout = zone(Path::new(ZONE), "/api/newer").arg("update").output().unwrap();
+    assert_eq!(checkout.status.code(), Some(1));
+    assert!(text(&checkout).contains("was not put here by the install script") && text(&checkout).contains("git pull"), "{}", text(&checkout));
+}
+
+/// install.ps1, in Windows PowerShell and (when it is there) PowerShell 7, against a release
+/// served from this computer: it installs into a temporary folder, updates in place while
+/// leaving the PATH alone, and refuses a download that does not match its checksum. Then
+/// `zone update` runs the same script from inside the program.
+#[cfg(windows)]
+#[test]
+fn install_ps1_installs_checks_and_updates() {
+    let sandbox = Sandbox::new();
+    let folder = sandbox.home.join("release");
+    let staging = folder.join("staging");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::copy(ZONE, staging.join("zone.exe")).unwrap();
+    let asset = "zone-99.0.0-windows-x86_64.zip";
+    let made = Command::new("powershell")
+        .args(["-NoProfile", "-Command"])
+        .arg(format!(
+            "$ErrorActionPreference='Stop'; Compress-Archive -Path '{}' -DestinationPath '{}'; (Get-FileHash -LiteralPath '{}' -Algorithm SHA256).Hash",
+            staging.join("zone.exe").display(),
+            folder.join(asset).display(),
+            folder.join(asset).display()
+        ))
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    // Uppercase, as PowerShell prints it: the script compares without minding the case.
+    let hash = String::from_utf8_lossy(&made.stdout).trim().to_string();
+    assert_eq!(hash.len(), 64);
+    std::fs::write(folder.join("SHA256SUMS"), format!("{}  zone-99.0.0-linux-x86_64.tar.gz\n{hash}  {asset}\n", "0".repeat(64))).unwrap();
+    std::fs::write(folder.join("newer.json"), json!({ "tag_name": "v99.0.0", "html_url": "https://example.com/releases/v99.0.0" }).to_string()).unwrap();
+    std::fs::write(folder.join("empty"), "").unwrap();
+    let server = ReleaseServer::start(vec![
+        ("/latest".to_string(), Err("/tag/v99.0.0".to_string())),
+        ("/tag/v99.0.0".to_string(), Ok(folder.join("empty"))),
+        (format!("/download/v99.0.0/{asset}"), Ok(folder.join(asset))),
+        ("/download/v99.0.0/SHA256SUMS".to_string(), Ok(folder.join("SHA256SUMS"))),
+        ("/api/newer".to_string(), Ok(folder.join("newer.json"))),
+    ]);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1");
+    let mut shells = vec!["powershell"];
+    if Command::new("pwsh").arg("-Version").output().is_ok() {
+        shells.push("pwsh");
+    }
+    for shell in shells {
+        let dir = sandbox.home.join(format!("bin-{shell}"));
+        let installed = dir.join("zone.exe");
+        let run = |extra: &[(&str, &str)]| -> Output {
+            Command::new(shell)
+                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+                .arg(&script)
+                .env("LOCALAPPDATA", sandbox.home.join("AppData").join("Local"))
+                .env("ZONE_INSTALL_BASE_URL", server.url(""))
+                .env("ZONE_INSTALL_DIR", &dir)
+                .env("ZONE_INSTALL_NO_PATH", "1")
+                .env("ZONE_INSTALL_NO_RESTART", "1")
+                .env_remove("ZONE_VERSION")
+                .envs(extra.iter().copied())
+                .output()
+                .unwrap()
+        };
+        let first = run(&[]);
+        let out = String::from_utf8_lossy(&first.stdout).to_string();
+        assert!(first.status.success(), "{shell}: {out}\n{}", String::from_utf8_lossy(&first.stderr));
+        assert!(out.contains("Downloading zone 99.0.0 for windows-x86_64") && out.contains(&format!("Installed zone {}", env!("CARGO_PKG_VERSION"))), "{shell}: {out}");
+        assert!(out.contains("Next:") && out.contains("zone pair") && !out.contains("PATH"), "{shell}: {out}");
+        assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(ZONE).unwrap(), "{shell}");
+
+        // Again, as an update, with the version named: nothing is left beside the program.
+        let again = run(&[("ZONE_VERSION", "v99.0.0")]);
+        let out = String::from_utf8_lossy(&again.stdout).to_string();
+        assert!(again.status.success() && out.contains("stop it and start it again"), "{shell}: {out}\n{}", String::from_utf8_lossy(&again.stderr));
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        assert_eq!(left, ["zone.exe"], "{shell}");
+
+        // A version that was never released, and a server that is not there.
+        let missing = run(&[("ZONE_VERSION", "1.2.3")]);
+        assert!(!missing.status.success() && String::from_utf8_lossy(&missing.stderr).contains("could not download"), "{shell}: {}", String::from_utf8_lossy(&missing.stderr));
+        let offline = run(&[("ZONE_INSTALL_BASE_URL", "http://127.0.0.1:9")]);
+        assert!(!offline.status.success(), "{shell}");
+    }
+
+    // `zone update` from an installed copy: the running program is moved aside and replaced.
+    let installed = sandbox.home.join("bin-powershell").join("zone.exe");
+    let mut update = Command::new(&installed);
+    for (key, value) in sandbox.zone().get_envs() {
+        match value {
+            Some(value) => update.env(key, value),
+            None => update.env_remove(key),
+        };
+    }
+    let update = update
+        .env_remove("ZONE_NO_UPDATE_CHECK")
+        .env("ZONE_UPDATE_URL", server.url("/api/newer"))
+        .env("ZONE_INSTALL_BASE_URL", server.url(""))
+        .env("ZONE_INSTALL_NO_RESTART", "1")
+        .env("ZONE_INSTALL_NO_PATH", "1")
+        .arg("update")
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&update.stdout).to_string();
+    assert!(update.status.success() && out.contains("zone 99.0.0 is out") && out.contains("Installed zone"), "{out}\n{}", String::from_utf8_lossy(&update.stderr));
+    assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(ZONE).unwrap());
+
+    // Last, the checksum: a download that does not match is refused and the program stays.
+    std::fs::write(folder.join("SHA256SUMS"), format!("{}  {asset}\n", "1".repeat(64))).unwrap();
+    let tampered = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .env("ZONE_INSTALL_BASE_URL", server.url(""))
+        .env("ZONE_INSTALL_DIR", sandbox.home.join("bin-powershell"))
+        .env("ZONE_INSTALL_NO_PATH", "1")
+        .env("ZONE_INSTALL_NO_RESTART", "1")
+        .output()
+        .unwrap();
+    assert!(!tampered.status.success());
+    assert!(String::from_utf8_lossy(&tampered.stderr).contains("does not match its checksum"), "{}", String::from_utf8_lossy(&tampered.stderr));
+    assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(ZONE).unwrap());
+}
+
+/// The shapes of the `--json` outputs that other programs read (the README lists them).
+/// Keys may be added. The ones here keep their names and their kinds of value.
+#[test]
+fn json_outputs_keep_their_shape() {
+    let sandbox = Sandbox::new();
+    let package = write_backup(&sandbox.home);
+    sandbox.ok(&["import", package.to_str().unwrap()]);
+    std::fs::create_dir_all(sandbox.home.join(".cursor")).unwrap();
+    sandbox.ok(&["mcp", "install", "cursor", "--no-keyboard"]);
+    let _daemon = Daemon::start(&sandbox);
+    let url = pair_url(&sandbox);
+    let report = phone(&sandbox, &["--url", &url, "--count", "3", "--addr", &loopback_addr(&sandbox)]);
+    assert_eq!(report["result"], "welcome", "{report}");
+    let has = |value: &Value, keys: &[&str], what: &str| {
+        for key in keys {
+            assert!(value.get(key).is_some(), "{what} has no \"{key}\": {value}");
+        }
+    };
+
+    let status = sandbox.json(&["status", "--json"]);
+    has(&status, &["now", "computer", "daemon", "daemon_running", "phones", "last_sync", "backup_folder", "backup_folder_state", "items", "data_directory", "database"], "status");
+    has(&status["daemon"], &["running", "pid", "endpoint_id", "web_page", "relay_connected", "relay_url"], "status.daemon");
+    has(&status["items"], &["total", "by_kind", "dictations_by_source", "unprocessed", "deleted_on_phone", "oldest", "newest"], "status.items");
+    has(&status["now"], &["local", "date", "weekday", "timezone", "utc_offset", "rfc3339"], "status.now");
+    has(&status["last_sync"], &["link", "flash", "backup_folder"], "status.last_sync");
+    has(&status["phones"][0], &["name", "app", "endpoint_id", "paired", "last_sync", "last_sync_age_s", "items_received", "last_path"], "status.phones");
+    assert!(status["daemon"]["running"] == true && status["items"]["total"].is_i64() && status.get("scope").is_none());
+
+    let devices = sandbox.json(&["devices", "--json"]);
+    assert_eq!(devices.as_array().unwrap().len(), 1);
+    has(&devices[0], &["name", "phone_id", "endpoint_id", "app", "paired_at", "last_seen", "last_sync", "items_received", "last_path"], "devices");
+    assert!(devices[0]["paired_at"].is_f64() && devices[0]["items_received"] == 3);
+
+    let pair = sandbox.json(&["pair", "--json"]);
+    has(&pair, &["id", "url", "endpoint_id", "name", "expires_at", "expires_local", "state", "claimed", "qr_svg"], "pair");
+    let checked: Value = serde_json::from_slice(&sandbox.run(&["pair", "--check", pair["id"].as_str().unwrap(), "--json"]).stdout).unwrap();
+    has(&checked, &["id", "state", "claimed", "expires_at", "expires_local", "claimed_at", "device"], "pair --check");
+
+    let doctor: Value = serde_json::from_slice(&sandbox.run(&["doctor", "--json"]).stdout).unwrap();
+    has(&doctor, &["healthy", "checks"], "doctor");
+    let names: Vec<&str> = doctor["checks"].as_array().unwrap().iter().map(|c| c["check"].as_str().unwrap()).collect();
+    for check in doctor["checks"].as_array().unwrap() {
+        has(check, &["check", "result", "detail", "fix"], "doctor.checks");
+        assert!(matches!(check["result"].as_str(), Some("ok" | "warn" | "fail")), "{check}");
+    }
+    for name in ["Data folder", "Library", "Identity key", "Daemon", "Web page", "Start at login", "AI clients", "Paired phones", "Backup folder", "Clock", "Version"] {
+        assert!(names.contains(&name), "doctor has no {name} check: {names:?}");
+    }
+
+    let list = sandbox.json(&["list", "--json", "--limit", "2"]);
+    has(&list, &["total", "items"], "list");
+    let item_keys = ["id", "kind", "source", "created_at", "updated_at", "created_local", "text", "title", "duration_s", "words", "engine", "status", "extra", "rev", "processed_at", "carrier", "device_id", "received_at"];
+    has(&list["items"][0], &item_keys, "list.items");
+    let search = sandbox.json(&["search", "lighthouse", "--json", "--limit", "2"]);
+    has(&search, &["total", "matched", "next_cursor", "items"], "search");
+    has(&search["items"][0], &item_keys, "search.items");
+    has(&search["items"][0], &["snippet"], "search.items");
+    let stats = sandbox.json(&["stats", "--json"]);
+    has(&stats, &["total", "groups"], "stats");
+    has(&stats["total"], &["items", "words", "recorded_s"], "stats.total");
+
+    let mcp = sandbox.json(&["mcp", "status", "--json"]);
+    has(&mcp, &["zone", "automatic", "clients"], "mcp status");
+    let cursor = mcp["clients"].as_array().unwrap().iter().find(|c| c["client"] == "cursor").unwrap();
+    has(cursor, &["client", "label", "profile", "path", "installed", "state", "detail", "read_only", "scope"], "mcp status.clients");
+    has(&cursor["scope"], &["limited", "kinds", "exclude_sources"], "mcp status.clients.scope");
+
+    let update: Value = serde_json::from_slice(&sandbox.run(&["update", "--check", "--json"]).stdout).unwrap();
+    has(&update, &["current", "latest", "newer", "checked", "page", "note", "update_with"], "update --check");
+    assert_eq!((update["checked"].as_bool(), update["current"].as_str()), (Some(false), Some(env!("CARGO_PKG_VERSION"))), "asking is off in tests");
+
+    for event in feed(&sandbox, &[]) {
+        has(&event, &["seq", "at", "time", "event"], "events");
+    }
+}
+
 // ------------------------------------------------------------------------- MCP over stdio
 
 /// A `zone mcp` child process and the JSON-RPC conversation with it.
@@ -1605,6 +2061,21 @@ fn mcp_install_gives_each_client_its_own_view() {
     let odd = sandbox.run(&["mcp", "install", "gemini"]);
     assert!(!odd.status.success() && String::from_utf8_lossy(&odd.stdout).contains("zone will not guess"), "{}", String::from_utf8_lossy(&odd.stdout));
     sandbox.ok(&["mcp", "install", "gemini", "--kinds", "all"]);
+    assert_eq!(args_of(&gemini), json!(["mcp"]));
+
+    // An entry that starts another copy of zone (one installed by hand, say, where this one
+    // came with an app) says what its agents see, and keeps that when it is pointed here.
+    std::fs::write(&gemini, r#"{ "mcpServers": { "zone": { "command": "/somewhere/else/zone", "args": ["mcp", "--read-only", "--kinds", "note,meeting"] } } }"#).unwrap();
+    let status = sandbox.json(&["mcp", "status", "--json"]);
+    assert_eq!((client(&status, "gemini")["state"].as_str(), client(&status, "gemini")["read_only"].as_bool()), (Some("other_copy"), Some(true)));
+    assert_eq!(client(&status, "gemini")["scope"], json!({ "limited": true, "kinds": ["note", "meeting"], "exclude_sources": [] }));
+    assert!(line_for(&sandbox.ok(&["mcp", "status"]), "Gemini CLI").contains("registered, read-only, only voice notes and meeting transcripts, but it starts another copy"));
+    let out = sandbox.ok(&["mcp", "install", "gemini"]);
+    assert!(line_for(&out, "Gemini CLI").contains("changed the entry") && line_for(&out, "Gemini CLI").contains("(read-only, only voice notes and meeting transcripts)"), "{out}");
+    assert_eq!(args_of(&gemini), json!(["mcp", "--read-only", "--kinds", "note,meeting"]));
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(&gemini).unwrap()).unwrap();
+    assert_eq!(config["mcpServers"]["zone"]["command"], *zone_exe().to_string_lossy());
+    sandbox.ok(&["mcp", "install", "gemini", "--kinds", "all", "--read-write"]);
     assert_eq!(args_of(&gemini), json!(["mcp"]));
 
     // A mistyped view changes nothing.

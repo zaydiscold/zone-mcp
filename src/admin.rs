@@ -791,5 +791,23 @@ fn run_checks() -> Vec<Check> {
 
     let clock = Clock::system();
     checks.push(ok("Clock", format!("{} ({})", clock.full(paths::now_unix()), clock.zone_name())));
+    checks.push(version_check());
     checks
+}
+
+/// Whether a newer release is out. One question to GitHub, asked because a person ran
+/// `zone doctor`. No answer is not a problem with the setup.
+fn version_check() -> Check {
+    use crate::update::{self, Check as Found};
+    let this = update::current_version();
+    match update::check() {
+        Found::Latest { latest } if update::is_newer(this, &latest) => ok("Version", format!("zone {this}, newer than the latest release ({latest})")),
+        Found::Latest { .. } => ok("Version", format!("zone {this}, the latest")),
+        Found::Newer { latest, page } => {
+            let how = paths::current_exe().map(|exe| update::how_to_update(update::origin_of(&exe))).unwrap_or_else(|_| "zone update".to_string());
+            warn("Version", format!("zone {latest} is out, and this is {this}"), format!("To update: {how}\nWhat is new: {page}"))
+        }
+        Found::Unknown(why) => ok("Version", format!("zone {this} (could not ask whether a newer one is out: {why})")),
+        Found::Off => ok("Version", format!("zone {this} (not asking whether a newer one is out)")),
+    }
 }
