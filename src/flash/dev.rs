@@ -213,6 +213,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
         "repeats": tally.repeats,
         "set_aside": tally.set_aside,
         "restarts": tally.restarts,
+        "out_of_range": tally.out_of_range,
     });
     report["misread_suspected"] = json!(assembler.trouble() == Some(Trouble::Misread));
     let Some(payload) = assembler.payload() else {

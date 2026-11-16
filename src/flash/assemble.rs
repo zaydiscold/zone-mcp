@@ -1,10 +1,10 @@
 //! Putting one flash together from what the camera reads, and catching codes that were misread.
 //!
 //! [`Assembler`] sits between the frames and the GF(2) [`Decoder`]. It keeps every different
-//! reading of a code (its number and its body), counts which code numbers were caught, and
-//! watches the checks the decoder makes: once a frame brings no new row, its body must equal
-//! the sum of the rows it reduces to (see [`Reduced`]). When every reading is what the phone
-//! showed, every check comes out even.
+//! reading of a code (its number and a fingerprint of its body), counts which code numbers were
+//! caught, and watches the checks the decoder makes: once a frame brings no new row, its body
+//! must equal the sum of the rows it reduces to (see [`Reduced`]). When every reading is what
+//! the phone showed, every check comes out even.
 //!
 //! A misread code (rare: QR error correction rejects nearly all damage, but a picture caught
 //! half drawn, or a color channel unmixed wrongly, can still decode as a valid code with the
@@ -13,7 +13,8 @@
 //! check clears the readings it names, because the errors of different misreadings do not
 //! cancel. The misread reading is in every uneven set and in no even one, so a few dozen
 //! codes after the first uneven check it is the only reading left under suspicion. It is then
-//! set aside for good, the rows are rebuilt from every other reading, and reading goes on.
+//! set aside for good and taken out of the rows ([`Decoder::remove`]), the uneven checks that
+//! named it are checked again against the rows as they are now, and reading goes on.
 //!
 //! The seal (ChaCha20-Poly1305) is the final judge: a payload that opens is exactly what the
 //! phone sealed. When a complete payload does not open, the assembler keeps reading checks.
@@ -25,6 +26,11 @@
 //! themselves, so it is done for flashes of up to [`TRACK_LIMIT`] chunks. A larger flash that
 //! goes wrong starts over from new readings instead, which costs time but never stores a
 //! wrong payload.
+//!
+//! Every step is bounded: taking a misread reading out of the rows costs one pass over them,
+//! a reading looks for misreads at most [`ROUNDS`] times and checks at most [`RECHECK`] old
+//! checks again each time, and after [`MAX_REMOVALS`] takings out, or more uneven checks than
+//! it keeps, the flash starts over.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -42,10 +48,19 @@ const PATIENCE: usize = 24;
 /// Uneven checks kept before giving up on finding the culprits and starting over: this many,
 /// plus four for every chunk up to 2048 more. Each new check looks at all of them.
 const MAX_CONFLICTS: usize = 256;
-/// Rebuilds before starting over from nothing.
-const MAX_REBUILDS: usize = 32;
+/// Times misread readings are taken out of the rows before starting over from nothing.
+pub const MAX_REMOVALS: usize = 32;
+/// Rounds of looking for misreads after one reading: each round sets aside at least one.
+pub const ROUNDS: usize = 8;
+/// Uneven checks checked again after the rows they named lose a reading. Older ones are
+/// dropped: new codes bring new checks.
+pub const RECHECK: usize = 64;
 /// Code number ranges named in a tally.
 pub const RANGES_NAMED: usize = 6;
+/// Beyond the phone's loop of `3k + 60` codes, a code number counts in the tally only this
+/// close above another one: a sender that does not loop shows them in order, and a code
+/// number misread into another is almost never near any.
+pub const FOLLOWS_WITHIN: u64 = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Known {
@@ -58,17 +73,21 @@ enum Known {
 struct Reading {
     index: u32,
     fingerprint: u64,
-    /// The body, kept while tracking so the rows can be rebuilt without it. Empty otherwise.
-    body: Vec<u8>,
 }
 
 struct Conflict {
     /// The reading whose check came out uneven.
     reading: usize,
-    /// The rows it was checked against, by slot.
+    /// The frames it was checked against, by slot.
     support: Vec<u64>,
     /// Which errors it adds up (see [`Reduced::Disagreed`]).
     residual: u64,
+    /// Its body, to check it again if the rows it was checked against lose a reading.
+    body: Vec<u8>,
+}
+
+fn has_bit(bits: &[u64], n: usize) -> bool {
+    bits.get(n / 64).is_some_and(|word| word >> (n % 64) & 1 == 1)
 }
 
 /// What one reading did.
@@ -103,6 +122,11 @@ impl Trouble {
 
 /// What the code numbers say, for the page. Numbers are counted from 1, as a person would:
 /// frame `i` is code number `i + 1`.
+///
+/// Only code numbers the phone can have shown count: those in its loop of `3k + 60` codes,
+/// and past that only ones that follow others closely (see [`FOLLOWS_WITHIN`]). A code whose
+/// number was misread into one far beyond is left out, so it cannot stretch the counts to
+/// "codes 1 to 1,509,950,965".
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
     /// Different code numbers caught (and not set aside).
@@ -119,6 +143,8 @@ pub struct Tally {
     pub set_aside: usize,
     /// Times everything was dropped and reading began again.
     pub restarts: usize,
+    /// Code numbers caught that the phone cannot have shown, left out of the counts above.
+    pub out_of_range: usize,
 }
 
 pub struct Assembler {
@@ -143,7 +169,7 @@ pub struct Assembler {
     unopened: bool,
     /// The rows just became complete: a payload is ready to solve.
     ready: bool,
-    rebuilds: usize,
+    removals: usize,
     repeats: u64,
     set_aside: usize,
     restarts: usize,
@@ -169,7 +195,7 @@ impl Assembler {
             agreements: 0,
             unopened: false,
             ready: false,
-            rebuilds: 0,
+            removals: 0,
             repeats: 0,
             set_aside: 0,
             restarts: 0,
@@ -194,6 +220,16 @@ impl Assembler {
         &self.decoder
     }
 
+    /// Different code numbers caught, out of range or not. Cheap, unlike [`Assembler::tally`].
+    pub fn caught_count(&self) -> usize {
+        self.caught.len()
+    }
+
+    /// Readings set aside as misread so far.
+    pub fn set_aside_count(&self) -> usize {
+        self.set_aside
+    }
+
     /// Takes one reading: a frame of this flash, `body` of the flash's chunk size.
     pub fn take(&mut self, index: u32, body: &[u8]) -> Took {
         let print = fingerprint(body);
@@ -209,8 +245,7 @@ impl Assembler {
             None => {}
         }
         let position = self.readings.len();
-        let kept = if self.tracking { body.to_vec() } else { Vec::new() };
-        self.readings.push(Some(Reading { index, fingerprint: print, body: kept }));
+        self.readings.push(Some(Reading { index, fingerprint: print }));
         self.known.insert((index, print), Known::Kept);
         *self.caught.entry(index).or_default() += 1;
         let useful = self.reduce(position, index, body);
@@ -244,7 +279,7 @@ impl Assembler {
             }
             Reduced::Disagreed { support, residual } => {
                 if self.tracking {
-                    self.conflicts.push(Conflict { reading: position, support, residual });
+                    self.conflicts.push(Conflict { reading: position, support, residual, body: body.to_vec() });
                 } else {
                     self.uneven = true;
                 }
@@ -258,22 +293,33 @@ impl Assembler {
     ///
     /// `after_check` says the newest reading was a check: only checks are evidence, so only
     /// they count toward the patience with suspects that stop narrowing.
-    fn look_for_misreads(&mut self, after_check: bool) {
+    fn look_for_misreads(&mut self, mut after_check: bool) {
         if !self.tracking {
             if self.uneven {
                 self.start_over();
             }
             return;
         }
-        if self.conflicts.is_empty() {
-            self.patience = 0;
-            self.suspects = usize::MAX;
-            return;
+        // Each round sets aside at least one reading, or returns.
+        for _ in 0..ROUNDS {
+            if self.conflicts.is_empty() {
+                self.patience = 0;
+                self.suspects = usize::MAX;
+                return;
+            }
+            if self.conflicts.len() > MAX_CONFLICTS + (4 * self.k()).min(2048) || self.removals >= MAX_REMOVALS {
+                self.start_over();
+                return;
+            }
+            if !self.narrow(after_check) {
+                return;
+            }
+            after_check = false;
         }
-        if self.conflicts.len() > MAX_CONFLICTS + (4 * self.k()).min(2048) || self.rebuilds >= MAX_REBUILDS {
-            self.start_over();
-            return;
-        }
+    }
+
+    /// One round of [`Assembler::look_for_misreads`]. True when it set something aside.
+    fn narrow(&mut self, after_check: bool) -> bool {
         let words = self.slots.len().div_ceil(64).max(1);
         let open = |conflict: &Conflict, cleared: &[u64]| -> Vec<u64> {
             (0..words).map(|w| conflict.support.get(w).copied().unwrap_or(0) & !cleared.get(w).copied().unwrap_or(0)).collect()
@@ -287,7 +333,7 @@ impl Assembler {
             }
             self.conflicts.retain(|c| !lone.contains(&c.reading));
             if self.conflicts.is_empty() {
-                return;
+                return true;
             }
         }
         // Uneven checks with the same residual add up the same errors: most often those of one
@@ -328,32 +374,33 @@ impl Assembler {
             settled.extend(candidates.iter().filter(|c| size(c) == fewest).take(1));
         }
         if settled.is_empty() {
-            return;
+            return !lone.is_empty();
         }
-        let mut positions: Vec<usize> = Vec::new();
-        let mut rows_affected = false;
-        for (rows, checks) in settled {
-            positions.extend(checks);
-            for slot in 0..self.slots.len() {
-                if rows[slot / 64] >> (slot % 64) & 1 == 1 {
-                    positions.push(self.slots[slot]);
-                    rows_affected = true;
-                }
-            }
+        let mut checks: Vec<usize> = Vec::new();
+        let mut slots: Vec<usize> = Vec::new();
+        for (rows, own) in settled {
+            checks.extend(own);
+            slots.extend((0..self.slots.len()).filter(|slot| has_bit(rows, *slot)));
         }
-        positions.sort_unstable();
-        positions.dedup();
-        for position in &positions {
+        checks.sort_unstable();
+        checks.dedup();
+        slots.sort_unstable();
+        slots.dedup();
+        for position in &checks {
             self.set_reading_aside(*position);
+        }
+        for slot in &slots {
+            self.set_reading_aside(self.slots[*slot]);
         }
         self.patience = 0;
         self.suspects = usize::MAX;
-        if rows_affected {
-            self.rebuild();
-        } else {
+        if slots.is_empty() {
             // Only checks were misread. The rows stand; their uneven checks go.
-            self.conflicts.retain(|c| !positions.contains(&c.reading));
+            self.conflicts.retain(|c| !checks.contains(&c.reading));
+        } else {
+            self.take_out(&slots);
         }
+        true
     }
 
     fn set_reading_aside(&mut self, position: usize) {
@@ -368,31 +415,35 @@ impl Assembler {
         self.set_aside += 1;
     }
 
-    /// Makes the rows again from every reading still kept, in the order they arrived.
-    fn rebuild(&mut self) {
-        self.rebuilds += 1;
-        self.decoder = Assembler::decoder_for(self.shape, self.tracking);
-        self.slots.clear();
-        self.cleared.clear();
-        self.conflicts.clear();
+    /// Takes the rows' misread readings out of them, by slot, and checks again the uneven
+    /// checks that named them (at most [`RECHECK`], the newest): with the misread reading
+    /// gone, one of them may now bring the row that left, and the rest are checks again.
+    fn take_out(&mut self, slots: &[usize]) {
+        self.removals += 1;
+        for slot in slots {
+            self.decoder.remove(*slot);
+        }
         self.agreements = 0;
         self.unopened = false;
         self.ready = false;
         self.suspects = usize::MAX;
         self.patience = 0;
-        for position in 0..self.readings.len() {
-            let Some(reading) = self.readings[position].take() else { continue };
-            self.reduce(position, reading.index, &reading.body);
-            self.readings[position] = Some(reading);
+        let readings = &self.readings;
+        let (stale, kept): (Vec<Conflict>, Vec<Conflict>) =
+            std::mem::take(&mut self.conflicts).into_iter().partition(|c| readings[c.reading].is_none() || slots.iter().any(|slot| has_bit(&c.support, *slot)));
+        self.conflicts = kept;
+        let skip = stale.len().saturating_sub(RECHECK);
+        for conflict in stale.into_iter().skip(skip) {
+            let Some(index) = self.readings[conflict.reading].as_ref().map(|r| r.index) else { continue };
+            self.reduce(conflict.reading, index, &conflict.body);
         }
-        self.look_for_misreads(false);
     }
 
     /// Drops every reading and begins again, keeping only what was set aside. The phone keeps
     /// showing the codes, so they come round again.
     fn start_over(&mut self) {
         self.restarts += 1;
-        self.rebuilds = 0;
+        self.removals = 0;
         self.decoder = Assembler::decoder_for(self.shape, self.tracking);
         self.readings.clear();
         self.known.retain(|_, known| *known == Known::SetAside);
@@ -408,12 +459,25 @@ impl Assembler {
         self.patience = 0;
     }
 
-    /// The payload, once the rows have just become complete. Each set of rows is offered once.
-    pub fn take_payload(&mut self) -> Option<Vec<u8>> {
-        if !std::mem::take(&mut self.ready) {
+    /// True when the rows have just become complete and their payload has not been asked for.
+    pub fn is_ready(&self) -> bool {
+        self.ready
+    }
+
+    /// The payload, once the rows have just become complete, unless `stop` says to give up
+    /// (then it is still ready). Each set of rows is offered once.
+    pub fn solve_unless(&mut self, stop: &dyn Fn() -> bool) -> Option<Vec<u8>> {
+        if !self.ready {
             return None;
         }
-        self.decoder.solve()
+        let payload = self.decoder.solve_unless(stop)?;
+        self.ready = false;
+        Some(payload)
+    }
+
+    /// [`Assembler::solve_unless`] without a way to stop.
+    pub fn take_payload(&mut self) -> Option<Vec<u8>> {
+        self.solve_unless(&|| false)
     }
 
     /// The payload the rows solve to now, ready or not. For tools that read a whole recording
@@ -445,20 +509,24 @@ impl Assembler {
     }
 
     pub fn tally(&self) -> Tally {
-        let caught = self.caught.len();
-        let shown = self.caught.keys().next_back().map_or(0, |last| u64::from(*last) + 1);
+        // The phone shows codes 1 to 3k + 60, then starts again.
+        let in_loop = 3 * self.k() as u64 + 60;
+        let mut caught = 0;
+        let mut last: Option<u64> = None;
         let mut missed_ranges = Vec::new();
-        let mut next = 0u64;
         for index in self.caught.keys() {
             let index = u64::from(*index);
-            if index > next {
-                missed_ranges.push((next + 1, index));
-                if missed_ranges.len() == RANGES_NAMED {
-                    break;
-                }
+            if index >= in_loop && last.is_none_or(|last| index - last > FOLLOWS_WITHIN) {
+                continue;
             }
-            next = index + 1;
+            let next = last.map_or(0, |last| last + 1);
+            if index > next && missed_ranges.len() < RANGES_NAMED {
+                missed_ranges.push((next + 1, index));
+            }
+            caught += 1;
+            last = Some(index);
         }
+        let shown = last.map_or(0, |last| last + 1);
         Tally {
             caught,
             shown,
@@ -467,6 +535,7 @@ impl Assembler {
             repeats: self.repeats,
             set_aside: self.set_aside,
             restarts: self.restarts,
+            out_of_range: self.caught.len() - caught,
         }
     }
 }
@@ -667,6 +736,37 @@ mod tests {
         assert_eq!(solved.as_deref(), Some(data.as_slice()), "{:?}", assembler.tally());
     }
 
+    /// A code whose number was misread into one the phone never showed does not stretch the
+    /// tally: zone 0.1.0 said "Of codes 1 to 1,509,950,965" on the Done page.
+    #[test]
+    fn a_misread_code_number_stays_out_of_the_tally() {
+        let data = payload(6000, 11);
+        let encoder = Encoder::new(0x8000_0010, &data, 300).unwrap();
+        let k = encoder.k() as u32;
+        let shape = parse(&encoder.frame(0)).unwrap().shape;
+        let mut assembler = Assembler::new(shape);
+        for index in 0..k - 2 {
+            take(&mut assembler, &encoder.frame(index));
+        }
+        let mut wild = encoder.frame(k);
+        wild[13..17].copy_from_slice(&1_509_950_964u32.to_be_bytes());
+        take(&mut assembler, &wild);
+        let tally = assembler.tally();
+        let (caught, shown) = (k as usize - 2, u64::from(k) - 2);
+        assert_eq!((tally.caught, tally.shown, tally.missed, tally.out_of_range), (caught, shown, 0, 1), "{tally:?}");
+        assert!(tally.missed_ranges.is_empty());
+        // A sender that does not loop goes on past 3k + 60, in order: those codes count.
+        let mut onward = Assembler::new(shape);
+        let in_loop = 3 * k + 60;
+        for index in (0..k - 2).chain(in_loop..in_loop + 40) {
+            take(&mut onward, &encoder.frame(index));
+        }
+        let tally = onward.tally();
+        assert_eq!((tally.shown, tally.out_of_range), (u64::from(in_loop + 40), 0), "{tally:?}");
+        assert_eq!(tally.missed_ranges, vec![(u64::from(k) - 1, u64::from(in_loop))]);
+        assert_eq!(tally.caught as u64 + tally.missed, tally.shown);
+    }
+
     /// Past the tracking limit a misread costs a fresh start, never a wrong payload.
     #[test]
     fn without_tracking_a_misread_starts_over() {
@@ -696,5 +796,153 @@ mod tests {
         }
         assert_eq!(solved.as_deref(), Some(data.as_slice()));
         assert_eq!(assembler.tally().restarts, 1);
+    }
+}
+
+/// A camera reading a flash, for the tests and timings: the phone shows frames 0, 1, 2, ...
+/// round its loop of `3k + 60`, the camera loses 30% of them, and `misreads` of the first `k`
+/// codes it reads come out with one byte changed. The seal is played by comparing with the
+/// payload.
+#[cfg(test)]
+pub(crate) mod simulate {
+    use super::*;
+    use crate::flash::fountain::{Encoder, HEADER_LEN, parse};
+    use std::time::{Duration, Instant};
+
+    pub struct Run {
+        pub solved: bool,
+        pub codes: usize,
+        /// Bodies added into others, in all, and by the reading that did the most.
+        pub body_ops: u64,
+        pub most_body_ops: u64,
+        pub elapsed: Duration,
+        pub longest: Duration,
+        pub tally: Tally,
+    }
+
+    struct Dice(u64);
+
+    impl Dice {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+    }
+
+    pub fn payload(k: usize, chunk: usize) -> Vec<u8> {
+        let mut dice = Dice(k as u64);
+        (0..k * chunk).map(|_| dice.next() as u8).collect()
+    }
+
+    /// Reads `data` as a flash of `chunk` byte pieces until it comes out right, or `limit`.
+    pub fn run(data: &[u8], chunk: usize, misreads: usize, limit: Duration) -> Run {
+        let encoder = Encoder::new(0x8765_4321, data, chunk).unwrap();
+        let k = encoder.k();
+        let mut dice = Dice(7 + misreads as u64);
+        let mut bad = std::collections::HashSet::new();
+        while bad.len() < misreads {
+            bad.insert((dice.next() % k as u64) as usize);
+        }
+        let cycle = 3 * k as u32 + 60;
+        let mut assembler = Assembler::new(parse(&encoder.frame(0)).unwrap().shape);
+        let started = Instant::now();
+        let mut run = Run { solved: false, codes: 0, body_ops: 0, most_body_ops: 0, elapsed: Duration::ZERO, longest: Duration::ZERO, tally: Tally::default() };
+        for n in 0..cycle * 8 {
+            if dice.next() % 100 < 30 {
+                continue;
+            }
+            let mut frame = encoder.frame(n % cycle);
+            if bad.contains(&run.codes) {
+                let at = HEADER_LEN + (dice.next() % chunk as u64) as usize;
+                frame[at] ^= 1 << (dice.next() % 8);
+            }
+            run.codes += 1;
+            let frame = parse(&frame).unwrap();
+            let (ops, at) = (assembler.decoder().body_ops(), Instant::now());
+            assembler.take(frame.index, frame.body);
+            let payload = assembler.take_payload();
+            run.longest = run.longest.max(at.elapsed());
+            run.most_body_ops = run.most_body_ops.max(assembler.decoder().body_ops() - ops);
+            if let Some(payload) = payload {
+                if payload == data {
+                    run.solved = true;
+                    break;
+                }
+                assembler.did_not_open();
+            }
+            if started.elapsed() > limit {
+                break;
+            }
+        }
+        run.elapsed = started.elapsed();
+        // A restart begins a new decoder: count what the last one did, at least.
+        run.body_ops = assembler.decoder().body_ops();
+        run.tally = assembler.tally();
+        run
+    }
+}
+
+/// The times quoted in PROTOCOL.md: `cargo test --release flash_assembly_times -- --ignored
+/// --nocapture`. `ZONE_TIMES_K` and `ZONE_TIMES_MISREADS` pick the sizes and misread counts
+/// (default 1024,4096,16384 and 0,4,8), `ZONE_TIMES_LIMIT` the seconds allowed for each.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn flash_assembly_times() {
+    let list = |name: &str, default: &str| -> Vec<usize> { std::env::var(name).unwrap_or(default.into()).split(',').map(|s| s.trim().parse().unwrap()).collect() };
+    let limit = std::time::Duration::from_secs(std::env::var("ZONE_TIMES_LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(1800));
+    let chunk = 900;
+    println!("| Pieces | Misread codes | Codes read | Set aside | All the work | Longest single step | Bodies added |");
+    println!("| --- | --- | --- | --- | --- | --- | --- |");
+    for k in list("ZONE_TIMES_K", "1024,4096,16384") {
+        let data = simulate::payload(k, chunk);
+        for misreads in list("ZONE_TIMES_MISREADS", "0,4,8") {
+            let run = simulate::run(&data, chunk, misreads, limit);
+            println!(
+                "| {k} | {misreads} | {} ({:.2} k) | {} | {:.2?}{} | {:.2?} | {} |",
+                run.codes,
+                run.codes as f64 / k as f64,
+                run.tally.set_aside,
+                run.elapsed,
+                if run.solved { "" } else { " (not finished)" },
+                run.longest,
+                run.body_ops
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod work {
+    use super::simulate;
+    use std::time::Duration;
+
+    /// Bounds on the work of putting a flash together, counted in bodies added into others,
+    /// so that a slow or busy computer cannot make them fail. A misread code costs one pass
+    /// over the rows to take it out and a few dozen checks to look at again, never a pass over
+    /// every reading: that is the work of the whole flash, which zone 0.1.0 did again for each
+    /// misread code, in one step that grew with the square of the flash's size.
+    #[test]
+    fn a_misread_costs_a_pass_over_the_rows_not_the_whole_flash() {
+        let k = 4096;
+        let data = simulate::payload(k, 64);
+        let clean = simulate::run(&data, 64, 0, Duration::from_secs(600));
+        let misread = simulate::run(&data, 64, 8, Duration::from_secs(600));
+        assert!(clean.solved && misread.solved);
+        assert!(misread.tally.set_aside >= 8, "{:?}", misread.tally);
+        let square = (k * k) as u64;
+        // A clean flash: about k * k / 10 bodies in all, and the largest step is the solve at
+        // the end, about a quarter of that.
+        assert!(clean.body_ops < square / 8, "{} bodies, {:.3} k^2", clean.body_ops, clean.body_ops as f64 / square as f64);
+        assert!(clean.most_body_ops < square / 25, "{} bodies in one step", clean.most_body_ops);
+        // Eight misread codes not much more, and no step much larger than that solve.
+        assert!(misread.body_ops < clean.body_ops * 5 / 2, "{} bodies against {}", misread.body_ops, clean.body_ops);
+        assert!(misread.most_body_ops < square / 16, "{} bodies in one step, {:.3} k^2", misread.most_body_ops, misread.most_body_ops as f64 / square as f64);
+        // And the clock, with room for any computer: an unoptimized build takes about two
+        // seconds here, and zone 0.1.0 optimized took six.
+        assert!(misread.elapsed < Duration::from_secs(120), "{:?}", misread.elapsed);
     }
 }
