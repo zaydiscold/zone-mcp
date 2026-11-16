@@ -54,13 +54,13 @@ impl Rgb {
 
     /// The picture in gray, weighted the way the page weighs it.
     pub fn luminance(&self) -> Gray {
-        let pixels = self.pixels.chunks_exact(3).map(|p| ((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29) >> 8) as u8).collect();
+        let pixels = self.pixels.as_chunks::<3>().0.iter().map(|p| ((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29) >> 8) as u8).collect();
         Gray { width: self.width, height: self.height, pixels }
     }
 
     /// One channel as it is, without unmixing.
     fn raw_channel(&self, channel: usize) -> Gray {
-        let pixels = self.pixels.chunks_exact(3).map(|p| p[channel]).collect();
+        let pixels = self.pixels.as_chunks::<3>().0.iter().map(|p| p[channel]).collect();
         Gray { width: self.width, height: self.height, pixels }
     }
 
@@ -617,7 +617,7 @@ impl Unmix {
     pub fn channels(&self, rgb: &Rgb) -> [Gray; 3] {
         let n = rgb.width * rgb.height;
         let mut out = [vec![0u8; n], vec![0u8; n], vec![0u8; n]];
-        for (i, p) in rgb.pixels.chunks_exact(3).enumerate() {
+        for (i, p) in rgb.pixels.as_chunks::<3>().0.iter().enumerate() {
             let d = [p[0] as f32 - self.black[0], p[1] as f32 - self.black[1], p[2] as f32 - self.black[2]];
             for (c, channel) in out.iter_mut().enumerate() {
                 let s = self.inverse[c][0] * d[0] + self.inverse[c][1] * d[1] + self.inverse[c][2] * d[2];
@@ -755,9 +755,9 @@ pub fn read_png(path: &Path) -> Result<Rgb> {
     let over_white = |value: u8, alpha: u8| ((value as u32 * alpha as u32 + 255 * (255 - alpha as u32)) / 255) as u8;
     let pixels: Vec<u8> = match frame.color_type {
         png::ColorType::Grayscale => data.iter().flat_map(|v| [*v, *v, *v]).collect(),
-        png::ColorType::GrayscaleAlpha => data.chunks_exact(2).flat_map(|p| [over_white(p[0], p[1]); 3]).collect(),
+        png::ColorType::GrayscaleAlpha => data.as_chunks::<2>().0.iter().flat_map(|p| [over_white(p[0], p[1]); 3]).collect(),
         png::ColorType::Rgb => data.to_vec(),
-        png::ColorType::Rgba => data.chunks_exact(4).flat_map(|p| [over_white(p[0], p[3]), over_white(p[1], p[3]), over_white(p[2], p[3])]).collect(),
+        png::ColorType::Rgba => data.as_chunks::<4>().0.iter().flat_map(|p| [over_white(p[0], p[3]), over_white(p[1], p[3]), over_white(p[2], p[3])]).collect(),
         png::ColorType::Indexed => bail!("{} uses a palette that could not be expanded", path.display()),
     };
     Rgb::new(width, height, pixels).with_context(|| format!("{}", path.display()))
@@ -786,7 +786,7 @@ mod tests {
         let m = [[1.0, x, x * 0.5], [x, 1.0, x], [x * 0.5, x, 1.0]];
         let mut state = seed | 1;
         let mut pixels = Vec::with_capacity(rgb.pixels.len());
-        for p in rgb.pixels.chunks_exact(3) {
+        for p in rgb.pixels.as_chunks::<3>().0.iter() {
             let s = [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0];
             for row in &m {
                 let sum: f32 = row.iter().sum();
@@ -807,7 +807,7 @@ mod tests {
         let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
         let picture = draw(&refs, 4, 4).unwrap();
         let mut colors = std::collections::HashSet::new();
-        for p in picture.pixels.chunks_exact(3) {
+        for p in picture.pixels.as_chunks::<3>().0.iter() {
             colors.insert((p[0], p[1], p[2]));
         }
         assert_eq!(colors.len(), 8, "black, white and the six others");
@@ -886,7 +886,7 @@ mod tests {
         let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
         let picture = draw_with(&refs, 4, 4, &levels).unwrap();
         let mut colors = std::collections::HashSet::new();
-        for p in picture.pixels.chunks_exact(3) {
+        for p in picture.pixels.as_chunks::<3>().0.iter() {
             colors.insert((p[0], p[1], p[2]));
         }
         assert_eq!(colors.len(), 8);
@@ -996,7 +996,7 @@ mod tests {
         let gray_path = dir.path().join("gray.png");
         qr::write_png(&gray_path, &qr::draw(&frames[0], 3, 4).unwrap()).unwrap();
         let gray = read_png(&gray_path).unwrap();
-        assert!(gray.pixels.chunks_exact(3).all(|p| p[0] == p[1] && p[1] == p[2]));
+        assert!(gray.pixels.as_chunks::<3>().0.iter().all(|p| p[0] == p[1] && p[1] == p[2]));
         assert_eq!(read_picture(&gray, true).codes, vec![frames[0].clone()]);
     }
 }

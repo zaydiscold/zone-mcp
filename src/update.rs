@@ -233,23 +233,22 @@ pub fn run(check_only: bool, force: bool, as_json: bool) -> Result<bool> {
 
 /// Runs the install script built into this program, for one version, into one folder.
 fn install(version: &str, folder: &Path) -> Result<()> {
-    let mut command;
-    let _script_file;
-    if cfg!(windows) {
+    // The script file, on Windows, is removed when this returns.
+    let (mut command, _script_file) = if cfg!(windows) {
         // PowerShell runs a script from a file more faithfully than from its standard input.
         let path = std::env::temp_dir().join(format!("zone-install-{}.ps1", std::process::id()));
         std::fs::write(&path, INSTALL_PS1).with_context(|| format!("cannot write {}", path.display()))?;
-        command = Command::new(windows_powershell());
+        let mut command = Command::new(windows_powershell());
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(&path);
         // Started from a PowerShell 7 terminal, Windows PowerShell would inherit that one's
         // module folders and no longer find its own commands (Get-FileHash, Expand-Archive).
         command.env_remove("PSModulePath");
-        _script_file = Some(RemoveOnDrop(path));
+        (command, Some(RemoveOnDrop(path)))
     } else {
-        command = Command::new("sh");
+        let mut command = Command::new("sh");
         command.arg("-c").arg(INSTALL_SH);
-        _script_file = None;
-    }
+        (command, None)
+    };
     let status = command
         .env("ZONE_VERSION", version)
         .env("ZONE_INSTALL_DIR", folder)

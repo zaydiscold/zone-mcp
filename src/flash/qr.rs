@@ -171,9 +171,9 @@ pub fn read_png(path: &Path) -> Result<Gray> {
     let over_white = |value: u8, alpha: u8| ((value as u32 * alpha as u32 + 255 * (255 - alpha as u32)) / 255) as u8;
     let pixels: Vec<u8> = match frame.color_type {
         png::ColorType::Grayscale => data.to_vec(),
-        png::ColorType::GrayscaleAlpha => data.chunks_exact(2).map(|p| over_white(p[0], p[1])).collect(),
-        png::ColorType::Rgb => data.chunks_exact(3).map(|p| luma(p[0], p[1], p[2])).collect(),
-        png::ColorType::Rgba => data.chunks_exact(4).map(|p| over_white(luma(p[0], p[1], p[2]), p[3])).collect(),
+        png::ColorType::GrayscaleAlpha => data.as_chunks::<2>().0.iter().map(|p| over_white(p[0], p[1])).collect(),
+        png::ColorType::Rgb => data.as_chunks::<3>().0.iter().map(|p| luma(p[0], p[1], p[2])).collect(),
+        png::ColorType::Rgba => data.as_chunks::<4>().0.iter().map(|p| over_white(luma(p[0], p[1], p[2]), p[3])).collect(),
         png::ColorType::Indexed => bail!("{} uses a palette that could not be expanded", path.display()),
     };
     Gray::new(width, height, pixels).with_context(|| format!("{}", path.display()))

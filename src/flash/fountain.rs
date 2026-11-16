@@ -934,7 +934,7 @@ mod tests {
         let mut misread_slot = None;
         let mut index = 0u32;
         while !decoder.is_complete() {
-            if !(index < k as u32 && index % 4 == 0) {
+            if !(index < k as u32 && index.is_multiple_of(4)) {
                 let mut frame = encoder.frame(index);
                 if index == misread_index {
                     frame[HEADER_LEN + 7] ^= 0x10;
