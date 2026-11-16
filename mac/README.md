@@ -35,6 +35,7 @@ dot: zone is not running. An exclamation mark: something needs you.
 - What just happened: "3 dictations from Demo iPhone, just now".
 - The latest items. Click one to copy it. **Hide text** covers the words, for when you are
   sharing your screen (it stays on until you turn it off, here and in the floating window).
+- The newest clip, for a quarter of an hour after it arrives (see Clips below).
 - Agents: every AI app on this Mac with a switch, and under each connected one a line
   that says what it may read. Click the line to choose: everything, notes and meetings
   only, or all but keyboard dictations (what you typed by voice into other apps).
@@ -50,6 +51,24 @@ dot: zone is not running. An exclamation mark: something needs you.
   <img src="../docs/media/mac-agents-choose.png" width="372" alt="The Agents page: five AI apps with switches, and the three choices of what one may read">
 </p>
 
+**Clips.** A clip is text you send from Zone on your iPhone to this Mac on purpose: what
+was on the phone's clipboard, something shared from another app, or something typed. When
+one arrives the Z pulses the way it does for anything arriving, and the clip leads the
+window: which phone, when, one line of it, and a Copy button. Clips also sit in the latest
+items with their own label, and the floating window has a filter for them. Hide text covers
+a clip like everything else.
+
+<p align="center">
+  <img src="../docs/media/mac-clip.gif" width="372" alt="A clip arrives: the window says Receiving and the clip appears at the top with a Copy button">
+  &nbsp;
+  <img src="../docs/media/mac-clip-setting.png" width="372" alt="The More page with the switch: Copy to this Mac's clipboard when a clip arrives">
+</p>
+
+More > "Copy to this Mac's clipboard when a clip arrives" is `zone clipboard on`: with it
+on, a clip that was sent in the last two minutes is ready to paste here by the time you
+look up. It is off until you turn it on (the setup guide asks once), and nothing else ever
+touches your clipboard. The app shows no notification and asks for no permission.
+
 **The floating window.** "Keep these in a floating window" opens a small window that stays
 above your other windows and shows what you said as it arrives, with a search over the
 whole library and filters for dictations, notes and meetings. Clicking a row copies it
@@ -60,14 +79,15 @@ without taking the keyboard away from the app you are working in.
 </p>
 
 **The setup guide**, the first time you open the app (and any time later, under More):
-welcome, get Zone on your iPhone, pair, connect your AI agents, done. Every step can be
-skipped, and closing the window half way keeps your place.
+welcome, get Zone on your iPhone, pair, connect your AI agents, done. The last page asks
+three things: start at login, add the `zone` command, and put clips on the clipboard as
+they arrive. Every step can be skipped, and closing the window half way keeps your place.
 
 <p align="center">
   <img src="../docs/media/mac-welcome.png" width="640" alt="The welcome window">
 </p>
 <p align="center">
-  <img src="../docs/media/mac-welcome-flow.gif" width="640" alt="The whole guide: welcome, the App Store code, a stand-in phone scans the pair code and its library arrives, the agents are connected and one is limited to notes and meetings, done">
+  <img src="../docs/media/mac-welcome-flow.gif" width="640" alt="The whole guide: welcome, the App Store code, a stand-in phone scans the pair code and its library arrives, the agents are connected, and the last page with its three choices">
 </p>
 
 ## Install
@@ -119,9 +139,12 @@ The app owns the background service.
   A view or `--read-only` set from the command line is shown as it is and kept: whenever
   the app registers a client again it repeats the flags the client already has. (zone
   itself keeps them too since 2863a45. Before that, a plain `zone mcp install` put a client
-  back to everything, so the app never relies on it.) One case it cannot cover yet: for a
-  client that starts another copy of zone, `zone mcp status --json` does not say what that
-  entry may read, so "Use this app's" registers it with everything and the app says so.
+  back to everything, so the app never relies on it.) A client that starts another copy of
+  zone keeps its view too when "Use this app's" points it here (zone reports that entry's
+  view since 0b9bf93. With an older zone it cannot, so the client is registered with
+  everything and the app says so). Clips are a fourth kind: an agent that was limited to
+  dictations, notes and meetings before clips existed stays limited to those, and "notes
+  and meetings only" leaves clips out.
 - **The `zone` command** is offered, never forced: More > zone in the terminal. It is a link
   in the first writable folder on your PATH out of `~/.local/bin`, `~/bin`,
   `/opt/homebrew/bin` and `/usr/local/bin` (the last one asks for your password when it has
@@ -152,7 +175,7 @@ mac/scripts/build-app.sh
 It builds the universal `zone` (Apple silicon and Intel, adding the Rust target if it is
 missing), builds the app, puts zone inside it, signs both, and makes `mac/build/Zone.dmg`
 with the drag to Applications layout. `--help` lists the options: `--identity`, `--notarize`,
-`--zone-binary`, `--committed`, `--no-dmg`, `--version`.
+`--notary-profile`, `--zone-binary`, `--committed`, `--no-dmg`, `--version`.
 
 ### Signing, and who can open the result
 
@@ -163,16 +186,24 @@ with the drag to Applications layout. `--help` lists the options: `--identity`, 
 | ad hoc (`--identity -`) | This Mac only |
 
 The script uses a Developer ID Application identity when the keychain has one, and says
-which it used. To share the app with other people:
+which it used. Both the app and the `zone` program inside it are signed with the hardened
+runtime, which is what Apple asks for before it notarizes. To share the app with other
+people:
 
 1. The Account Holder of the developer team makes the certificate once. Apple does not let
-   an API key or any other role do it. In Xcode: Settings > Accounts > the team > Manage
-   Certificates > + > Developer ID Application.
+   an API key or any other role do it (asked through the App Store Connect API, it answers
+   "This operation can only be performed by the Account Holder"). In Xcode: Settings >
+   Accounts > the team > Manage Certificates > + > Developer ID Application. That puts the
+   certificate and its private key in the login keychain.
 2. `mac/scripts/build-app.sh --notarize`
 
-Notarizing uses `asc notarization` when [asc](https://github.com/rorkai/App-Store-Connect-CLI)
-is installed and signed in. Otherwise set `NOTARY_KEY` (the `.p8` file), `NOTARY_KEY_ID` and
-`NOTARY_ISSUER`, or `NOTARY_PROFILE` (a notarytool keychain profile).
+That one command signs with the new certificate, sends the app and then the disk image to
+Apple, staples both tickets, and checks them the way Gatekeeper will (`stapler validate`,
+`spctl -a -vv`). Notarizing uses `asc notarization` when
+[asc](https://github.com/rorkai/App-Store-Connect-CLI) is installed and signed in. Without
+asc, either make a notarytool profile once (`xcrun notarytool store-credentials zone`) and
+run `mac/scripts/build-app.sh --notary-profile zone`, or set `NOTARY_KEY` (the `.p8` file),
+`NOTARY_KEY_ID` and `NOTARY_ISSUER`. `--identity` takes another identity by name or hash.
 
 ## Work on it
 
@@ -187,7 +218,9 @@ Everything then stays inside that folder: a pretend home folder with a few prete
 clients in it, a made-up library, another port (47991). The installed zone, its login item,
 the real library and real AI client settings are never read or written. In that mode the
 app also never adds a real login item, never looks at launchd, never asks for a password,
-and a pretend `open` notes links in a file instead of starting the browser.
+a pretend `open` notes links in a file instead of starting the browser, and everything that
+would go on the clipboard (a click on a row, a clip that arrives with the switch on) goes
+to the file `clipboard` in that folder instead.
 
 A sandbox run stays out of the way of whoever is using the Mac: its windows never take the
 keyboard and sit all but three points beyond the right edge of the screen, where macOS still
@@ -197,6 +230,7 @@ draws them. It is steered by writing lines to a file, and photographs its own wi
 mac/scripts/dev-sandbox.sh start --fresh --show welcome:2   # the pairing step
 mac/scripts/dev-sandbox.sh phone 180        # a stand-in phone scans the code on screen and sends 180 items
 mac/scripts/dev-sandbox.sh send 3           # three more, a moment later
+mac/scripts/dev-sandbox.sh clip "some text" # that phone sends a clip
 mac/scripts/dev-sandbox.sh cmd popover "snap:popover=/tmp/popover.png"
 mac/scripts/dev-sandbox.sh cmd "click:popover=314,328"      # a click, in points from the window's top left
 mac/scripts/dev-sandbox.sh stop
@@ -211,7 +245,7 @@ this file was taken this way.
 
 | | |
 | --- | --- |
-| `ZoneKit/` | A Swift package with everything that is not a view, and its tests: what zone prints as Swift values (`Models`, `Agents`), running zone (`ZoneClient`), the event feed (`Events`, `ActivitySources`), who runs the service and the app's copy of zone (`Daemon`), the `zone` command and update check (`CommandLink`), where files are (`ZoneEnvironment`). |
+| `ZoneKit/` | A Swift package with everything that is not a view, and its tests: what zone prints as Swift values (`Models`, `Agents`, `Clips`), running zone (`ZoneClient`), the event feed (`Events`, `ActivitySources`), who runs the service and the app's copy of zone (`Daemon`), the `zone` command and update check (`CommandLink`), where files are (`ZoneEnvironment`). |
 | `Zone/AppModel.swift` | The one object the views read and call. |
 | `Zone/StatusItemController.swift`, `MenuBarIcon.swift` | The Z and the window under it. |
 | `Zone/PopoverView.swift`, `SharedPanels.swift` | The popover's pages, and the pairing and agents panels the guide also uses. |
@@ -227,7 +261,10 @@ this file was taken this way.
   exercised: registering the real login item, taking over from a real `zone install` login
   item, the administrator prompt for `/usr/local/bin`, and the folder chooser for the
   backup folder (watching a folder was exercised, choosing one in the system window was not).
-- Pairing was exercised with zone's stand-in phone, not with a real iPhone.
+- Pairing and clips were exercised with zone's stand-in phone, not with a real iPhone.
+- When the app is attached to an older zone that someone else runs (a login item from
+  before clips), the clipboard switch is saved but that zone does not act on it until the
+  app takes over.
 - Updates are a check against the latest GitHub release and a link to it. The app does not
   update itself.
 - The disk image has not been opened on a second Mac, and no Developer ID build exists yet
