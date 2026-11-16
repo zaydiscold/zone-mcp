@@ -101,8 +101,10 @@ zone open        # see your transcriptions in the browser
 ```
 
 `zone install` needs no admin rights: it writes a launchd user agent on macOS, a systemd user unit
-on Linux and a per-user Run entry on Windows (`--no-mcp` skips the AI clients). `zone doctor`
-checks the setup and says how to fix anything that is off. To run zone by hand instead: `zone serve`.
+on Linux and a per-user Run entry on Windows (`--no-mcp` skips the AI clients). On macOS and
+Linux the login item also starts zone again, ten seconds later, if anything but `zone uninstall`
+(or the system itself) stops it. `zone doctor` checks the setup and says how to fix anything that
+is off. To run zone by hand instead: `zone serve`.
 
 ### Updating
 

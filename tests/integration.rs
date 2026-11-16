@@ -467,6 +467,41 @@ fn web_page_is_local_and_locked() {
     assert!(String::from_utf8_lossy(&second.stderr).contains("already running"));
 }
 
+/// A stop the person did not ask for brings zone back. On 2026-11-16 a test step ran
+/// `pkill -f "zone serve"` to stop its own copy, which also stopped the real one. zone exited
+/// successfully, so its login item (launchd: restart unless it exited successfully) left it
+/// stopped for five hours. Stopped by SIGTERM or SIGHUP, zone now reports it the way any
+/// process ended by that signal does (128 plus the signal), and only Ctrl-C is a success.
+#[cfg(unix)]
+#[test]
+fn a_signal_stop_is_not_a_successful_exit() {
+    for (signal, expected) in [(libc_signal::TERM, 143), (libc_signal::HUP, 129), (libc_signal::INT, 0)] {
+        let sandbox = Sandbox::new();
+        let mut daemon = Daemon::start(&sandbox);
+        let pid = daemon.child.id().to_string();
+        let sent = Command::new("kill").args([&format!("-{signal}"), &pid]).status().unwrap();
+        assert!(sent.success());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = daemon.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "zone serve did not stop within 20 seconds of signal {signal}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(status.code(), Some(expected), "signal {signal}");
+        // It still cleaned up as it went.
+        assert!(sandbox.daemon_info().is_none(), "daemon.json left behind after signal {signal}");
+    }
+}
+
+#[cfg(unix)]
+mod libc_signal {
+    pub const HUP: i32 = 1;
+    pub const INT: i32 = 2;
+    pub const TERM: i32 = 15;
+}
+
 // ------------------------------------------------------------------------- flash
 
 /// Posts bytes to the daemon's page and returns the status and the JSON it answered with.

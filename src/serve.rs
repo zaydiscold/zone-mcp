@@ -29,7 +29,30 @@ pub struct Options {
     pub quiet: bool,
 }
 
-pub async fn run(options: Options) -> Result<()> {
+/// Why `zone serve` stopped, which decides its exit status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// Ctrl-C in a terminal: the person stopped it on purpose.
+    Interrupt,
+    /// SIGTERM or SIGHUP. The service manager sends these when it stops zone itself
+    /// (`launchctl bootout`, `kickstart -k`, logging out, `systemctl stop`), and then the exit
+    /// status does not matter. Anything else that sends one (a stray `pkill -f "zone serve"`
+    /// meant for a test copy) is not the person asking zone to stop, so zone exits the way a
+    /// process ended by that signal reports it: 128 plus the signal. The login item's
+    /// "restart unless it exited successfully" then brings zone back ten seconds later.
+    Signal(i32),
+}
+
+impl Stop {
+    pub fn exit_code(self) -> std::process::ExitCode {
+        match self {
+            Stop::Interrupt => std::process::ExitCode::SUCCESS,
+            Stop::Signal(number) => std::process::ExitCode::from((128 + number).clamp(1, 255) as u8),
+        }
+    }
+}
+
+pub async fn run(options: Options) -> Result<std::process::ExitCode> {
     let dir = paths::ensure_data_dir()?;
     let Some(_lock) = daemon_info::acquire(&dir)? else {
         bail!("zone is already running for {} (see `zone status`).", dir.display());
@@ -101,8 +124,11 @@ pub async fn run(options: Options) -> Result<()> {
         }
     });
 
-    wait_for_stop().await;
-    info!("zone is stopping");
+    let stop = wait_for_stop().await;
+    match stop {
+        Stop::Interrupt => info!("zone is stopping"),
+        Stop::Signal(number) => info!("zone is stopping (signal {number})"),
+    }
     for task in [web_task, link_task, info_task, backup_task] {
         task.abort();
     }
@@ -112,28 +138,29 @@ pub async fn run(options: Options) -> Result<()> {
         events::record(&db, "daemon_stopped", json!({ "uptime_s": started.elapsed().as_secs_f64().round() }));
     }
     let _ = std::fs::remove_file(paths::daemon_info(&dir));
-    Ok(())
+    Ok(stop.exit_code())
 }
 
 fn env_port() -> Option<u16> {
     std::env::var("ZONE_PORT").ok()?.trim().parse().ok()
 }
 
-async fn wait_for_stop() {
+async fn wait_for_stop() -> Stop {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
         let mut terminate = signal(SignalKind::terminate()).ok();
         let mut hangup = signal(SignalKind::hangup()).ok();
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = async { match terminate.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending().await } } => {}
-            _ = async { match hangup.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending().await } } => {}
+            _ = tokio::signal::ctrl_c() => Stop::Interrupt,
+            _ = async { match terminate.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending().await } } => Stop::Signal(libc::SIGTERM),
+            _ = async { match hangup.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending().await } } => Stop::Signal(libc::SIGHUP),
         }
     }
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+        Stop::Interrupt
     }
 }
 

@@ -605,7 +605,7 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Serve { port, quiet } => runtime()?.block_on(serve::run(serve::Options { port, quiet }))?,
+        Command::Serve { port, quiet } => return runtime()?.block_on(serve::run(serve::Options { port, quiet })),
         Command::Pair { no_qr, qr, relay, wait, no_wait, check, json } => {
             let show = if no_qr { Some(false) } else if qr { Some(true) } else { None };
             let wait = if wait { Some(true) } else if no_wait { Some(false) } else { None };

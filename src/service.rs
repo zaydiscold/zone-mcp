@@ -108,7 +108,9 @@ pub fn systemd_unit(plan: &Plan) -> String {
     if let Some(home) = &plan.zone_home {
         unit.push_str(&format!("Environment={}\n", quote(Path::new(&format!("ZONE_HOME={}", home.to_string_lossy())))));
     }
-    unit.push_str("Restart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n");
+    // `zone serve` exits 143 (or 129) when a signal stops it. `systemctl --user stop` is a
+    // clean stop, not a failure; anything else that stops zone is followed by a restart.
+    unit.push_str("Restart=always\nRestartSec=10\nSuccessExitStatus=129 143\n\n[Install]\nWantedBy=default.target\n");
     unit
 }
 
@@ -367,7 +369,8 @@ mod tests {
         let text = systemd_unit(&plan(Some("/tmp/zone home")));
         assert!(text.contains("ExecStart=\"/Users/zed/My Tools/zone & co/zone\" serve --quiet\n"));
         assert!(text.contains("Environment=\"ZONE_HOME=/tmp/zone home\"\n"));
-        assert!(text.contains("Restart=on-failure"));
+        assert!(text.contains("Restart=always"));
+        assert!(text.contains("SuccessExitStatus=129 143"));
         assert!(text.contains("[Install]\nWantedBy=default.target\n"));
         assert!(!systemd_unit(&plan(None)).contains("Environment="));
     }
