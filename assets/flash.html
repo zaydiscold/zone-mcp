@@ -1004,7 +1004,14 @@ select {
       const grow = reduceMotion ? 1 : ease(age / 450);
       const s = size * (0.5 + 0.5 * grow);
       let color = mix(C.accent, wave ? C.accent : C.done, reduceMotion ? 1 : ease(age / 1400));
-      if (state === 2 && phase === "failed") color = [C.alarm[0], C.alarm[1], C.alarm[2], 0.4];
+      if (state === 2 && phase === "failed") {
+        // Every piece came, and the whole would not open: the tiles go quiet, ringed in the alarm.
+        ctx.fillStyle = paint(C.empty);
+        square(ctx, x, y, size, radius);
+        ctx.strokeStyle = paint([C.alarm[0], C.alarm[1], C.alarm[2], 0.6]);
+        square(ctx, x, y, size - line, radius, true);
+        continue;
+      }
       if (sweep >= 0 && sweep < 1.6 && state === 2) {
         // When the last piece is in, a pass of ink runs across the library, left to right.
         const across = layout.cols > 1 ? layout.column[n] / (layout.cols - 1) : 0.5;
