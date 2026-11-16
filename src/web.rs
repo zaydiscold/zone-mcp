@@ -772,7 +772,14 @@ mod tests {
             assert!(FLASH_PAGE.contains(needle), "{needle}");
         }
         // The states it explains, the guide, and the basics for keyboards and screen readers.
-        for needle in ["NotAllowedError", "Send by Flash", "zone pair", "not from Zone", "aria-live", "role=\"progressbar\"", "prefers-reduced-motion", ":focus-visible"] {
+        for needle in ["NotAllowedError", "Send by Flash", "Pair a phone", "not from Zone", "aria-live", "role=\"progressbar\"", "prefers-reduced-motion", ":focus-visible"] {
+            assert!(FLASH_PAGE.contains(needle), "{needle}");
+        }
+        // Pairing is done from the library's Pair a phone, not from a terminal.
+        assert!(!FLASH_PAGE.contains("zone pair"));
+        // A flash stored before says so, and zone being busy putting one together is not taken
+        // for the phone going out of sight.
+        for needle in ["already_stored", "status.result.already_stored", "storingSince"] {
             assert!(FLASH_PAGE.contains(needle), "{needle}");
         }
         // Nothing but its own nonce runs or styles it.

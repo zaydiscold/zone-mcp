@@ -334,7 +334,7 @@ select {
     </ol>
   </section>
 
-  <p class="foot">The iPhone has to be paired with this computer once, because the codes are encrypted with a key both sides got at pairing. Pairing needs no network either: choose Pair a phone in <a href="/">your library</a> and scan the code with the iPhone (or run <code>zone pair</code> in a terminal). If you put the phone down early, nothing is stored and you can start again.</p>
+  <p class="foot">The iPhone has to be paired with this computer once, because the codes are encrypted with a key both sides got at pairing. Pairing needs no network either: choose Pair a phone in <a href="/">your library</a> and scan the code with the iPhone. If you put the phone down early, nothing is stored and you can start again.</p>
 
   <section class="work" id="work" tabindex="-1" aria-label="Camera and library">
     <div class="stage">
@@ -371,10 +371,8 @@ select {
       <div class="state" id="state">Turn on the camera to begin</div>
       <div>
         <div class="track" id="track" role="progressbar" aria-label="Pieces received" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="held" id="heldBar"></div><div class="solved" id="solvedBar"></div></div>
-        <div class="numbers">
-          <span><b id="rows">0</b> of <b id="k">0</b> pieces</span>
+        <div class="numbers" id="numbers">
           <span><b id="solvedN">0</b> rebuilt</span>
-          <span><b id="frames">0</b> codes read</span>
           <span id="codeRate"></span>
           <span id="rate"></span>
         </div>
@@ -384,7 +382,7 @@ select {
         <div id="hintText"></div>
       </div>
       <div class="result" id="result" hidden>
-        <div class="figures stats">
+        <div class="figures stats" id="stats">
           <div class="new"><b id="nNew">0</b><span>new</span></div>
           <div><b id="nChanged">0</b><span>changed</span></div>
           <div><b id="nSame">0</b><span>already here</span></div>
@@ -441,6 +439,7 @@ select {
   let rateFrames = 0;
   let session = null;
   let revealAt = 0;
+  let storingSince = 0;
   let lastStatus = { state: "waiting" };
   let appliedSeen = -1;
   let colorSeenAt = -1e9;
@@ -627,10 +626,9 @@ select {
     const over = status.state === "done" || status.state === "storing";
     const percent = over ? 100 : (k ? Math.floor((rows / k) * 100) : 0);
     setText("pct", String(percent));
-    setText("rows", String(rows));
-    setText("k", String(k));
+    // The counts themselves are in the figures below; this line says what the bar's two
+    // layers and the camera are doing, while there is something to do.
     setText("solvedN", String(solvedCount));
-    setText("frames", String(status.frames || 0));
     // Different codes read a second, over the last second or so: up to three a picture in
     // color. A code the camera sees twice counts once.
     const read = status.frames || 0;
@@ -654,8 +652,7 @@ select {
 
     finished = status.state === "done" || status.state === "failed";
     $("again").hidden = !finished;
-    $("rate").hidden = finished;
-    $("codeRate").hidden = finished;
+    $("numbers").hidden = finished;
     if (status.state === "done") showResult(status.result || {});
     else if (status.state === "failed") showFailure(status.result || {});
     else { $("result").hidden = true; $("badge").classList.remove("show", "bad"); }
@@ -668,8 +665,10 @@ select {
   function tally(status, over) {
     const k = status.k || 0;
     const codes = status.codes;
-    $("tally").hidden = !k;
-    if (!k || !codes) { $("missedText").hidden = true; return; }
+    // A flash stored before was not read again: its codes say nothing new.
+    const before = !!(status.result && status.result.already_stored);
+    $("tally").hidden = !k || before;
+    if (!k || !codes || before) { $("missedText").hidden = true; return; }
     const needed = over ? 0 : Math.max(0, status.needed == null ? k - (status.rows || 0) : status.needed);
     setText("tallyPieces", count(k));
     setText("tallyNeeded", count(needed));
@@ -754,6 +753,7 @@ select {
   function setPhase(next) {
     if (phase === next) return;
     phase = next;
+    if (next === "storing") storingSince = performance.now();
     const cam = $("cam");
     const chip = $("chip");
     cam.classList.toggle("looking", next === "looking");
@@ -790,7 +790,9 @@ select {
   }
 
   function showResult(r) {
+    if (r.already_stored) { showStoredBefore(r); return; }
     const show = () => {
+      $("stats").hidden = false;
       setText("nNew", count(r.new));
       setText("nChanged", count(r.changed));
       setText("nSame", count(r.unchanged));
@@ -815,6 +817,24 @@ select {
       const wait = Math.max(0, revealAt - performance.now());
       if (wait > 0) setTimeout(() => { if (lastStatus.state === "done") show(); }, wait); else show();
     }
+  }
+
+  // The phone is still showing a flash this library stored before (perhaps before the page
+  // started over, or before zone restarted). Storing it again would put back the phone's
+  // older version of anything changed since, so zone does not.
+  function showStoredBefore(r) {
+    const when = r.stored_at ? new Date(r.stored_at * 1000).toLocaleString(undefined, { dateStyle: "long", timeStyle: "short" }) : "";
+    const from = r.phone ? " from " + r.phone : "";
+    $("stats").hidden = true;
+    setText("resultText", "This flash was stored" + (when ? " on " + when : " before") + ": " + plural(r.items || 0, "item", "items") + from + ". It was not stored again, so nothing in your library changed. If the library on the phone has changed since, close Send by Flash on the phone and open it again for a new flash.");
+    setText("checkText", "");
+    $("result").hidden = false;
+    $("badge").classList.remove("bad");
+    $("badgeMark").setAttribute("d", "m7.5 12.5 3 3 6-6.5");
+    setText("badgeText", "Stored before");
+    $("badge").classList.add("show");
+    setText("state", "Stored before");
+    announce("This flash was stored before. Nothing changed.");
   }
 
   function showFailure(r) {
@@ -856,7 +876,14 @@ select {
   function hints() {
     const now = performance.now();
     if (phase === "failed") return;
-    if (!running || phase === "done" || phase === "storing" || phase === "intro" || phase === "denied" || phase === "nocamera") { if (phase !== "failed") hint(""); return; }
+    if (phase === "storing") {
+      // zone answers while it works, so a quiet camera now means it is busy, not that the
+      // phone went away.
+      if (now - storingSince > 3000) hint("Every piece is in, and zone is putting your library together. A large flash takes a little while: keep the phone where it is until this says Assembled.");
+      else hint("");
+      return;
+    }
+    if (!running || phase === "done" || phase === "intro" || phase === "denied" || phase === "nocamera") { if (phase !== "failed") hint(""); return; }
     if (phase === "offline") { hint("zone stopped answering. Start it again with zone serve (or zone install), then reload this page.", true); return; }
     if (now - foreignCodeAt < 2500 && now - lastFrameAt > 2500) {
       hint("That QR code is not from Zone. On the iPhone, open Zone and choose Settings > Computers > your computer > Send by Flash.");
