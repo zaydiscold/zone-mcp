@@ -338,6 +338,24 @@ final class ParsingTests: XCTestCase {
         XCTAssertFalse(hasEvents, "this zone has no events command")
     }
 
+    func testTheFlashLinkCarriesTheKeyToTheFlashPage() async throws {
+        let client = ZoneClient(runner: FakeRunner(answers: [
+            "open --print --flash": CommandOutput(text: "http://127.0.0.1:47991/flash?t=abc\n"),
+        ]))
+        let link = try await client.flashLink()
+        XCTAssertEqual(link.path, "/flash")
+        XCTAssertEqual(link.port, 47991)
+        XCTAssertEqual(link.query, "t=abc")
+        // An older zone without --flash says so, and the app falls back to the history link.
+        let older = ZoneClient(runner: FakeRunner(answers: [:]))
+        do {
+            _ = try await older.flashLink()
+            XCTFail("an older zone has no Flash link")
+        } catch {
+            XCTAssertNotNil(error as? ZoneError)
+        }
+    }
+
     func testClientPassesOnWhatZoneSaidWentWrong() async {
         let client = ZoneClient(runner: FakeRunner(answers: [
             "unpair Nobody": CommandOutput(status: 1, stderr: Data("zone: no paired phone is called Nobody\n".utf8)),

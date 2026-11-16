@@ -39,6 +39,14 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Zone
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: "MIT License. zayd.wtf"
+        # Flash in a Zone window reads the iPhone's screen with the camera.
+        INFOPLIST_KEY_NSCameraUsageDescription: "Flash reads your iPhone's screen through this Mac's camera. Nothing is recorded or sent anywhere."
+        # The zone this app starts counts as the app, and reaches the phone directly when both
+        # are on the same network.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Zone connects straight to your iPhone when both are on the same network. Without this, your dictations still arrive, through the relay."
+        # The hardened runtime's camera entitlement (Zone/Zone.entitlements). build-app.sh
+        # signs with the same file.
+        CODE_SIGN_ENTITLEMENTS: Zone/Zone.entitlements
         ENABLE_USER_SCRIPT_SANDBOXING: NO
     postBuildScripts:
       # The app carries the `zone` program inside it. scripts/build-app.sh puts the

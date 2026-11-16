@@ -57,6 +57,11 @@ final class AppModel {
     private(set) var notice: String?
     private(set) var copiedID: String?
     private(set) var loginItemOn = false
+    /// macOS has the login item but wants the person to approve it in System Settings.
+    private(set) var loginItemNeedsApproval = false
+    /// Whether the zone this app runs may reach the phone directly on this network. Nil
+    /// until Zone has looked (it looks only once it has asked once, after a pairing).
+    private(set) var localNetwork: LocalNetworkAccess?
     private(set) var commandLink: CommandLink.State?
     private(set) var update: UpdateCheck.Answer?
     private(set) var checkingUpdate = false
@@ -84,7 +89,11 @@ final class AppModel {
     @ObservationIgnored var showWelcome: () -> Void = {}
     @ObservationIgnored var showFloating: () -> Void = {}
     @ObservationIgnored var showPopover: () -> Void = {}
+    @ObservationIgnored var showPopoverPage: (PopoverNavigation.Page) -> Void = { _ in }
     @ObservationIgnored var closePopover: () -> Void = {}
+    @ObservationIgnored var showFlash: () -> Void = {}
+    /// Opens a page of System Settings with the card that says what to switch on.
+    @ObservationIgnored var showGuide: (GuideRequest) -> Void = { _ in }
 
     // MARK: Private
 
@@ -109,6 +118,10 @@ final class AppModel {
     @ObservationIgnored private var pairingKnown: [String: Double] = [:]
     @ObservationIgnored private var noticeToken = 0
     @ObservationIgnored private var userPath: String
+    @ObservationIgnored private var lastLocalNetworkLook = Date.distantPast
+    @ObservationIgnored private var lookingAtLocalNetwork = false
+    @ObservationIgnored private var readingBackupFolder = false
+    @ObservationIgnored private var backupFolderReadable = false
 
     init(env: ZoneEnvironment, bundledBinary: URL?) {
         self.env = env
@@ -211,6 +224,7 @@ final class AppModel {
             refreshCommandLink()
         }
         await loadAgents()
+        await lookAtLocalNetwork()
     }
 
     /// Listens for what zone does, the way that fits the zone that is running. A zone that
@@ -257,6 +271,10 @@ final class AppModel {
         }
         if case let .waiting(code) = pairing, now >= code.expiry {
             pairing = .expired
+        }
+        if now.timeIntervalSince(lastLocalNetworkLook) >= 300 {
+            lastLocalNetworkLook = now
+            Task { await lookAtLocalNetwork() }
         }
     }
 
@@ -386,6 +404,20 @@ final class AppModel {
         }
     }
 
+    /// Starts zone again after it kept stopping, without waiting out the pause.
+    func startAgain() {
+        failures = 0
+        nextStartAllowed = .distantPast
+        ownerCache = nil
+        daemon = .starting
+        Task { await refresh() }
+    }
+
+    /// Shows zone's log in the Finder (it is what explains a zone that keeps stopping).
+    func showLog() {
+        open(FileManager.default.fileExists(atPath: env.logFile.path) ? env.logFile : env.dataDirectory)
+    }
+
     /// Takes over from a zone the app did not start: stops it (and removes the old login
     /// item when that is what started it), then starts the app's own.
     func takeOver() async {
@@ -428,6 +460,7 @@ final class AppModel {
             if thisCode {
                 pairing = .paired(name: event.device ?? "Your iPhone", deviceID: event.deviceID ?? "")
                 syncingUntil = Date().addingTimeInterval(4)
+                Task { await askForLocalNetwork() }
             }
         }
         Task { await refresh() }
@@ -536,6 +569,7 @@ final class AppModel {
             syncingUntil = Date().addingTimeInterval(4)
             libraryDirty = true
             refreshQueued = true
+            Task { await askForLocalNetwork() }
         }
     }
 
@@ -634,7 +668,30 @@ final class AppModel {
         }
     }
 
+    /// Flash in a Zone window.
     func openFlash() {
+        guard isRunning else {
+            say("Zone is not running yet.")
+            return
+        }
+        showFlash()
+    }
+
+    /// The Flash page's address with its key, the way this zone gives it: in one step, or (an
+    /// older zone) the history page first, which hands over the key, then Flash.
+    func flashLink() async throws -> (url: URL, port: Int?, first: URL?) {
+        guard isRunning else { throw ZoneError.failed("Zone is not running yet.") }
+        if canOpenFlash {
+            let url = try await client.flashLink()
+            return (url, url.port, nil)
+        }
+        let link = try await client.historyLink()
+        guard let flash = URL(string: "/flash", relativeTo: link)?.absoluteURL else { throw ZoneError.unreadable("open --print") }
+        return (flash, link.port, link)
+    }
+
+    /// Flash in the web browser, as before the Zone window.
+    func openFlashInBrowser() {
         act("flash") { [self] in
             guard isRunning else { throw ZoneError.failed("Zone is not running yet.") }
             if canOpenFlash {
@@ -730,7 +787,13 @@ final class AppModel {
     // MARK: Start at login
 
     func refreshLoginItem() {
-        loginItemOn = env.isSandbox ? state.pretendLoginItem : SMAppService.mainApp.status == .enabled
+        if env.isSandbox {
+            loginItemOn = state.pretendLoginItem
+            return
+        }
+        let status = SMAppService.mainApp.status
+        loginItemOn = status == .enabled
+        loginItemNeedsApproval = status == .requiresApproval
     }
 
     func setLoginItem(_ on: Bool) {
@@ -745,10 +808,26 @@ final class AppModel {
                     try SMAppService.mainApp.unregister()
                 }
             } catch {
-                say("Could not change the login item: \(error.localizedDescription)")
+                // macOS refuses a login item the person switched off in System Settings until
+                // they switch it on there.
+                if !(on && SMAppService.mainApp.status == .requiresApproval) {
+                    say("Could not change the login item: \(error.localizedDescription)")
+                }
             }
         }
         refreshLoginItem()
+        if on, loginItemNeedsApproval {
+            approveLoginItem()
+        }
+    }
+
+    /// Opens Login Items in System Settings with the card on it.
+    func approveLoginItem() {
+        showGuide(GuideRequest(
+            permission: .loginItems,
+            isGranted: { SMAppService.mainApp.status == .enabled },
+            onGranted: { [weak self] in self?.refreshLoginItem() }
+        ))
     }
 
     // MARK: The zone command
@@ -818,6 +897,125 @@ final class AppModel {
         case let .newer(_, page): open(page)
         case .unknown: open(UpdateCheck.releasesPage)
         case .upToDate: break
+        }
+    }
+
+    // MARK: What macOS has to allow
+
+    /// True when this app runs zone, so what macOS allows Zone is what zone may do.
+    var runsZone: Bool {
+        owner == .app || owner == .adopted
+    }
+
+    /// Looks again whether zone may reach the local network, once Zone has asked before (so
+    /// this never brings up macOS's question by itself).
+    func lookAtLocalNetwork() async {
+        guard state.localNetworkAsked, !env.isSandbox || ProcessInfo.processInfo.environment["ZONE_MAC_PROBE_LOCAL_NETWORK"] != nil else { return }
+        await probeLocalNetwork()
+    }
+
+    /// Right after a phone pairs (the person is at the Mac and has just scanned a code), let
+    /// macOS ask whether Zone may reach the phone directly. zone would make it ask at some
+    /// moment anyway, the first time it tries the phone's address on this network.
+    func askForLocalNetwork() async {
+        guard runsZone, !env.isSandbox || ProcessInfo.processInfo.environment["ZONE_MAC_PROBE_LOCAL_NETWORK"] != nil else { return }
+        let first = !state.localNetworkAsked
+        state.localNetworkAsked = true
+        await probeLocalNetwork()
+        if first, localNetwork == .denied {
+            // macOS may say no while its question is still on the screen. Look again later.
+            localNetwork = nil
+            lastLocalNetworkLook = Date().addingTimeInterval(-240)
+        }
+    }
+
+    private func probeLocalNetwork() async {
+        guard !lookingAtLocalNetwork else { return }
+        lookingAtLocalNetwork = true
+        defer { lookingAtLocalNetwork = false }
+        lastLocalNetworkLook = Date()
+        let answer = await LocalNetworkProbe.check()
+        if answer != .unknown { localNetwork = answer }
+    }
+
+    func allowLocalNetwork() {
+        showGuide(GuideRequest(
+            permission: .localNetwork,
+            isGranted: { [weak self] in self?.localNetwork == .allowed },
+            refresh: { [weak self] in Task { await self?.probeLocalNetwork() } }
+        ))
+    }
+
+    /// The backup folder is set and macOS has not let zone read it (or is asking).
+    var backupFolderBlocked: Bool {
+        guard runsZone, let backup = status?.backupState else { return false }
+        switch backup.state {
+        case "waiting": return (backup.waiting ?? 0) >= 3
+        case "error": return isPermissionRefusal(backup.message)
+        default: return false
+        }
+    }
+
+    func allowBackupFolder() {
+        guard let folder = status?.backupFolder else { return }
+        backupFolderReadable = false
+        showGuide(GuideRequest(
+            permission: .filesAndFolders,
+            folder: ProtectedFolder.containing(folder, home: env.home.path),
+            isGranted: { [weak self] in self?.backupFolderReadable ?? false },
+            refresh: { [weak self] in self?.tryReadingBackupFolder(folder) },
+            onGranted: { [weak self] in
+                // zone looks at the folder every half minute; ask it to look now.
+                self?.setBackupFolder(URL(fileURLWithPath: folder))
+            }
+        ))
+    }
+
+    /// Reads the backup folder as Zone (which is who zone reads it as). One read at a time:
+    /// while macOS is asking, a read waits for the answer.
+    private func tryReadingBackupFolder(_ folder: String) {
+        guard !readingBackupFolder else { return }
+        readingBackupFolder = true
+        Task.detached {
+            let readable = (try? FileManager.default.contentsOfDirectory(atPath: folder)) != nil
+            await MainActor.run {
+                self.backupFolderReadable = readable
+                self.readingBackupFolder = false
+            }
+        }
+    }
+
+    /// The one thing macOS should allow that is in the way right now, for the main page.
+    var permissionIssue: (text: String, permission: Permission)? {
+        if backupFolderBlocked {
+            return ("macOS has not let Zone read your backup folder yet.", .filesAndFolders)
+        }
+        if runsZone, localNetwork == .denied {
+            return ("Your iPhone cannot reach this Mac directly on this network, so syncs go through the relay.", .localNetwork)
+        }
+        if loginItemNeedsApproval {
+            return ("Zone is waiting for you to allow it in Login Items, so it can start when you log in.", .loginItems)
+        }
+        return nil
+    }
+
+    func allow(_ permission: Permission) {
+        switch permission {
+        case .filesAndFolders: allowBackupFolder()
+        case .localNetwork: allowLocalNetwork()
+        case .loginItems: approveLoginItem()
+        case .camera: showFlash()
+        }
+    }
+
+    /// Test runs only: shows what the app does in a state macOS would have to put it in.
+    func pretend(_ setting: String) {
+        guard env.isSandbox else { return }
+        switch setting {
+        case "localNetwork=denied": localNetwork = .denied
+        case "localNetwork=allowed": localNetwork = .allowed
+        case "loginItem=approval": loginItemNeedsApproval = true
+        default: break
         }
     }
 

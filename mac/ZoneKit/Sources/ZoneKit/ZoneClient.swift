@@ -233,6 +233,13 @@ public struct ZoneClient: Sendable {
         return url
     }
 
+    /// The link to the Flash page, with the key. Needs a zone that has `open --flash`.
+    public func flashLink() async throws -> URL {
+        let text = try await run(["open", "--print", "--flash"]).text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: text), url.scheme == "http" else { throw ZoneError.unreadable("open --print --flash") }
+        return url
+    }
+
     // MARK: Doing
 
     public func pair() async throws -> PairCode {

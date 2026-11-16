@@ -148,6 +148,9 @@ public struct AppState: Codable, Equatable, Sendable {
     public var declinedTakeover = false
     /// Sandbox only: the pretend "start at login" switch.
     public var pretendLoginItem = false
+    /// True once Zone has looked whether it may reach the local network, which the first
+    /// time is what makes macOS ask. After that, looking again never asks.
+    public var localNetworkAsked = false
 
     public init() {}
 
@@ -158,6 +161,7 @@ public struct AppState: Codable, Equatable, Sendable {
         hideText = try c.decodeIfPresent(Bool.self, forKey: .hideText) ?? false
         declinedTakeover = try c.decodeIfPresent(Bool.self, forKey: .declinedTakeover) ?? false
         pretendLoginItem = try c.decodeIfPresent(Bool.self, forKey: .pretendLoginItem) ?? false
+        localNetworkAsked = try c.decodeIfPresent(Bool.self, forKey: .localNetworkAsked) ?? false
     }
 
     public static func load(from file: URL) -> AppState {

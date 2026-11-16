@@ -4,7 +4,7 @@
 # zone, its login item, the real library and real AI client settings are never read or
 # written.
 #
-#   dev-sandbox.sh start [--fresh] [--show popover,welcome] [--light] [--front]
+#   dev-sandbox.sh start [--fresh] [--show popover,welcome] [--light] [--front] [--mock-camera]
 #   dev-sandbox.sh cmd popover:pair        steer the running app (see ZoneApp.swift)
 #   dev-sandbox.sh phone [count]           a stand-in phone scans the code on screen
 #   dev-sandbox.sh send [count]            that phone sends a few more items
@@ -50,13 +50,16 @@ command="${1:-start}"
 shift || true
 case "$command" in
 start)
-    fresh=0; show=""; appearance="dark"; quiet=1
+    fresh=0; show=""; appearance="dark"; quiet=1; mock_camera=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --fresh) fresh=1 ;;
             --show) show="$2"; shift ;;
             --light) appearance="light" ;;
             --front) quiet=0 ;;
+            # WebKit's stand-in camera for the Flash window: the whole camera path runs
+            # without a real camera, and macOS never asks.
+            --mock-camera) mock_camera=1 ;;
             *) echo "unknown option $1" >&2; exit 1 ;;
         esac
         shift
@@ -89,6 +92,7 @@ start)
     done
     variables=(ZONE_MAC_SANDBOX="$box" ZONE_PORT="$port" ZONE_NAME="Demo Mac" ZONE_MAC_APPEARANCE="$appearance" ZONE_MAC_SHOW="$show")
     if [ "$quiet" = 1 ]; then variables+=(ZONE_MAC_QUIET=1); fi
+    if [ "$mock_camera" = 1 ]; then variables+=(ZONE_MAC_MOCK_CAMERA=1); fi
     nohup env -i HOME="$HOME" PATH=/usr/bin:/bin "${variables[@]}" "$app/Contents/MacOS/Zone" >"$box/app.log" 2>&1 &
     echo "$!" > "$box/app.pid"
     echo "Started $app (pid $!). Its windows are listed in $box/windows."

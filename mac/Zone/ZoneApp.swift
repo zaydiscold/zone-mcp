@@ -39,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: StatusItemController!
     private var welcomeWindow: NSWindow?
     private var floatingWindow: NSPanel?
+    private var flash: FlashWindowController?
+    private let guide = PermissionGuide()
     private var commandTimer: Timer?
     /// A test run can ask the app to stay out of the way of whoever is using the Mac: its
     /// windows never take the keyboard and sit almost entirely off the edge of the screen
@@ -80,7 +82,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.showWelcome = { [weak self] in self?.showWelcome() }
         model.showFloating = { [weak self] in self?.showFloating() }
         model.showPopover = { [weak self] in self?.statusItem.show(takeKeyboard: !(self?.quiet ?? false)) }
+        model.showPopoverPage = { [weak self] page in
+            guard let self else { return }
+            self.statusItem.close()
+            self.statusItem.show(page: page, takeKeyboard: !self.quiet)
+        }
         model.closePopover = { [weak self] in self?.statusItem.close() }
+        model.showFlash = { [weak self] in self?.showFlash() }
+        // A test run that stays out of the way never opens System Settings: the link is
+        // noted in the sandbox's `opened` file and the card is parked like the windows.
+        guide.parked = quiet
+        guide.openLink = { [weak self] url in self?.model.open(url) }
+        model.showGuide = { [weak self] request in self?.guide.show(request) }
 
         Task {
             await model.start()
@@ -97,6 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        flash?.window.close()
+        guide.close()
         model?.shutdown()
     }
 
@@ -225,6 +240,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         present(panel)
     }
 
+    /// Flash in a window of Zone's own (see FlashWindow.swift).
+    func showFlash() {
+        if let flash {
+            present(flash.window)
+            return
+        }
+        let controller = FlashWindowController(model: model, quiet: quiet)
+        controller.onClose = { [weak self] in
+            self?.flash = nil
+            self?.model.watchers = max(0, (self?.model.watchers ?? 1) - 1)
+        }
+        flash = controller
+        model.watchers += 1
+        present(controller.window)
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         model.watchers = max(0, model.watchers - 1)
@@ -291,6 +322,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
                 showFloating()
             }
+        case "flash":
+            if argument == "close" {
+                flash?.window.close()
+            } else {
+                showFlash()
+            }
+        case "flashjs":
+            // flashjs:/path/answer.txt=return document.title runs a script in the Flash page
+            // and writes what it returned to that file.
+            if let argument, let equals = argument.firstIndex(of: "="), let flash {
+                let file = URL(fileURLWithPath: String(argument[..<equals]))
+                let script = String(argument[argument.index(after: equals)...])
+                Task {
+                    let answer = await flash.evaluate(script)
+                    try? (answer + "\n").write(to: file, atomically: true, encoding: .utf8)
+                }
+            }
+        case "guide":
+            // guide:camera (or localNetwork, filesAndFolders, loginItems) shows the card for
+            // that list; guide:close closes it.
+            // guide:camera,fly lifts the tile out of the middle of the screen, as a click there
+            // in a Zone window would.
+            let parts = (argument ?? "").split(separator: ",").map(String.init)
+            if argument == "close" {
+                guide.close()
+            } else if let permission = parts.first.flatMap(Permission.init(rawValue:)) {
+                // The switch counts as on once the file `granted` appears in the sandbox folder.
+                let granted = model.env.dataDirectory.deletingLastPathComponent().appendingPathComponent("granted")
+                try? FileManager.default.removeItem(at: granted)
+                let request = GuideRequest(
+                    permission: permission,
+                    folder: permission == .filesAndFolders ? .iCloudDrive : nil,
+                    isGranted: { FileManager.default.fileExists(atPath: granted.path) }
+                )
+                if parts.contains("fly"), let screen = NSScreen.main {
+                    guide.show(request, flyFrom: NSPoint(x: screen.frame.midX, y: screen.frame.midY))
+                } else {
+                    model.showGuide(request)
+                }
+            }
+        case "pretend":
+            // pretend:localNetwork=denied shows what the app does when macOS says no.
+            model.pretend(argument ?? "")
         case "hide":
             model.state.hideText = argument != "off"
         case "backup":
@@ -370,6 +444,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "status": window = statusItem.buttonWindow
         case "welcome": window = welcomeWindow
         case "floating": window = floatingWindow
+        case "flash": window = flash?.window
+        case "guide": window = guide.window
         default: window = nil
         }
         guard let window, window.isVisible else { return nil }
@@ -468,6 +544,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if statusItem.isOpen, let number = statusItem.windowNumber { lines.append("popover \(number)") }
         if let welcomeWindow, welcomeWindow.isVisible { lines.append("welcome \(welcomeWindow.windowNumber)") }
         if let floatingWindow, floatingWindow.isVisible { lines.append("floating \(floatingWindow.windowNumber)") }
+        if let window = flash?.window, window.isVisible { lines.append("flash \(window.windowNumber)") }
+        if let window = guide.window, window.isVisible { lines.append("guide \(window.windowNumber)") }
         let file = model.env.dataDirectory.deletingLastPathComponent().appendingPathComponent("windows")
         try? (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
     }

@@ -69,6 +69,12 @@ private struct MainPage: View {
                 if let banner = takeoverBanner {
                     banner
                 }
+                if case let .problem(message) = model.daemon {
+                    problemBanner(message)
+                }
+                if let issue = model.permissionIssue {
+                    permissionBanner(issue.text, issue.permission)
+                }
                 phones
                 if let clip = model.leadingClip {
                     ClipCard(model: model, clip: clip)
@@ -174,6 +180,64 @@ private struct MainPage: View {
             .background(Zone.accentGraphic(scheme).opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Zone.accentGraphic(scheme).opacity(0.35), lineWidth: 1))
         )
+    }
+
+    // MARK: Something needs the person
+
+    /// zone would not start: try again, or see why, without a terminal.
+    private func problemBanner(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(message)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Zone.ink(scheme))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Start again") { model.startAgain() }
+                    .buttonStyle(ZonePillButtonStyle(filled: true))
+                Button("Show the log") {
+                    model.closePopover()
+                    model.showLog()
+                }
+                .buttonStyle(ZonePillButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Zone.alarm.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Zone.alarm.opacity(0.4), lineWidth: 1))
+    }
+
+    /// Something macOS has to allow, with the button that shows where.
+    private func permissionBanner(_ text: String, _ permission: Permission) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: Self.symbol(for: permission))
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Zone.accentText(scheme))
+                .frame(width: 22)
+            Text(text)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Zone.ink(scheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Allow") {
+                model.closePopover()
+                model.allow(permission)
+            }
+            .buttonStyle(ZonePillButtonStyle(filled: true))
+            .help("Opens System Settings and shows what to switch on")
+        }
+        .padding(10)
+        .background(Zone.accentGraphic(scheme).opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Zone.accentGraphic(scheme).opacity(0.35), lineWidth: 1))
+    }
+
+    static func symbol(for permission: Permission) -> String {
+        switch permission {
+        case .camera: return "camera"
+        case .localNetwork: return "wifi"
+        case .filesAndFolders: return "folder"
+        case .loginItems: return "power"
+        }
     }
 
     // MARK: Phones
@@ -700,6 +764,14 @@ private struct SettingsPage: View {
                     Hairline().padding(.leading, 38)
                     row("folder", "Backup folder", backupLine) {
                         HStack(spacing: 6) {
+                            if model.backupFolderBlocked {
+                                Button("Allow") {
+                                    model.closePopover()
+                                    model.allowBackupFolder()
+                                }
+                                .buttonStyle(ZonePillButtonStyle(filled: true))
+                                .help("Opens System Settings and shows what to switch on")
+                            }
                             if model.status?.backupFolder != nil {
                                 Button("Stop") { model.setBackupFolder(nil) }
                                     .buttonStyle(ZonePillButtonStyle())
@@ -722,12 +794,32 @@ private struct SettingsPage: View {
                     }
                 }
                 section("This Mac") {
-                    Toggle(isOn: Binding(get: { model.loginItemOn }, set: { model.setLoginItem($0) })) {
-                        label("power", "Start Zone when you log in", model.env.isSandbox ? "Test run: no real login item is added." : "So your phone can always reach this Mac.")
+                    if model.loginItemNeedsApproval {
+                        row("power", "Start Zone when you log in", "macOS wants you to allow it in Login Items first.") {
+                            Button("Allow") {
+                                model.closePopover()
+                                model.approveLoginItem()
+                            }
+                            .buttonStyle(ZonePillButtonStyle(filled: true))
+                        }
+                    } else {
+                        Toggle(isOn: Binding(get: { model.loginItemOn }, set: { model.setLoginItem($0) })) {
+                            label("power", "Start Zone when you log in", model.env.isSandbox ? "Test run: no real login item is added." : "So your phone can always reach this Mac.")
+                        }
+                        .toggleStyle(ZoneToggleStyle())
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 10)
                     }
-                    .toggleStyle(ZoneToggleStyle())
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 10)
+                    if model.runsZone, model.localNetwork == .denied {
+                        Hairline().padding(.leading, 38)
+                        row("wifi", "Direct to your iPhone", "Not allowed, so syncs go through the relay. Allow Local Network for Zone to connect straight to the phone on the same network.") {
+                            Button("Allow") {
+                                model.closePopover()
+                                model.allowLocalNetwork()
+                            }
+                            .buttonStyle(ZonePillButtonStyle(filled: true))
+                        }
+                    }
                     Hairline().padding(.leading, 38)
                     commandRow
                     Hairline().padding(.leading, 38)
@@ -788,7 +880,11 @@ private struct SettingsPage: View {
             .padding(.vertical, 9)
         }
         .animation(Zone.motion, value: model.notice)
-        .task { await model.refreshClipboardSetting() }
+        .task {
+            await model.refreshClipboardSetting()
+            model.refreshLoginItem()
+            await model.lookAtLocalNetwork()
+        }
     }
 
     private var backupLine: String {
@@ -797,8 +893,10 @@ private struct SettingsPage: View {
         }
         let path = Formats.tilde(folder, home: model.env.home.path)
         switch model.status?.backupState?.state {
-        case "waiting": return "\(path). Waiting for macOS to allow reading it."
-        case "error": return "\(path). Cannot be read: \(model.status?.backupState?.message ?? "")"
+        case "waiting": return "\(path). macOS is asking whether Zone may read it: look for its question, or click Allow."
+        case "error":
+            if model.backupFolderBlocked { return "\(path). macOS has not let Zone read it. Click Allow to see where to switch it on." }
+            return "\(path). Cannot be read: \(model.status?.backupState?.message ?? "")"
         default: return path
         }
     }
