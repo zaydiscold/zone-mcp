@@ -179,6 +179,27 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The phone writes each time with as few digits as give back the same double. Parsed
+    /// here, every one must be that double again, to the last bit: a lossy parser (serde_json
+    /// without float_roundtrip) moved about one in five by one binary digit.
+    #[test]
+    fn times_arrive_to_the_last_bit() {
+        for text in ["1804773829.0427866", "1738085561.3427463", "1700566838.6494853", "1794445200.25", "0.1", "1e-7", "978307200"] {
+            let value: Value = serde_json::from_str(&format!(r#"{{"id":"A","kind":"note","created_at":{text},"updated_at":{text}}}"#)).unwrap();
+            let item = Item::from_json(&value).unwrap();
+            let wanted: f64 = text.parse().unwrap();
+            assert_eq!(item.created_at.to_bits(), wanted.to_bits(), "{text}");
+        }
+        let mut state = 0x1234_5678_9abc_def0u64;
+        for _ in 0..20_000 {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let since_2001 = 700_000_000.0 + (state >> 11) as f64 / (1u64 << 53) as f64 * 200_000_000.0;
+            let time = since_2001 + 978_307_200.0;
+            let value: Value = serde_json::from_str(&format!("{time:?}")).unwrap();
+            assert_eq!(value.as_f64().unwrap().to_bits(), time.to_bits(), "{time:?}");
+        }
+    }
+
     #[test]
     fn reads_the_protocol_example() {
         let value = json!({
