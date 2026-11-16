@@ -302,7 +302,11 @@ signature, an ad hoc one is new with every build (this Mac's network privacy ser
 separate `zone-<hash>` for each build it has seen), so `zone install`'s login item can be
 asked again after an update. `mac/scripts/sign-cli.sh zone-<version>-macos-universal.tar.gz`
 signs that zone with Developer ID (hardened runtime, timestamp, identifier `wtf.zayd.zone`),
-has it notarized, packs it again and prints the new SHA-256 for the Homebrew formula. A bare
+has it notarized and packs it again. Signing changes the tarball's SHA-256, and the install
+script and `zone update` refuse a download that does not match the release's `SHA256SUMS`, so
+the signed tarball must never replace the release's download on its own. Give the script the
+release's `SHA256SUMS` and `zone.rb` (`--sums`, `--formula`) and it writes updated copies beside
+the tarball; upload the three together with `gh release upload v<version> ... --clobber`. A bare
 program cannot have a ticket stapled, so Gatekeeper fetches it online the first time.
 
 ## Work on it
@@ -380,9 +384,8 @@ this file was taken this way.
   app takes over.
 - Updates are a check against the latest GitHub release and a link to it. The app does not
   update itself.
-- No Developer ID build exists yet: the certificate waits for the Account Holder's clicks
-  (Releasing, step 1). The key and the request are made. The disk image has not been opened
-  on a second Mac.
+- The Developer ID certificate exists (made on 2026-11-16). A notarized disk image has not
+  yet been opened on a second Mac.
 - Flash in the window was run end to end with WebKit's stand-in camera, not yet with this
   Mac's real camera: that first needs macOS's camera question answered for Zone, by a person.
 - The permission card was run against the real System Settings window (following it,

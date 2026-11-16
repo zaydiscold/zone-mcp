@@ -323,10 +323,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 showFloating()
             }
         case "flash":
-            if argument == "close" {
-                flash?.window.close()
-            } else {
-                showFlash()
+            switch argument {
+            case "close": flash?.window.close()
+            case "minimize": flash?.window.miniaturize(nil)
+            case "restore": flash?.window.deminiaturize(nil)
+            default: showFlash()
             }
         case "flashjs":
             // flashjs:/path/answer.txt=return document.title runs a script in the Flash page

@@ -146,6 +146,9 @@ final class PermissionGuide {
         endFlight()
         timer?.invalidate()
         timer = nil
+        // Every retry that would open System Settings again checks this number, so a closed
+        // guide never brings System Settings back by itself.
+        settingsRequest += 1
         panel?.orderOut(nil)
         panel = nil
         request = nil

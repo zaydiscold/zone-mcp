@@ -2,11 +2,15 @@
 # Signs the standalone `zone` program for macOS with Developer ID, has Apple notarize it, and
 # packs the release download again.
 #
-#   mac/scripts/sign-cli.sh zone-0.1.0-macos-universal.tar.gz    (from the draft release)
-#   mac/scripts/sign-cli.sh path/to/zone [--version 0.1.0]        (a program built here)
+#   mac/scripts/sign-cli.sh zone-0.1.1-macos-universal.tar.gz --sums SHA256SUMS --formula zone.rb
+#   mac/scripts/sign-cli.sh path/to/zone [--version 0.1.1]        (a program built here)
 #
-# The result is zone-<version>-macos-universal.tar.gz in mac/build, and its SHA-256 for the
-# Homebrew formula (packaging/homebrew), which has to change with it.
+# The result is zone-<version>-macos-universal.tar.gz in mac/build. Signing changes the
+# tarball's SHA-256, and install.sh and `zone update` refuse any download that does not match
+# the release's SHA256SUMS. So when the signed tarball replaces the release's download, the
+# release's SHA256SUMS and zone.rb must be replaced with it: pass them with --sums and
+# --formula and updated copies are written beside the tarball, ready for
+# `gh release upload v<version> --clobber` (all three together).
 #
 # Why bother, when the release workflow's ad hoc signature runs fine:
 # - A tarball downloaded with a browser is quarantined, and so is the zone unpacked from it.
@@ -26,9 +30,13 @@ build="$(dirname "$here")/build"
 input="${1:?a zone program or a zone-<version>-macos-universal.tar.gz}"
 shift
 version=""
+sums=""
+formula=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --version) version="$2"; shift ;;
+        --sums) sums="$2"; shift ;;
+        --formula) formula="$2"; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
     shift
@@ -69,7 +77,28 @@ else
 fi
 
 mkdir -p "$build"
-out="$build/zone-$version-macos-universal.tar.gz"
-tar -C "$work/stage" -czf "$out" zone $( [ -f "$work/stage/LICENSE" ] && echo LICENSE )
+name="zone-$version-macos-universal.tar.gz"
+out="$build/$name"
+files=(zone)
+[ -f "$work/stage/LICENSE" ] && files+=(LICENSE)
+tar -C "$work/stage" -czf "$out" "${files[@]}"
+sha="$(shasum -a 256 "$out" | cut -d' ' -f1)"
 echo "== Done: $out"
-echo "sha256 $(shasum -a 256 "$out" | cut -d' ' -f1)  (put this in packaging/homebrew for macos-universal)"
+echo "sha256 $sha"
+
+if [ -n "$sums" ]; then
+    grep -q "  $name\$" "$sums" || { echo "$sums has no line for $name" >&2; exit 1; }
+    awk -v sha="$sha" -v name="$name" '$2 == name { print sha "  " name; next } { print }' "$sums" > "$build/SHA256SUMS"
+    echo "== Updated $build/SHA256SUMS"
+fi
+if [ -n "$formula" ]; then
+    grep -q '# macos-universal$' "$formula" || { echo "$formula has no macos-universal sha256 line" >&2; exit 1; }
+    sed -E "s/sha256 \"[0-9a-f]{64}\" # macos-universal$/sha256 \"$sha\" # macos-universal/" "$formula" > "$build/zone.rb"
+    echo "== Updated $build/zone.rb"
+fi
+if [ -n "$sums" ] && [ -n "$formula" ]; then
+    echo "Upload the three together: gh release upload v$version \"$out\" \"$build/SHA256SUMS\" \"$build/zone.rb\" --clobber"
+else
+    echo "Warning: the release's SHA256SUMS and zone.rb still name the unsigned tarball. Replacing only the tarball" >&2
+    echo "breaks install.sh and zone update on every Mac. Run again with --sums and --formula." >&2
+fi

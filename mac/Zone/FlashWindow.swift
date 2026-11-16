@@ -34,6 +34,10 @@ final class FlashWindowController: NSObject, NSWindowDelegate, WKUIDelegate, WKN
     /// An older zone without `open --flash`: the history page is opened first (it hands over
     /// the key), then Flash.
     private var thenFlash: URL?
+    /// The camera was paused because the window was minimized or Zone was hidden, and comes
+    /// back on when the window can be seen again.
+    private var pausedWhileAway = false
+    private var appObservers: [NSObjectProtocol] = []
     var onClose: () -> Void = {}
 
     static let size = NSSize(width: 1040, height: 760)
@@ -79,7 +83,40 @@ final class FlashWindowController: NSObject, NSWindowDelegate, WKUIDelegate, WKN
         if !model.env.isSandbox {
             window.setFrameAutosaveName("ZoneFlash")
         }
+        let center = NotificationCenter.default
+        appObservers = [
+            center.addObserver(forName: NSApplication.didHideNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.pauseCameraWhileAway() }
+            },
+            center.addObserver(forName: NSApplication.didUnhideNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.resumeCameraIfSeen() }
+            },
+        ]
         load()
+    }
+
+    // MARK: The camera while the window is out of sight
+
+    /// Minimized or hidden, nobody is holding a phone up to a window they cannot see: the
+    /// camera pauses (its light goes off) instead of running unseen.
+    func windowDidMiniaturize(_ notification: Notification) {
+        pauseCameraWhileAway()
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        resumeCameraIfSeen()
+    }
+
+    private func pauseCameraWhileAway() {
+        guard let webView, webView.cameraCaptureState == .active else { return }
+        pausedWhileAway = true
+        webView.setCameraCaptureState(.muted, completionHandler: nil)
+    }
+
+    private func resumeCameraIfSeen() {
+        guard pausedWhileAway, let webView, !window.isMiniaturized, !NSApp.isHidden else { return }
+        pausedWhileAway = false
+        webView.setCameraCaptureState(.active, completionHandler: nil)
     }
 
     private func makeWebView(mockCamera: Bool) -> WKWebView {
@@ -253,6 +290,9 @@ final class FlashWindowController: NSObject, NSWindowDelegate, WKUIDelegate, WKN
     }
 
     func windowWillClose(_ notification: Notification) {
+        appObservers.forEach(NotificationCenter.default.removeObserver)
+        appObservers = []
+        pausedWhileAway = false
         // The camera goes off with the window, not when the page gets around to it.
         if let webView {
             webView.setCameraCaptureState(.none, completionHandler: nil)
