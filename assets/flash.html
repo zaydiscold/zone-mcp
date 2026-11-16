@@ -143,6 +143,7 @@ h1 { margin: 0; font: 600 38px/1.08 var(--serif); letter-spacing: -0.015em; text
 .foot { grid-area: foot; align-self: start; margin: 34px 0 0; padding-top: 18px; border-top: 1px solid var(--rule); color: var(--quiet); font-size: 13px; line-height: 1.6; }
 
 .work { grid-area: work; min-width: 0; }
+.work:focus { outline: none; }
 .stage { display: grid; grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr); align-items: start; }
 .panel { width: min(100%, max(300px, calc(100vh - 400px))); margin: 0 auto; }
 .panel-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 2px 10px; font-size: 13px; }
@@ -308,7 +309,7 @@ select {
 </style>
 </head>
 <body>
-<a class="skip" href="#start">Skip to the camera</a>
+<a class="skip" href="#work">Skip to the camera</a>
 <header class="top">
   <div class="bar">
     <a class="mark" href="/" aria-label="Zone, your library">zone<span class="dot" aria-hidden="true"></span></a>
@@ -335,7 +336,7 @@ select {
 
   <p class="foot">The iPhone has to be paired with this computer once, because the codes are encrypted with a key both sides got at pairing. Pairing needs no network either: choose Pair a phone in <a href="/">your library</a> and scan the code with the iPhone (or run <code>zone pair</code> in a terminal). If you put the phone down early, nothing is stored and you can start again.</p>
 
-  <section class="work" aria-label="Camera and library">
+  <section class="work" id="work" tabindex="-1" aria-label="Camera and library">
     <div class="stage">
       <div class="panel">
         <div class="panel-title"><b>Camera</b><span class="meta" id="camMeta">off</span></div>
