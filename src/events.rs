@@ -113,10 +113,16 @@ pub fn describe(event: &Value) -> String {
             format!("{device} was refused: {why}")
         }
         "flash_received" => format!(
-            "{device} sent a {}Flash: {}{}",
+            "{device} sent a {}Flash: {}{}{}",
             if event["color"] == true { "Color " } else { "" },
             counts(event),
-            if event["paired"] == true { ", and is now paired" } else { "" }
+            if event["paired"] == true { ", and is now paired" } else { "" },
+            // Flashes recorded before the check say nothing about it.
+            match (event["checked"].as_bool(), event["check_problem"].as_str()) {
+                (Some(true), _) => format!(". {} checked", crate::flash::check::thousands(event["items"].as_u64().unwrap_or(0) as usize)),
+                (Some(false), Some(problem)) => format!(". The check found a problem: {problem}"),
+                _ => String::new(),
+            }
         ),
         "flash_failed" => format!("A Flash was not stored: {}", text("reason")),
         "backup_import" => format!("Backup folder read: {}", counts(event)),
@@ -277,6 +283,14 @@ mod tests {
         assert_eq!(say("link_session", json!({ "device": "P", "items": 0, "path": "relay", "duration_s": 1.0, "end": "bye" })), "P synced over Link: nothing to send (relay, 1.0 s)");
         assert_eq!(say("link_session", json!({ "items": 4, "path": "relay", "duration_s": 61.0, "end": "idle" })), "A phone synced over Link: 4 items, all already here (relay, 61.0 s), then went quiet");
         assert_eq!(say("flash_received", json!({ "device": "P", "items": 9, "new": 9, "color": true, "paired": true })), "P sent a Color Flash: 9 new, and is now paired");
+        assert_eq!(
+            say("flash_received", json!({ "device": "P", "items": 1764, "new": 3, "unchanged": 1761, "checked": true })),
+            format!("P sent a Flash: {}. 1,764 checked", counts(&json!({ "new": 3, "unchanged": 1761 })))
+        );
+        assert!(
+            say("flash_received", json!({ "device": "P", "items": 2, "new": 2, "checked": false, "check_problem": "1 item was not read back from the library as it arrived." }))
+                .ends_with(". The check found a problem: 1 item was not read back from the library as it arrived.")
+        );
         assert_eq!(say("paired", json!({ "device": "P", "via": "flash" })), "P paired by Flash");
         assert_eq!(say("clip", json!({ "device": "P", "source": "clipboard", "length": 42, "copied": true })), "P sent a clip: 42 characters from its clipboard, now on this computer's clipboard");
         assert_eq!(say("clip", json!({ "device": "P", "source": "typed", "length": 1, "copied": false, "not_copied": "off" })), "P sent a clip: 1 character typed in Zone, kept");
