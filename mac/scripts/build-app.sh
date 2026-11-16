@@ -11,7 +11,9 @@
 #   --committed         Build zone from the last commit, not from the files as they are on
 #                       disk (for when the Rust code is in the middle of a change).
 #   --notarize          Send the app and the disk image to Apple, staple the tickets and
-#                       check both the way Gatekeeper will. Needs a Developer ID identity.
+#                       check the disk image the way a stranger's Mac will (check-dmg.sh).
+#                       Needs a Developer ID identity: a downloaded developerID_application
+#                       certificate in ~/Downloads is added first (developer-id.sh install).
 #                       Uses `asc notarization` when asc is installed, else notarytool with
 #                       NOTARY_KEY (a .p8 file), NOTARY_KEY_ID and NOTARY_ISSUER.
 #   --notary-profile P  Notarize with this notarytool keychain profile instead (made once
@@ -62,6 +64,15 @@ need xcodegen "Install it with: brew install xcodegen"
 # ------------------------------------------------------------------ the identity
 
 identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+# The certificate the Account Holder just downloaded (see developer-id.sh) is added here, so
+# after those clicks this one command is all there is.
+if [ -z "$identity" ] && ! grep -q '"Developer ID Application' <<<"$identities" \
+        && ls "$HOME"/Downloads/developerID_application*.cer >/dev/null 2>&1; then
+    say "Adding the downloaded Developer ID certificate"
+    if "$here/developer-id.sh" install; then
+        identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+    fi
+fi
 if [ -z "$identity" ]; then
     for kind in "Developer ID Application" "Apple Development"; do
         found="$(grep "\"$kind" <<<"$identities" | head -1 | sed -E 's/^[^"]*"([^"]+)".*/\1/' || true)"
@@ -83,11 +94,14 @@ say "Signing as: $identity ($kind)"
 if [ "$notarize" = 1 ] && [ "$kind" != "developer-id" ]; then
     cat >&2 <<'EOF'
 Apple only notarizes apps signed with a "Developer ID Application" certificate, and this
-keychain has none. Only the Account Holder of the developer team can make one:
+keychain has none. Only the Account Holder of the developer team can make one, once:
 
-  Xcode > Settings > Accounts > (the team) > Manage Certificates > + > Developer ID Application
+  mac/scripts/developer-id.sh request     (makes the key here and opens Apple's page)
+  then on that page: Developer ID Application > Continue > Choose File (the request on the
+  Desktop) > Continue > Download
 
-Then run this script again with --notarize.
+Then run this script again with --notarize. (Or in Xcode, signed in as the Account Holder:
+Settings > Accounts > the team > Manage Certificates > + > Developer ID Application.)
 EOF
     exit 1
 fi
@@ -132,19 +146,40 @@ helper="$app/Contents/Helpers/zone"
 say "Signing"
 flags=(--force --options runtime)
 if [ "$kind" = "developer-id" ]; then flags+=(--timestamp); else flags+=(--timestamp=none); fi
-# Inside out: the zone program first, then the app around it.
+# Inside out: the zone program first, then the app around it. The app carries the hardened
+# runtime's camera entitlement (Flash in a Zone window); zone needs none.
 codesign "${flags[@]}" --identifier wtf.zayd.zone.mac.zone --sign "$identity" "$helper"
-codesign "${flags[@]}" --sign "$identity" "$app"
+codesign "${flags[@]}" --entitlements "$mac/Zone/Zone.entitlements" --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
 echo "Zone.app:  $(lipo -archs "$app/Contents/MacOS/Zone")"
 echo "zone:      $(lipo -archs "$helper"), $("$helper" --version)"
 codesign -dv "$app" 2>&1 | grep -E "^(Identifier|TeamIdentifier|Authority|Timestamp|Runtime)" || true
 
 notary() {
-    # notary FILE: send it to Apple and wait for the answer.
+    # notary FILE: send it to Apple and wait for the answer. Refused, Apple's reasons are
+    # printed (its log names each file and what is wrong with it).
     local file="$1"
     if command -v asc >/dev/null && [ -z "${NOTARY_KEY:-}${NOTARY_PROFILE:-}" ]; then
-        asc notarization submit --file "$file" --wait
+        local answer id url
+        if answer="$(asc notarization submit --file "$file" --wait --output json 2>&1)"; then
+            echo "$answer" | head -1
+            return 0
+        fi
+        echo "$answer" >&2
+        id="$(sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' <<<"$answer" | head -1)"
+        if [ -n "$id" ]; then
+            url="$(asc notarization log --id "$id" --output json 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["data"]["attributes"]["developerLogUrl"])' 2>/dev/null || true)"
+            if [ -n "$url" ]; then
+                curl -s "$url" | python3 -I -c '
+import json, sys
+log = json.load(sys.stdin)
+print("Apple says:", log.get("statusSummary"), file=sys.stderr)
+for issue in log.get("issues") or []:
+    print("  ", issue.get("path"), "|", issue.get("architecture"), "|", issue.get("message"), file=sys.stderr)
+' || true
+            fi
+        fi
+        return 1
     elif [ -n "${NOTARY_PROFILE:-}" ]; then
         xcrun notarytool submit "$file" --keychain-profile "$NOTARY_PROFILE" --wait
     else
@@ -191,8 +226,8 @@ if [ "$notarize" = 1 ]; then
     say "Notarizing the disk image"
     notary "$dmg"
     xcrun stapler staple "$dmg"
-    xcrun stapler validate "$dmg"
-    spctl -a -vv --type open --context context:primary-signature "$dmg"
+    say "Checking it the way a stranger's Mac will"
+    "$here/check-dmg.sh" "$dmg"
 fi
 
 say "Done"

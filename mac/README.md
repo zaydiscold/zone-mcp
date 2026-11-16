@@ -41,6 +41,8 @@ dot: zone is not running. An exclamation mark: something needs you.
   only, or all but keyboard dictations (what you typed by voice into other apps).
 - Pair, History, Flash, and More: ask the phone to resend everything, choose a
   backup folder, start at login, the `zone` command, who runs zone, updates, the setup guide.
+- When macOS has to allow something (below), one line at the top says what, with an
+  **Allow** button. When zone keeps stopping, **Start again** and **Show the log**.
 
 <p align="center">
   <img src="../docs/media/mac-popover.gif" width="372" alt="Three items arrive: the window says Receiving, the counts go up and the new items appear">
@@ -78,6 +80,20 @@ without taking the keyboard away from the app you are working in.
   <img src="../docs/media/mac-floating.png" width="360" alt="The floating window: search, filters, and the latest things said, grouped by day">
 </p>
 
+**Flash, in a Zone window.** Flash (the iPhone shows a stream of codes, this Mac's camera
+reads them, no network needed) opens in a window of the app's own, not in the browser. It is
+zone's Flash page, served by zone on this Mac, in a web view whose camera the app allows for
+that page only (a request for the microphone is refused). The first time, macOS asks once
+whether Zone may use the camera. Refused, a bar above the page says so with **Allow the
+camera**; with no phone paired yet, **Show a pair code**. **Open in browser** shows the same
+page in the default browser instead and closes the window, and closing the window turns the
+camera off at once. The page can tell it is in the app: its user agent ends in `ZoneMac/`
+and the version.
+
+<p align="center">
+  <img src="../docs/media/mac-flash.png" width="700" alt="The Flash window: Zone's bar with Open in browser, and zone's Flash page with its three steps and the camera off">
+</p>
+
 **The setup guide**, the first time you open the app (and any time later, under More):
 welcome, get Zone on your iPhone, pair, connect your AI agents, done. The last page asks
 three things: start at login, add the `zone` command, and put clips on the clipboard as
@@ -89,6 +105,44 @@ they arrive. Every step can be skipped, and closing the window half way keeps yo
 <p align="center">
   <img src="../docs/media/mac-welcome-flow.gif" width="640" alt="The whole guide: welcome, the App Store code, a stand-in phone scans the pair code and its library arrives, the agents are connected, and the last page with its three choices">
 </p>
+
+## What macOS has to allow
+
+Zone asks for nothing it does not use. Four System Settings lists can matter, each
+established from how Zone works, not guessed:
+
+| List | When | Why | If it stays off |
+| --- | --- | --- | --- |
+| Camera | You open Flash | The Flash window reads the iPhone's screen with this Mac's camera (WebKit's capture counts as the app's) | Flash in the browser still works, with the browser's own camera permission |
+| Local Network | Right after a phone pairs (macOS 15 and later) | The zone the app starts counts as the app (Apple's [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy): a helper's "responsible code" is the app), and zone's direct path to the phone sends to the phone's address on this network | Everything still arrives, through the relay, never directly |
+| Files & Folders | You choose a backup folder in iCloud Drive, Documents, Desktop or Downloads | zone reads that folder as the app | zone says it is waiting for macOS, and nothing is imported |
+| Login Items | Only if macOS answers "Start Zone when you log in" with "needs approval" | `SMAppService` reports `.requiresApproval` | Zone does not start at login |
+
+Zone posts no notifications, so it never needs that list. Each list's question is macOS's
+own, asked once. When one was answered no, the **Allow** button opens the right page of
+System Settings and floats a card in its corner that says what to switch on, with Zone's row
+drawn the way the list shows it. The card follows the System Settings window, waits out of
+sight while it is on another Space, brings the page back (twice at most) if System Settings
+is closed with the switch still off, and says "Done" for a moment once it is on. A tile lifts
+out of the Zone window that was clicked and flies to the card, so the eye can follow it
+(Reduce Motion skips that). None of these lists takes an app dragged into it, so the card
+points at the switch; the drag tile is there for a list that does.
+
+<p align="center">
+  <img src="../docs/media/mac-permission-guide.png" width="450" alt="The card in System Settings' corner: Switch on Zone in the Camera list above, with Zone's row and its switch on">
+</p>
+
+The guide is a port of the one in [Hex](https://github.com/anomalyco/hex)
+(`native/permission_guide.m`, MIT License, Copyright 2026 Christopher Langton), in Zone's
+colors. Its notice is in `Zone/PermissionGuide.swift`.
+
+Whether macOS lets Zone reach the local network has no API: the app asks the way TN3179
+suggests, with a UDP connection to another address on this network that sends nothing (it is
+ready at once when allowed, held back as "local network denied" when not). It does that only
+when it runs zone itself, first right after a pairing (the moment macOS's question makes
+sense), and after that every five minutes and when More opens. Camera access is read from
+AVFoundation and TCC's own preflight, the Files & Folders answer by reading the backup folder,
+and Login Items from `SMAppService`.
 
 ## Install
 
@@ -158,6 +212,9 @@ The app owns the background service.
 - **Pairing** shows the code from `zone pair --json`, and knows it worked when the `paired`
   event names that very code (or, with an older zone, when a new phone appears in
   `zone devices`).
+- **Flash** opens `zone open --print --flash` (the page's address with its key) in the
+  window. With an older zone without `--flash`, the history page first, which hands over
+  the key, then `/flash`.
 
 Inside the app the program is at `Zone.app/Contents/Helpers/zone`, not in `Contents/MacOS`:
 on a Mac's usual disk, which ignores case in file names, `zone` there would be the same file
@@ -177,7 +234,7 @@ missing), builds the app, puts zone inside it, signs both, and makes `mac/build/
 with the drag to Applications layout. `--help` lists the options: `--identity`, `--notarize`,
 `--notary-profile`, `--zone-binary`, `--committed`, `--no-dmg`, `--version`.
 
-### Signing, and who can open the result
+### Releasing: a disk image anyone can open
 
 | Signed with | Who can open it |
 | --- | --- |
@@ -186,24 +243,67 @@ with the drag to Applications layout. `--help` lists the options: `--identity`, 
 | ad hoc (`--identity -`) | This Mac only |
 
 The script uses a Developer ID Application identity when the keychain has one, and says
-which it used. Both the app and the `zone` program inside it are signed with the hardened
-runtime, which is what Apple asks for before it notarizes. To share the app with other
-people:
+which it used. The app and the `zone` program inside it are both signed with the hardened
+runtime and, with Developer ID, a secure timestamp, which is what Apple asks for before it
+notarizes. The app also carries the hardened runtime's camera entitlement
+(`Zone/Zone.entitlements`) for the Flash window.
 
-1. The Account Holder of the developer team makes the certificate once. Apple does not let
-   an API key or any other role do it (asked through the App Store Connect API, it answers
-   "This operation can only be performed by the Account Holder"). In Xcode: Settings >
-   Accounts > the team > Manage Certificates > + > Developer ID Application. That puts the
-   certificate and its private key in the login keychain.
-2. `mac/scripts/build-app.sh --notarize`
+**Once, the certificate.** Only the Account Holder of the developer team can make a
+Developer ID Application certificate. Every automatic way was tried on 2026-11-16 and Apple
+refused each:
 
-That one command signs with the new certificate, sends the app and then the disk image to
-Apple, staples both tickets, and checks them the way Gatekeeper will (`stapler validate`,
-`spctl -a -vv`). Notarizing uses `asc notarization` when
-[asc](https://github.com/rorkai/App-Store-Connect-CLI) is installed and signed in. Without
-asc, either make a notarytool profile once (`xcrun notarytool store-credentials zone`) and
-run `mac/scripts/build-app.sh --notary-profile zone`, or set `NOTARY_KEY` (the `.p8` file),
-`NOTARY_KEY_ID` and `NOTARY_ISSUER`. `--identity` takes another identity by name or hash.
+| Tried | Apple's answer |
+| --- | --- |
+| The App Store Connect API (`asc certificates create --certificate-type DEVELOPER_ID_APPLICATION_G2`, and `DEVELOPER_ID_APPLICATION`), Admin key | 403 "This operation can only be performed by the Account Holder." |
+| Xcode's cloud signing with the same key (`xcodebuild -exportArchive`, method `developer-id`, `-allowProvisioningUpdates -authenticationKey...`) | "Cloud signing permission error: You haven't been given access to cloud-managed distribution certificates." (No API key can be given that access; [Apple's forums](https://developer.apple.com/forums/thread/698117) agree.) |
+
+So it is two short steps, and the second is the release command itself:
+
+1. `mac/scripts/developer-id.sh request` makes the private key (in the login keychain) and
+   the request (`~/Desktop/Zone Developer ID.certSigningRequest`), and opens
+   [the page](https://developer.apple.com/account/resources/certificates/add). There, signed
+   in as the Account Holder: **Developer ID Application**, **Continue**, keep **G2 Sub-CA**,
+   **Choose File** (the request), **Continue**, **Download**.
+2. `mac/scripts/build-app.sh --notarize` finds the downloaded certificate in Downloads, adds
+   it beside its key (`developer-id.sh install`), and carries on.
+
+(The same certificate can be made in Xcode instead, signed in as the Account Holder:
+Settings > Accounts > the team > Manage Certificates > + > Developer ID Application.)
+
+**Every release after that** is one command:
+
+```sh
+mac/scripts/build-app.sh --notarize
+```
+
+It builds the universal app with zone inside, signs both with Developer ID, sends the app to
+Apple and staples its ticket, makes the disk image, signs it, sends that and staples its
+ticket, and then checks the result the way a stranger's Mac will (`scripts/check-dmg.sh`): a
+copy gets the quarantine mark a browser puts on downloads, and then `spctl -a -vv -t open
+--context context:primary-signature` on the disk image, `spctl -a -vv` and `codesign --verify
+--deep --strict -vv` on the app inside, `stapler validate` on both, and Developer ID, hardened
+runtime and a timestamp on zone. When Apple refuses a submission the script prints Apple's
+reasons, file by file. `check-dmg.sh` also runs on its own, on any `Zone.dmg`.
+
+Notarizing uses `asc notarization` when [asc](https://github.com/rorkai/App-Store-Connect-CLI)
+is installed and signed in (its key needs the Admin or Developer role; a submission was
+accepted and judged on 2026-11-16). Without asc, either make a notarytool profile once
+(`xcrun notarytool store-credentials zone`) and run
+`mac/scripts/build-app.sh --notarize --notary-profile zone`, or set `NOTARY_KEY` (the `.p8`
+file), `NOTARY_KEY_ID` and `NOTARY_ISSUER`. `--identity` takes another identity by name or
+hash, and `--zone-binary` a zone that is already built.
+
+**The command line download.** The release workflow signs `zone-<version>-macos-universal.tar.gz`
+ad hoc. That is enough for the install script, curl and Homebrew (none of them quarantine what
+they download). A tarball downloaded with a browser is quarantined, and so is the zone
+unpacked from it, and macOS refuses to run it until the person finds "Open Anyway" in System
+Settings. It also matters for Local Network: macOS remembers a program's answer by its
+signature, an ad hoc one is new with every build (this Mac's network privacy service lists a
+separate `zone-<hash>` for each build it has seen), so `zone install`'s login item can be
+asked again after an update. `mac/scripts/sign-cli.sh zone-<version>-macos-universal.tar.gz`
+signs that zone with Developer ID (hardened runtime, timestamp, identifier `wtf.zayd.zone`),
+has it notarized, packs it again and prints the new SHA-256 for the Homebrew formula. A bare
+program cannot have a ticket stapled, so Gatekeeper fetches it online the first time.
 
 ## Work on it
 
@@ -233,8 +333,19 @@ mac/scripts/dev-sandbox.sh send 3           # three more, a moment later
 mac/scripts/dev-sandbox.sh clip "some text" # that phone sends a clip
 mac/scripts/dev-sandbox.sh cmd popover "snap:popover=/tmp/popover.png"
 mac/scripts/dev-sandbox.sh cmd "click:popover=314,328"      # a click, in points from the window's top left
+mac/scripts/dev-sandbox.sh cmd flash "snap:flash=/tmp/flash.png"   # the Flash window
+mac/scripts/dev-sandbox.sh cmd "flashjs:/tmp/answer.txt=return document.title"  # a script in its page
+mac/scripts/dev-sandbox.sh cmd guide:camera "snap:guide=/tmp/card.png"    # the permission card
+mac/scripts/dev-sandbox.sh cmd "pretend:localNetwork=denied" popover      # what a refusal looks like
 mac/scripts/dev-sandbox.sh stop
 ```
+
+`start --mock-camera` gives the Flash window WebKit's stand-in camera, so the whole camera
+path runs (the page asks, Zone allows the camera and refuses the microphone, pictures reach
+zone) without a real camera and without macOS asking. In a quiet run the permission card
+never opens System Settings (the page it would open is noted in `opened`), and the switch
+counts as on once the file `granted` appears in the sandbox folder. `start --front` opens the
+real System Settings, for following its window.
 
 The stand-in phone is `zone dev fake-phone`: it pairs with the very code the app is showing
 and sends items over real iroh. The commands are listed in `Zone/ZoneApp.swift`
@@ -250,9 +361,11 @@ this file was taken this way.
 | `Zone/StatusItemController.swift`, `MenuBarIcon.swift` | The Z and the window under it. |
 | `Zone/PopoverView.swift`, `SharedPanels.swift` | The popover's pages, and the pairing and agents panels the guide also uses. |
 | `Zone/WelcomeView.swift`, `FloatingView.swift` | The guide and the floating window. |
+| `Zone/FlashWindow.swift` | Flash in a Zone window: the web view, the camera, the bar above the page. |
+| `Zone/PermissionGuide.swift`, `LocalNetworkProbe.swift` | The card beside System Settings (from Hex) and asking whether the local network is allowed. What can be tested without windows (which list, where the card goes, when to bring the page back) is `ZoneKit/Permissions.swift`. |
 | `Zone/Theme.swift`, `Wave.swift`, `QRCode.swift` | The look, taken from the iPhone app: warm paper and ink, one purple accent, a serif wordmark, hard-edged shadows, the flowing wave. |
 | `project.yml` | The Xcode project, generated with `xcodegen generate`. |
-| `scripts/` | `build-app.sh`, `build-zone-binary.sh`, the sandbox scripts, and the two that draw the app icon and the disk image background. |
+| `scripts/` | `build-app.sh`, `build-zone-binary.sh`, `developer-id.sh`, `check-dmg.sh`, `sign-cli.sh`, the sandbox scripts, and the two that draw the app icon and the disk image background. |
 | `dmg/` | The disk image's layout and background. |
 
 ## Not done yet
@@ -267,5 +380,13 @@ this file was taken this way.
   app takes over.
 - Updates are a check against the latest GitHub release and a link to it. The app does not
   update itself.
-- The disk image has not been opened on a second Mac, and no Developer ID build exists yet
-  (see above).
+- No Developer ID build exists yet: the certificate waits for the Account Holder's clicks
+  (Releasing, step 1). The key and the request are made. The disk image has not been opened
+  on a second Mac.
+- Flash in the window was run end to end with WebKit's stand-in camera, not yet with this
+  Mac's real camera: that first needs macOS's camera question answered for Zone, by a person.
+- The permission card was run against the real System Settings window (following it,
+  bringing the page back twice, giving up the third time, "Done" when the switch counts as
+  on), with test switches. A real refusal of each of the four lists has not been seen, and a
+  refused Local Network answer comes from Apple's documented "local network denied" reason,
+  not from an observed one.
