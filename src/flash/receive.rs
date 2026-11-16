@@ -87,6 +87,8 @@ pub struct Stored {
     pub removed: usize,
     /// The items checked against the phone's summary and read back from the library.
     pub check: Check,
+    /// When it was stored, as the library recorded it.
+    pub stored_at: f64,
 }
 
 impl Stored {
@@ -489,7 +491,7 @@ impl Receiver {
     pub fn finish(&mut self, shape: Shape, payload: &[u8], outcome: Outcome) {
         match &outcome {
             Outcome::Stored(stored) => {
-                self.stored.insert(shape, stored_flash(&shape, stored, crate::paths::now_unix()));
+                self.stored.insert(shape, stored_flash(&shape, stored));
             }
             Outcome::AlreadyStored(earlier) => {
                 self.stored.insert(shape, (**earlier).clone());
@@ -598,8 +600,8 @@ fn not_paired_words() -> String {
     "Every code agrees, but the flash is not from a phone paired with this computer: it is sealed with a key this computer does not have. Choose Pair a phone in your library, scan the code with the phone, then flash again.".to_string()
 }
 
-/// What the library keeps of a stored flash.
-fn stored_flash(shape: &Shape, stored: &Stored, now: f64) -> StoredFlash {
+/// What the library keeps of a stored flash. The receiver keeps the same, to the bit.
+fn stored_flash(shape: &Shape, stored: &Stored) -> StoredFlash {
     StoredFlash {
         session: shape.session,
         total_len: shape.total_len,
@@ -609,7 +611,7 @@ fn stored_flash(shape: &Shape, stored: &Stored, now: f64) -> StoredFlash {
         device_id: stored.device_id.clone(),
         phone_name: stored.phone_name.clone(),
         items: stored.items,
-        stored_at: now,
+        stored_at: stored.stored_at,
     }
 }
 
@@ -688,6 +690,7 @@ fn import_inner(db: &mut Db, shape: &Shape, sealed: &[u8], now: f64) -> Result<S
         device_id: Some(device.clone()),
         offer,
         check: flash.check.clone(),
+        stored_at: now,
         ..Stored::default()
     };
     // An empty flash still counts as a sync.
@@ -708,7 +711,7 @@ fn import_inner(db: &mut Db, shape: &Shape, sealed: &[u8], now: f64) -> Result<S
         changed += applied.changed();
     }
     db.record_delivery(&device, changed, Some("flash"), now).map_err(Problem::Storage)?;
-    db.record_flash(&stored_flash(shape, &stored, now)).map_err(Problem::Storage)?;
+    db.record_flash(&stored_flash(shape, &stored)).map_err(Problem::Storage)?;
     stored.check.read_back(&flash.items, |id| db.get(id).ok().flatten());
     Ok(stored)
 }
@@ -1109,6 +1112,32 @@ mod tests {
         let kinds: Vec<&str> = events.iter().map(|e| e.event.as_str()).filter(|e| *e == "paired" || e.starts_with("flash")).collect();
         assert_eq!(kinds, vec!["paired", "flash_received"]);
         assert_eq!((db.total_items().unwrap(), db.open_offers(110.0).unwrap(), db.devices().unwrap()[0].items_received), (1200, 0, 1200));
+    }
+
+    /// "Stored before, at ..." gives the time the library recorded, the same before and after
+    /// zone restarts. zone 0.1.1 as first built kept a second reading of the clock in memory,
+    /// so the time shown moved a little across a restart.
+    #[test]
+    fn the_time_a_flash_was_stored_is_the_librarys() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.create_offer(SECRET, 100.0, 600.0).unwrap();
+        let payload = sealed(SECRET, "PHONE-S", &synthetic_items(0, 15));
+        let mut receiver = Receiver::new();
+        let (shape, rebuilt) = flash_through(&mut receiver, &payload, 0x8000_00af);
+        let outcome = import(&mut db, &shape, &rebuilt, 110.25);
+        receiver.finish(shape, &rebuilt, outcome);
+        let recorded = db.stored_flashes().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].stored_at.to_bits(), 110.25f64.to_bits());
+        let encoder = Encoder::new(0x8000_00af, &payload, 300).unwrap();
+        receiver.reset();
+        let mut restarted = Receiver::with_stored(db.stored_flashes().unwrap());
+        for receiver in [&mut receiver, &mut restarted] {
+            assert!(matches!(receiver.add(&encoder.frame(2)), Step::AlreadyDone));
+            let result = &receiver.status()["result"];
+            assert_eq!((result["already_stored"].as_bool(), result["stored_at"].as_f64()), (Some(true), Some(110.25)), "{result}");
+        }
+        assert_eq!(receiver.stored.get(&shape), recorded.first(), "the receiver keeps what the library has");
     }
 
     /// SQLite may answer some errors (a full disk, an I/O error, no memory) by rolling the
