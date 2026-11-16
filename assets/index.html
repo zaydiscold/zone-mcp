@@ -245,12 +245,14 @@ ol.entries { list-style: none; margin: 0; padding: 0; }
 .turns.clamp { max-height: calc(1.6em * 7); overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
 .more { display: inline-block; margin-top: 6px; }
 .meta { display: flex; align-items: center; gap: 12px; margin-top: 8px; color: var(--quiet); font-size: 13px; min-height: 26px; }
-.meta .info { flex: 1 1 auto; min-width: 0; line-height: 1.55; }
+/* Parts never break inside, and a separator that would start a line is clipped away. */
+.meta .info { flex: 1 1 auto; min-width: 0; overflow: hidden; line-height: 1.55; }
+.meta .parts { display: flex; flex-wrap: wrap; margin-left: -17px; }
+.meta .parts > span { white-space: nowrap; }
+.meta .parts > span::before { content: "\00b7"; display: inline-block; width: 17px; text-align: center; color: var(--faint); }
 .meta svg { width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; color: var(--muted); }
 .meta .kind { color: var(--muted); white-space: nowrap; }
-.meta .sep::before { content: "\00b7"; margin: 0 7px; color: var(--faint); }
-.meta .mtime { display: none; }
-.meta .after-time::before { display: none; }
+.meta .parts > .mtime { display: none; }
 .meta .copy { flex: none; }
 .copy {
   height: 26px; padding: 0 12px; border-radius: 999px; font-size: 12px; font-weight: 550;
@@ -344,8 +346,7 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
   .dayHead .date { display: none; }
   .entry { display: block; padding: 16px 0 14px; }
   .entry > time { display: none; }
-  .meta .mtime { display: inline; }
-  .meta .after-time::before { display: inline; }
+  .meta .parts > .mtime { display: inline; }
 }
 @media (max-width: 420px) {
   .navlink { padding: 0 8px; margin: 0 -4px; }
@@ -807,20 +808,19 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
 
     const meta = el("div", "meta");
     const info = el("span", "info");
+    const parts = el("span", "parts");
+    info.append(parts);
     const kind = el("span", "kind");
     if (ICONS[item.kind]) kind.append(svg(ICONS[item.kind]));
     kind.append(KIND_ONE[item.kind] || item.kind);
     const mtime = el("span", "mtime", when);
     mtime.setAttribute("aria-hidden", "true");
-    info.append(mtime);
-    const mkind = el("span", "sep after-time");
-    mkind.append(kind);
-    info.append(mkind);
+    parts.append(mtime, kind);
     // A voice note's source says the same as its kind.
-    if (item.source && !(item.kind === "note" && item.source === "note")) info.append(el("span", "sep", SOURCE_NAMES[item.source] || item.source));
+    if (item.source && !(item.kind === "note" && item.source === "note")) parts.append(el("span", null, SOURCE_NAMES[item.source] || item.source));
     const length = duration(item.duration_s);
-    if (length && item.kind !== "clip") info.append(el("span", "sep", length));
-    if (item.words) info.append(el("span", "sep", plural(item.words, "word", "words")));
+    if (length && item.kind !== "clip") parts.append(el("span", null, length));
+    if (item.words) parts.append(el("span", null, plural(item.words, "word", "words")));
     meta.append(info);
     const copy = el("button", "copy", "Copy");
     copy.type = "button";
@@ -864,7 +864,7 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
     if (state.q) {
       parts.push(plural(data.total, "match", "matches"));
       if (data.total > state.shown) parts.push("the newest " + state.shown.toLocaleString() + " shown");
-      if (data.matched === "prefix") parts.push("found by the beginnings of words");
+      if (data.total && data.matched === "prefix") parts.push("found by the beginnings of words");
     } else {
       const single = state.kinds.size === 1 ? [...state.kinds][0] : null;
       parts.push(single ? plural(data.total, (KIND_ONE[single] || single).toLowerCase(), (KIND_NAMES[single] || single).toLowerCase()) : plural(data.total, "item", "items"));
