@@ -148,7 +148,7 @@ h1 { margin: 0; font: 600 38px/1.08 var(--serif); letter-spacing: -0.015em; text
 .panel { width: min(100%, max(300px, calc(100vh - 400px))); margin: 0 auto; }
 .panel-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0 2px 10px; font-size: 13px; }
 .panel-title b { color: var(--ink); font-weight: 600; }
-.panel-title .meta { color: var(--quiet); font-size: 12.5px; }
+.panel-title .meta { color: var(--quiet); font-size: 12.5px; text-align: right; }
 .box {
   position: relative; aspect-ratio: 1; border-radius: 14px; overflow: hidden;
   background: var(--card); box-shadow: inset 0 0 0 1px var(--rule), 2px 3px 0 var(--shadow);
@@ -440,6 +440,9 @@ select {
   let session = null;
   let revealAt = 0;
   let storingSince = 0;
+  // The flash's name, as the phone shows it under its codes and in its Done question: the
+  // session as eight hexadecimal digits in two groups, "8f3a 21c4".
+  let flashName = "";
   let lastStatus = { state: "waiting" };
   let appliedSeen = -1;
   let colorSeenAt = -1e9;
@@ -640,7 +643,10 @@ select {
     $("heldBar").style.width = (k ? (over ? 100 : (rows / k) * 100) : 0) + "%";
     $("solvedBar").style.width = (k ? (over ? 100 : (solvedCount / k) * 100) : 0) + "%";
     $("track").setAttribute("aria-valuenow", String(percent));
-    setText("mosaicMeta", k ? plural(k, "piece", "pieces") + ", " + Math.round((status.bytes || 0) / 1024) + " KB" : "waiting for the first code");
+    flashName = status.name || (status.session ? status.session.slice(0, 4) + " " + status.session.slice(4) : "");
+    const kb = Math.round((status.bytes || 0) / 1024);
+    const size = kb < 1000 ? kb + " KB" : (kb / 1024).toFixed(1) + " MB";
+    setText("mosaicMeta", k ? (flashName ? "Flash " + flashName + ", " : "") + plural(k, "piece", "pieces") + ", " + size : "waiting for the first code");
     $("idle").hidden = k > 0;
     tally(status, over);
 
@@ -797,8 +803,8 @@ select {
       setText("nChanged", count(r.changed));
       setText("nSame", count(r.unchanged));
       const parts = [];
-      const from = r.phone ? "From " + r.phone + ": " : "";
-      parts.push(from + plural(r.items || 0, "item", "items") + " received.");
+      const which = flashName ? "Flash " + flashName : "The flash";
+      parts.push(which + (r.phone ? " from " + r.phone : "") + ": " + plural(r.items || 0, "item", "items") + " received.");
       if (r.deletions) parts.push(plural(r.deletions, "deletion", "deletions") + " applied.");
       if (r.rejected) parts.push(plural(r.rejected, "item", "items") + " could not be read.");
       if (r.paired) parts.push("This iPhone is now paired with this computer.");
@@ -811,7 +817,7 @@ select {
       setText("badgeText", "Assembled");
       $("badge").classList.add("show");
       setText("state", "Assembled. " + plural(r.items || 0, "item", "items") + " received");
-      announce("Done. " + (r.new || 0) + " new, " + (r.changed || 0) + " changed, " + (r.unchanged || 0) + " already here.");
+      announce("Done" + (flashName ? " for flash " + flashName : "") + ". " + (r.new || 0) + " new, " + (r.changed || 0) + " changed, " + (r.unchanged || 0) + " already here.");
     };
     if ($("result").hidden) {
       const wait = Math.max(0, revealAt - performance.now());
@@ -826,7 +832,7 @@ select {
     const when = r.stored_at ? new Date(r.stored_at * 1000).toLocaleString(undefined, { dateStyle: "long", timeStyle: "short" }) : "";
     const from = r.phone ? " from " + r.phone : "";
     $("stats").hidden = true;
-    setText("resultText", "This flash was stored" + (when ? " on " + when : " before") + ": " + plural(r.items || 0, "item", "items") + from + ". It was not stored again, so nothing in your library changed. If the library on the phone has changed since, close Send by Flash on the phone and open it again for a new flash.");
+    setText("resultText", (flashName ? "Flash " + flashName : "This flash") + " was stored" + (when ? " on " + when : " before") + ": " + plural(r.items || 0, "item", "items") + from + ". It was not stored again, so nothing in your library changed. You can tap Done on the phone.");
     setText("checkText", "");
     $("result").hidden = false;
     $("badge").classList.remove("bad");

@@ -241,8 +241,15 @@ struct Tiles {
 
 impl Tiles {
     fn hex(words: &[u64], k: usize) -> String {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
         let bytes = k.div_ceil(8);
-        (0..bytes).map(|b| format!("{:02x}", (words[b / 8] >> (8 * (b % 8))) & 0xff)).collect()
+        let mut out = String::with_capacity(bytes * 2);
+        for b in 0..bytes {
+            let byte = (words[b / 8] >> (8 * (b % 8))) as u8;
+            out.push(DIGITS[usize::from(byte >> 4)] as char);
+            out.push(DIGITS[usize::from(byte & 15)] as char);
+        }
+        out
     }
 
     fn of(decoder: &Decoder) -> Option<Tiles> {
@@ -557,6 +564,7 @@ impl Receiver {
         json!({
             "state": state,
             "session": format!("{:08x}", shape.session),
+            "name": flash_name(shape.session),
             "frames": tally.caught,
             "rows": session.rank,
             "k": session.k,
@@ -578,6 +586,12 @@ impl Receiver {
             "last": last,
         })
     }
+}
+
+/// The name a flash goes by on the phone and on the page: its session as eight hexadecimal
+/// digits in two groups of four, `8f3a 21c4`.
+pub fn flash_name(session: u32) -> String {
+    format!("{:04x} {:04x}", session >> 16, session & 0xffff)
 }
 
 fn not_paired_words() -> String {
@@ -850,6 +864,9 @@ mod tests {
         assert!(matches!(receiver.add(&encoder.frame(2)), Step::Progress { useful: false }));
         let status = receiver.status();
         assert_eq!((status["state"].as_str(), status["rows"].as_u64(), status["frames"].as_u64()), (Some("receiving"), Some(1), Some(1)));
+        // The name the phone shows for this flash: its session, 7, in two groups of four.
+        assert_eq!((status["session"].as_str(), status["name"].as_str()), (Some("00000007"), Some("0000 0007")));
+        assert_eq!(flash_name(0x8f3a_21c4), "8f3a 21c4");
         assert_eq!(status["k"].as_u64(), Some(encoder.k() as u64));
         // One tile per chunk: chunk 2 is held and solved (bit 2 of the first byte).
         let k = encoder.k();

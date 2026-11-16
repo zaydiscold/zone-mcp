@@ -779,7 +779,8 @@ mod tests {
         assert!(!FLASH_PAGE.contains("zone pair"));
         // A flash stored before says so, and zone being busy putting one together is not taken
         // for the phone going out of sight.
-        for needle in ["already_stored", "status.result.already_stored", "storingSince"] {
+        // The flash goes by the name the phone shows under its codes and in its Done question.
+        for needle in ["already_stored", "status.result.already_stored", "storingSince", "status.name", "\"Flash \" + flashName"] {
             assert!(FLASH_PAGE.contains(needle), "{needle}");
         }
         // Nothing but its own nonce runs or styles it.
