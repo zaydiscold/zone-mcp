@@ -98,6 +98,7 @@ if [ -n "$formula" ]; then
 fi
 if [ -n "$sums" ] && [ -n "$formula" ]; then
     echo "Upload the three together: gh release upload v$version \"$out\" \"$build/SHA256SUMS\" \"$build/zone.rb\" --clobber"
+    echo "Once the Homebrew tap is published, copy $build/zone.rb to the tap's Formula/zone.rb too."
 else
     echo "Warning: the release's SHA256SUMS and zone.rb still name the unsigned tarball. Replacing only the tarball" >&2
     echo "breaks install.sh and zone update on every Mac. Run again with --sums and --formula." >&2
