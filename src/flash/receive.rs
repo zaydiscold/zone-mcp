@@ -13,7 +13,7 @@
 //!
 //! Nothing here logs or returns any item's text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
@@ -35,6 +35,9 @@ const BATCH: usize = 500;
 /// The page is told which chunks are known, one tile each, up to this many chunks (about
 /// 4.6 MB of sealed payload). A larger flash reports counts only.
 const MAX_TILES: usize = 16_384;
+/// Finished flashes remembered after their session is dropped, so that one still on a
+/// phone's screen is never stored twice.
+const FINISHED_REMEMBERED: usize = 64;
 /// After the library could not take an opened flash, how long to wait before trying again.
 pub const STORE_RETRY: Duration = Duration::from_secs(3);
 
@@ -152,13 +155,21 @@ struct Session {
     /// Order of arrival of the last frame that was not of a finished flash, to tell which
     /// session is the current one.
     touched: u64,
-    touched_at: Instant,
     /// Stored, or failed for good.
     outcome: Option<Outcome>,
     /// A payload that opened but that the library could not take yet, and when it was tried.
     unstored: Option<(Vec<u8>, Instant)>,
     /// What to say if the payload that did not open turns out to be sealed for another computer.
     unopened: Option<String>,
+    /// Codes of this flash misread so that their header named another one (see [`near`]).
+    misnamed: usize,
+}
+
+/// True when one header is a misreading of the other: the same chunk size, and the session,
+/// the payload length and the chunk count differ by two bits at most in all. Two flashes made
+/// apart have random sessions, about 16 bits apart.
+fn near(a: &Shape, b: &Shape) -> bool {
+    a.chunk == b.chunk && (a.session ^ b.session).count_ones() + (a.total_len ^ b.total_len).count_ones() + (a.k ^ b.k).count_ones() <= 2
 }
 
 /// Which chunks are known, as hexadecimal bit sets: chunk `n` is bit `n % 8` (the lowest
@@ -233,6 +244,8 @@ pub enum Step {
 #[derive(Default)]
 pub struct Receiver {
     sessions: HashMap<Shape, Session>,
+    /// Flashes stored or failed for good, newest last, including ones whose session was dropped.
+    finished: VecDeque<Shape>,
     clock: u64,
     /// Pictures looked at, and how many of them had a code in them.
     pub pictures: u64,
@@ -255,24 +268,33 @@ impl Receiver {
         Receiver::default()
     }
 
-    /// Makes room for one more flash. A flash that has barely started and gone quiet (often
-    /// one that only a misread code named) goes first, then a finished one, then the one
-    /// heard from longest ago.
+    /// Makes room for one more flash. A flash that has caught one code at most goes first
+    /// (often one that only a misread code named), then a finished one, then the one heard
+    /// from longest ago.
     fn make_room(&mut self) {
         if self.sessions.len() < MAX_SESSIONS {
             return;
         }
-        let quiet = |s: &Session| s.outcome.is_none() && s.tally.caught <= 1 && s.touched_at.elapsed() > Duration::from_secs(2);
+        let barely = |s: &Session| s.outcome.is_none() && s.tally.caught <= 1;
         let victim = self
             .sessions
             .iter()
-            .filter(|(_, s)| quiet(s))
+            .filter(|(_, s)| barely(s))
             .min_by_key(|(_, s)| s.touched)
             .or_else(|| self.sessions.iter().filter(|(_, s)| s.outcome.is_some()).min_by_key(|(_, s)| s.touched))
             .or_else(|| self.sessions.iter().min_by_key(|(_, s)| s.touched))
             .map(|(shape, _)| *shape);
         if let Some(shape) = victim {
             self.sessions.remove(&shape);
+        }
+    }
+
+    fn remember_finished(&mut self, shape: Shape) {
+        if !self.finished.contains(&shape) {
+            if self.finished.len() == FINISHED_REMEMBERED {
+                self.finished.pop_front();
+            }
+            self.finished.push_back(shape);
         }
     }
 
@@ -285,6 +307,26 @@ impl Receiver {
         self.clock += 1;
         let clock = self.clock;
         if !self.sessions.contains_key(&frame.shape) {
+            if self.finished.contains(&frame.shape) {
+                self.frames_read += 1;
+                return Step::AlreadyDone;
+            }
+            // A code of a flash already being read (or finished), whose header was misread.
+            let parent = self
+                .sessions
+                .iter_mut()
+                .filter(|(shape, s)| near(shape, &frame.shape) && (s.outcome.is_some() || s.tally.caught >= 2))
+                .max_by_key(|(_, s)| s.tally.caught)
+                .map(|(_, s)| s);
+            if let Some(parent) = parent {
+                self.frames_read += 1;
+                parent.misnamed += 1;
+                return if parent.outcome.is_some() { Step::AlreadyDone } else { Step::Progress { useful: false } };
+            }
+            if self.finished.iter().any(|shape| near(shape, &frame.shape)) {
+                self.frames_read += 1;
+                return Step::AlreadyDone;
+            }
             self.make_room();
             let assembler = Assembler::new(frame.shape);
             let session = Session {
@@ -295,10 +337,10 @@ impl Receiver {
                 tiles: Tiles::of(assembler.decoder()),
                 assembler: Some(assembler),
                 touched: clock,
-                touched_at: Instant::now(),
                 outcome: None,
                 unstored: None,
                 unopened: None,
+                misnamed: 0,
             };
             self.sessions.insert(frame.shape, session);
         }
@@ -310,7 +352,6 @@ impl Receiver {
             return Step::AlreadyDone;
         }
         session.touched = clock;
-        session.touched_at = Instant::now();
         if let Some((payload, tried)) = &session.unstored {
             if tried.elapsed() >= self.store_retry.unwrap_or(STORE_RETRY) {
                 return Step::Complete { shape: frame.shape, payload: payload.clone() };
@@ -341,6 +382,7 @@ impl Receiver {
             session.outcome = Some(Outcome::Failed(reason.clone()));
             session.assembler = None;
             session.trouble = None;
+            self.remember_finished(frame.shape);
             return Step::GaveUp { reason, bytes: frame.shape.total_len as usize };
         }
         Step::Progress { useful }
@@ -366,6 +408,7 @@ impl Receiver {
                 session.trouble = None;
                 session.rank = session.k;
                 session.tiles = Tiles::all(session.k);
+                self.remember_finished(shape);
             }
         }
     }
@@ -437,7 +480,7 @@ impl Receiver {
                 "missed": tally.missed,
                 "missed_ranges": tally.missed_ranges.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
                 "repeats": tally.repeats,
-                "set_aside": tally.set_aside,
+                "set_aside": tally.set_aside + session.misnamed,
             },
             "trouble": session.trouble.map(Trouble::as_str),
             "result": session.outcome.as_ref().map(Outcome::to_json),

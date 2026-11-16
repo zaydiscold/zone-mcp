@@ -20,6 +20,8 @@
 //! The key opens flashes. It cannot be turned back into the pairing secret.
 
 pub mod assemble;
+#[cfg(test)]
+mod breakit;
 pub mod check;
 pub mod color;
 pub mod dev;

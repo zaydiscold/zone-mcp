@@ -245,8 +245,20 @@ pub enum Reduced {
     Useful { slot: usize },
     /// A check that came out even. `support` is which rows (by slot) it was checked against.
     Agreed { support: Vec<u64> },
-    /// A check that did not.
-    Disagreed { support: Vec<u64> },
+    /// A check that did not. `residual` is a fingerprint of the difference, which is the sum
+    /// of the errors of the misread readings involved: checks that name the same misread
+    /// reading, and no other, have the same residual.
+    Disagreed { support: Vec<u64>, residual: u64 },
+}
+
+/// A 64-bit fingerprint of some bytes (FNV-1a, folded), to tell bodies and residuals apart.
+pub(super) fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash ^ (hash >> 29)
 }
 
 struct Row {
@@ -352,7 +364,7 @@ impl Decoder {
             }
             if top == 0 {
                 let even = body.iter().all(|b| *b == 0);
-                break if even { Reduced::Agreed { support: made_of } } else { Reduced::Disagreed { support: made_of } };
+                break if even { Reduced::Agreed { support: made_of } } else { Reduced::Disagreed { support: made_of, residual: fingerprint(&body) } };
             }
             let pivot = (top - 1) * 64 + 63 - mask[top - 1].leading_zeros() as usize;
             match &self.rows[pivot] {

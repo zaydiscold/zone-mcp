@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::fountain::{Decoder, Reduced, Shape};
+use super::fountain::{Decoder, Reduced, Shape, fingerprint};
 
 /// Flashes of up to this many chunks remember which readings made each row.
 pub const TRACK_LIMIT: usize = 16_384;
@@ -39,22 +39,13 @@ pub const CONFIRMATIONS: usize = 16;
 const SET_ASIDE_AT_MOST: usize = 8;
 /// Readings to wait, while a few suspects stop narrowing, before setting them all aside.
 const PATIENCE: usize = 24;
-/// Uneven checks kept before giving up on finding the culprit and starting over.
-const MAX_CONFLICTS: usize = 64;
+/// Uneven checks kept before giving up on finding the culprits and starting over, beyond
+/// four for every chunk.
+const MAX_CONFLICTS: usize = 256;
 /// Rebuilds before starting over from nothing.
-const MAX_REBUILDS: usize = 8;
+const MAX_REBUILDS: usize = 32;
 /// Code number ranges named in a tally.
 pub const RANGES_NAMED: usize = 6;
-
-/// A 64-bit fingerprint of a body, to tell two readings of the same code number apart.
-fn fingerprint(body: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in body {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash ^ (hash >> 29)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Known {
@@ -76,6 +67,8 @@ struct Conflict {
     reading: usize,
     /// The rows it was checked against, by slot.
     support: Vec<u64>,
+    /// Which errors it adds up (see [`Reduced::Disagreed`]).
+    residual: u64,
 }
 
 /// What one reading did.
@@ -246,9 +239,9 @@ impl Assembler {
                 }
                 false
             }
-            Reduced::Disagreed { support } => {
+            Reduced::Disagreed { support, residual } => {
                 if self.tracking {
-                    self.conflicts.push(Conflict { reading: position, support });
+                    self.conflicts.push(Conflict { reading: position, support, residual });
                 } else {
                     self.uneven = true;
                 }
@@ -274,7 +267,7 @@ impl Assembler {
             self.suspects = usize::MAX;
             return;
         }
-        if self.conflicts.len() > MAX_CONFLICTS || self.rebuilds >= MAX_REBUILDS {
+        if self.conflicts.len() > MAX_CONFLICTS + 4 * self.k() || self.rebuilds >= MAX_REBUILDS {
             self.start_over();
             return;
         }
@@ -294,43 +287,59 @@ impl Assembler {
                 return;
             }
         }
-        // Rows still suspected by every uneven check, and by any.
-        let mut every = open(&self.conflicts[0], &self.cleared);
-        let mut any = every.clone();
-        for conflict in &self.conflicts[1..] {
-            for (w, bits) in open(conflict, &self.cleared).into_iter().enumerate() {
-                every[w] &= bits;
-                any[w] |= bits;
+        // Uneven checks with the same residual add up the same errors: most often those of one
+        // misread reading. For each such group, the rows every check in it names are suspects,
+        // and with only one check in the group, so is its own reading. Several misread readings
+        // are then found side by side, each by its own group.
+        let mut groups: HashMap<u64, (Vec<u64>, Vec<usize>)> = HashMap::new();
+        for conflict in &self.conflicts {
+            let bits = open(conflict, &self.cleared);
+            match groups.get_mut(&conflict.residual) {
+                Some((rows, readings)) => {
+                    for (w, b) in bits.into_iter().enumerate() {
+                        rows[w] &= b;
+                    }
+                    readings.push(conflict.reading);
+                }
+                None => {
+                    groups.insert(conflict.residual, (bits, vec![conflict.reading]));
+                }
             }
         }
-        // With one uneven check, its own reading is as suspect as its rows. With more, one
-        // misread row explains them all and is in every set; when none is, more than one
-        // reading was misread and any of the rows named may be.
-        let (rows, checks): (Vec<u64>, Vec<usize>) = if self.conflicts.len() == 1 {
-            (every, vec![self.conflicts[0].reading])
-        } else if count(&every) > 0 {
-            (every, Vec::new())
-        } else {
-            (any, Vec::new())
+        let suspects_of = |(rows, readings): &(Vec<u64>, Vec<usize>)| -> (Vec<u64>, Vec<usize>) {
+            (rows.clone(), if readings.len() == 1 { readings.clone() } else { Vec::new() })
         };
-        let suspects = count(&rows) + checks.len();
-        if suspects < self.suspects {
-            self.suspects = suspects;
+        let size = |(rows, checks): &(Vec<u64>, Vec<usize>)| count(rows) + checks.len();
+        let candidates: Vec<(Vec<u64>, Vec<usize>)> = groups.values().map(suspects_of).filter(|c| size(c) > 0).collect();
+        let fewest = candidates.iter().map(size).min().unwrap_or(usize::MAX);
+        if fewest < self.suspects {
+            self.suspects = fewest;
             self.patience = 0;
         } else if after_check {
             self.patience += 1;
         }
-        let settled = suspects == 1 || (suspects <= SET_ASIDE_AT_MOST && self.patience >= PATIENCE);
-        if !settled {
+        // Every group down to one suspect is settled; failing that, the smallest group once it
+        // has stopped narrowing.
+        let mut settled: Vec<&(Vec<u64>, Vec<usize>)> = candidates.iter().filter(|c| size(c) == 1).collect();
+        if settled.is_empty() && fewest <= SET_ASIDE_AT_MOST && self.patience >= PATIENCE {
+            settled.extend(candidates.iter().filter(|c| size(c) == fewest).take(1));
+        }
+        if settled.is_empty() {
             return;
         }
-        let mut positions = checks;
-        for slot in 0..self.slots.len() {
-            if rows[slot / 64] >> (slot % 64) & 1 == 1 {
-                positions.push(self.slots[slot]);
+        let mut positions: Vec<usize> = Vec::new();
+        let mut rows_affected = false;
+        for (rows, checks) in settled {
+            positions.extend(checks);
+            for slot in 0..self.slots.len() {
+                if rows[slot / 64] >> (slot % 64) & 1 == 1 {
+                    positions.push(self.slots[slot]);
+                    rows_affected = true;
+                }
             }
         }
-        let rows_affected = count(&rows) > 0;
+        positions.sort_unstable();
+        positions.dedup();
         for position in &positions {
             self.set_reading_aside(*position);
         }

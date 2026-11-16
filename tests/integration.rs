@@ -580,7 +580,21 @@ fn flash_pictures_through_the_command_line_and_the_daemon() {
     assert_eq!(last["k"].as_u64(), Some(k));
     assert_eq!(ones(last["blocks"]["solved"].as_str().unwrap()), k, "every tile is lit at the end");
     assert!(most_solved < k, "the last frames resolve the rest at once");
-    assert_eq!(last["result"], json!({ "ok": true, "phone": "Flash phone", "items": 130, "new": 130, "changed": 0, "unchanged": 0, "deletions": 0, "rejected": 0, "paired": true }));
+    // Every item read back from the library as it arrived. `zone dev flash-encode` writes no
+    // phone summary, so there is nothing declared to compare with.
+    let mut result = last["result"].clone();
+    let check = result.as_object_mut().unwrap().remove("check").expect("the result says how the items checked");
+    assert_eq!(result, json!({ "ok": true, "phone": "Flash phone", "items": 130, "new": 130, "changed": 0, "unchanged": 0, "deletions": 0, "rejected": 0, "paired": true }));
+    assert_eq!(
+        (check["items"].as_u64(), check["declared"].as_u64(), check["read_back"].as_u64(), check["all_checked"].as_bool(), check["problem"].is_null()),
+        (Some(130), None, Some(130), Some(true), true),
+        "{check}"
+    );
+    assert!(check["oldest"].as_f64().unwrap() <= check["newest"].as_f64().unwrap());
+    // The tally: every code number from 1 up to the highest caught, less the ones missed.
+    let codes = &last["codes"];
+    assert_eq!(codes["caught"].as_u64().unwrap() + codes["missed"].as_u64().unwrap(), codes["shown"].as_u64().unwrap(), "{codes}");
+    assert_eq!(last["needed"], 0);
     assert_eq!(total_items(&sandbox), 130);
 
     // The flash paired the phone and used the code up.
