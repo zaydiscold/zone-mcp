@@ -267,6 +267,8 @@ ol.entries { list-style: none; margin: 0; padding: 0; }
 mark { background: var(--accent-wash); color: inherit; border-radius: 2px; padding: 0 1px; box-shadow: inset 0 -1.5px 0 var(--accent); }
 
 .empty { padding: 72px 0 40px; max-width: 460px; }
+.empty.locked { margin: 0 auto; padding: 18vh 24px 40px; }
+.empty.locked h2 { margin-top: 40px; font-size: 34px; }
 .empty h2 { margin: 0 0 10px; font: 600 28px/1.15 var(--serif); }
 .empty p { margin: 0 0 22px; color: var(--muted); font-size: 15.5px; }
 .status-line { margin: 26px 0 0; color: var(--muted); }
@@ -496,8 +498,10 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
   const state = { q: "", kinds: new Set(), sources: new Set(), from: "", to: "", range: "all", cursor: null, loading: false, revision: null, lastDay: null, shown: 0, total: 0, matched: null };
   let status = null;
   let request = 0;
-  let known = new Set();
-  let firstLoad = true;
+  // Every item shown so far. After the library changes, the ones not in it are new and land in
+  // the accent; a change of filter shows older items for the first time and marks none.
+  const known = new Set();
+  let arrivals = false;
 
   async function api(path, options) {
     const response = await fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {}));
@@ -511,7 +515,7 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
     const box = el("main", "empty locked");
     const code = el("code", null, "zone open");
     const p = el("p");
-    p.append("Run ", code, " in a terminal. It opens this page with the key that unlocks it in this browser.");
+    p.append("Run ", code, " in a terminal, or choose History in Zone for Mac. Either opens this page with the key that unlocks it in this browser.");
     const mark = el("div", "mark");
     mark.append("zone", el("span", "dot"));
     box.append(mark, el("h2", null, "This page is locked."), p);
@@ -883,6 +887,9 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
   async function load(reset) {
     if (state.loading && !reset) return;
     const mine = ++request;
+    // Only the load the library's change asked for marks new items.
+    const marking = arrivals;
+    arrivals = false;
     state.loading = true;
     const params = new URLSearchParams();
     if (state.q) params.set("q", state.q);
@@ -925,12 +932,9 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
         section.append(head, entries);
         list.append(section);
       }
-      const arrived = !firstLoad && reset && !state.q && !known.has(item.id);
-      entries.append(renderItem(item, arrived));
+      entries.append(renderItem(item, marking && !known.has(item.id)));
     }
-    if (reset && !state.q && !state.kinds.size && !state.sources.size && !state.from) known = seen;
-    else for (const id of seen) known.add(id);
-    firstLoad = false;
+    for (const id of seen) known.add(id);
     state.shown += data.items.length;
     state.total = data.total;
     state.cursor = data.next_cursor;
@@ -987,7 +991,7 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
         light.classList.remove("ping"); void light.offsetWidth; light.classList.add("ping");
       }
       calendar.load(true);
-      if (window.scrollY < 200 && !state.q) load(true); else $("fresh").hidden = false;
+      if (window.scrollY < 200 && !state.q) { arrivals = true; load(true); } else $("fresh").hidden = false;
     }
   }
 
@@ -1177,7 +1181,7 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
   new IntersectionObserver((entries) => {
     if (entries.some((entry) => entry.isIntersecting) && state.cursor) load(false);
   }, { rootMargin: "600px" }).observe($("more"));
-  $("fresh").addEventListener("click", () => { $("fresh").hidden = true; window.scrollTo({ top: 0 }); load(true); });
+  $("fresh").addEventListener("click", () => { $("fresh").hidden = true; window.scrollTo({ top: 0 }); arrivals = true; load(true); });
 
   // ---------------------------------------------------------------- pairing
 
