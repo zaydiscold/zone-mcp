@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>Zone</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a2a2a'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%239b7dff'/%3E%3C/svg%3E">
+<style nonce="__NONCE__">
+/* The page zone shows a browser that has not been given the key yet. Same paper, ink and
+   serif as the library: see assets/index.html. */
+@font-face { font-family: "Zone Serif"; src: url("/font/zone-serif.woff2") format("woff2"); font-weight: 400 700; font-display: swap; }
+:root { --paper: #2a2a2a; --ink: #f1e9d2; --muted: #c9c1ab; --accent: #9b7dff; --code: rgba(241, 233, 210, 0.08);
+  --serif: ui-serif, "Zone Serif", Charter, "Iowan Old Style", "Sitka Text", Cambria, Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell, "Noto Sans", "Helvetica Neue", Arial, sans-serif; }
+@media (prefers-color-scheme: light) { :root { --paper: #f1e9d2; --ink: #333333; --muted: #555555; --accent: #7a5af0; --code: rgba(51, 51, 51, 0.07); } }
+html, body { height: 100%; }
+body { margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; background: var(--paper); color: var(--ink); font: 16px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+main { max-width: 440px; }
+.mark { display: inline-flex; align-items: baseline; gap: 0.06em; font: 600 25px/1 var(--serif); }
+.mark span { display: inline-block; width: 0.2em; height: 0.2em; border-radius: 50%; background: var(--accent); }
+h1 { margin: 40px 0 12px; font: 600 34px/1.12 var(--serif); letter-spacing: -0.01em; }
+p { margin: 0; color: var(--muted); }
+code { font: 0.9em ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--ink); background: var(--code); padding: 2px 6px; border-radius: 5px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark" aria-label="Zone">zone<span aria-hidden="true"></span></div>
+  <h1>This page is locked.</h1>
+  <p>Run <code>zone open</code> in a terminal, or choose History in Zone for Mac. Either opens this page with the key that unlocks it in this browser.</p>
+</main>
+</body>
+</html>

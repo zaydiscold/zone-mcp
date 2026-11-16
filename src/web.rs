@@ -43,6 +43,11 @@ pub const DEFAULT_PORT: u16 = 47813;
 
 const PAGE: &str = include_str!("../assets/index.html");
 const FLASH_PAGE: &str = include_str!("../assets/flash.html");
+/// What a browser without the key sees.
+const LOCKED_PAGE: &str = include_str!("../assets/locked.html");
+/// The pages' serif: Charis SemiBold (SIL Global, OFL 1.1), subset and renamed Zone Serif. It is
+/// served from here so the pages need nothing from the network. See assets/fonts/README.md.
+const SERIF: &[u8] = include_bytes!("../assets/fonts/zone-serif.woff2");
 /// The largest request body read: one camera picture, a gray byte per pixel or three for a
 /// color one (1080 by 1080 in color is about 3.5 MB).
 const MAX_BODY: usize = 4 * 1024 * 1024;
@@ -237,9 +242,9 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
                 if same_secret(offered, &state.token) {
                     return redirect_with_session(state, "/");
                 }
-                return locked();
+                return locked(nonce);
             }
-            if has_session(head, state) { page(nonce) } else { locked() }
+            if has_session(head, state) { page(nonce) } else { locked(nonce) }
         }
         "/api/status" if get => guarded(head, state, |db| status(db, state)),
         "/api/items" if get => guarded(head, state, |db| items(db, &head.query)),
@@ -253,12 +258,12 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
                 if same_secret(offered, &state.token) {
                     return redirect_with_session(state, "/flash");
                 }
-                return locked();
+                return locked(nonce);
             }
             if has_session(head, state) {
                 html(StatusCode::OK, FLASH_PAGE.replace("__NONCE__", nonce))
             } else {
-                locked()
+                locked(nonce)
             }
         }
         "/api/flash/status" if get => flash_status(head, state),
@@ -271,7 +276,9 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
             receiver.reset();
             Ok(())
         }),
-        "/" | "/flash" | "/api/status" | "/api/items" | "/api/item" | "/api/pair" | "/api/flash/status" | "/api/flash/picture"
+        // The font holds nothing private, so the locked page can use it too.
+        "/font/zone-serif.woff2" if get => font(),
+        "/" | "/flash" | "/font/zone-serif.woff2" | "/api/status" | "/api/items" | "/api/item" | "/api/pair" | "/api/flash/status" | "/api/flash/picture"
         | "/api/flash/frame" | "/api/flash/reset" => text(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed."),
         _ => text(StatusCode::NOT_FOUND, "Not found."),
     }
@@ -436,15 +443,14 @@ fn page(nonce: &str) -> Reply {
     html(StatusCode::OK, PAGE.replace("__NONCE__", nonce))
 }
 
-fn locked() -> Reply {
-    html(
-        StatusCode::UNAUTHORIZED,
-        "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <meta name=\"color-scheme\" content=\"dark light\"><title>Zone</title>\
-         <body><h1>This page is locked</h1><p>Run <code>zone open</code> in a terminal. It opens this page with the key \
-         that unlocks it in this browser.</p></body>"
-            .to_string(),
-    )
+fn locked(nonce: &str) -> Reply {
+    html(StatusCode::UNAUTHORIZED, LOCKED_PAGE.replace("__NONCE__", nonce))
+}
+
+fn font() -> Reply {
+    let mut reply = Response::new(Full::new(Bytes::from_static(SERIF)));
+    reply.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("font/woff2"));
+    reply
 }
 
 /// Swaps the key in the address for a cookie and sends the browser on to `to`, one of this
@@ -463,7 +469,7 @@ fn redirect_with_session(state: &WebState, to: &'static str) -> Reply {
 /// Headers on every reply. Nothing may be loaded from anywhere but this page itself.
 fn secure(mut reply: Reply, nonce: &str) -> Reply {
     let csp = format!(
-        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; img-src data:; \
+        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; img-src data:; font-src 'self'; \
          media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     let headers = reply.headers_mut();
@@ -703,10 +709,12 @@ mod tests {
     #[test]
     fn token_becomes_a_cookie_and_leaves_the_url() {
         let state = state();
-        // Without anything: locked, and the page is not sent.
+        // Without anything: locked, and the page is not sent. The locked page says how to get in.
         let reply = route(&head(Method::GET, "/"), &state, "n");
         assert_eq!(reply.status(), StatusCode::UNAUTHORIZED);
-        assert!(!body(reply).contains("Search what you said"));
+        let locked = body(reply);
+        assert!(!locked.contains("Search everything you said"));
+        assert!(locked.contains("zone open") && locked.contains("nonce=\"n\"") && !locked.contains("__NONCE__"));
         assert_eq!(route(&head(Method::GET, "/api/status"), &state, "n").status(), StatusCode::UNAUTHORIZED);
         assert_eq!(route(&head(Method::GET, "/api/items"), &state, "n").status(), StatusCode::UNAUTHORIZED);
         assert_eq!(route(&head(Method::POST, "/api/pair"), &state, "n").status(), StatusCode::UNAUTHORIZED);
@@ -727,7 +735,7 @@ mod tests {
         let reply = route(&with_cookie(head(Method::GET, "/"), &state), &state, "abc123");
         assert_eq!(reply.status(), StatusCode::OK);
         let page = body(reply);
-        assert!(page.contains("Search what you said"));
+        assert!(page.contains("Search everything you said"));
         assert!(page.contains("nonce=\"abc123\"") && !page.contains("__NONCE__"));
 
         // A cookie with the wrong value is not a session.
@@ -761,6 +769,8 @@ mod tests {
         assert!(headers.keys().all(|name| !name.as_str().starts_with("access-control-")));
         let csp = headers.get(header::CONTENT_SECURITY_POLICY).unwrap().to_str().unwrap();
         assert!(csp.contains("default-src 'none'") && csp.contains("script-src 'nonce-abc'") && csp.contains("frame-ancestors 'none'"));
+        // Fonts only from zone itself: the serif it carries.
+        assert!(csp.contains("font-src 'self'"));
         assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
         assert_eq!(headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
     }
@@ -768,7 +778,7 @@ mod tests {
     #[test]
     fn the_page_loads_nothing_from_elsewhere() {
         // Every URL in the pages is either the SVG namespace or a relative API path.
-        for page in [PAGE, FLASH_PAGE] {
+        for page in [PAGE, FLASH_PAGE, LOCKED_PAGE] {
             let mut rest = page;
             while let Some(at) = rest.find("http") {
                 let tail = &rest[at..];
@@ -785,6 +795,27 @@ mod tests {
             assert!(!page.contains('\u{2014}'), "no em dashes in the page");
         }
         assert!(PAGE.contains("href=\"/flash\""), "the main page links to Flash");
+    }
+
+    #[test]
+    fn the_serif_comes_from_zone_itself() {
+        // The pages' serif is served from the binary, to anyone on this computer's address: it
+        // holds nothing private, and the locked page uses it too.
+        let state = state();
+        for page in [PAGE, LOCKED_PAGE] {
+            assert!(page.contains("url(\"/font/zone-serif.woff2\")"), "every page draws its serif from zone");
+        }
+        let reply = route(&head(Method::GET, "/font/zone-serif.woff2"), &state, "n");
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert_eq!(reply.headers().get(header::CONTENT_TYPE).unwrap(), "font/woff2");
+        let bytes = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(reply.into_body().collect()).unwrap().to_bytes();
+        assert!(bytes.starts_with(b"wOF2") && bytes.len() < 40_000, "a small woff2");
+        let mut foreign = head(Method::GET, "/font/zone-serif.woff2");
+        foreign.host = Some("evil.example".to_string());
+        assert_eq!(route(&foreign, &state, "n").status(), StatusCode::FORBIDDEN);
+        assert_eq!(route(&head(Method::POST, "/font/zone-serif.woff2"), &state, "n").status(), StatusCode::METHOD_NOT_ALLOWED);
+        // It is a subset of Charis under the SIL Open Font License, which travels with it.
+        assert!(include_str!("../assets/fonts/OFL.txt").contains("SIL OPEN FONT LICENSE Version 1.1"));
     }
 
     #[test]

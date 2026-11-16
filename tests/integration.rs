@@ -445,7 +445,7 @@ fn web_page_is_local_and_locked() {
     let with_cookie = format!("Cookie: {cookie}\r\n");
     let (status, response) = get("/", &host, &with_cookie);
     assert_eq!(status, 200);
-    assert!(response.contains("Search what you said"));
+    assert!(response.contains("Search everything you said"));
     let lower = response.to_ascii_lowercase();
     assert!(lower.contains("content-security-policy: default-src 'none'"));
     assert!(!lower.contains("access-control-allow"));

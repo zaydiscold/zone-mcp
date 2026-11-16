@@ -6,266 +6,461 @@
 <meta name="color-scheme" content="dark light">
 <meta name="referrer" content="no-referrer">
 <title>Zone</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238b5cf6'/%3E%3Cpath d='M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a2a2a'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%239b7dff'/%3E%3C/svg%3E">
+<link rel="preload" href="/font/zone-serif.woff2" as="font" type="font/woff2" crossorigin>
 <style nonce="__NONCE__">
+/* Zone's look, as in the iPhone app and Zone for Mac: warm paper and ink, one purple accent
+   used sparingly, a serif for the wordmark, headings and numbers. Flat surfaces, 1 pt rules,
+   hard-edged shadows. Zone Serif is Charis SemiBold (SIL Global, OFL 1.1), subset and renamed,
+   served by zone itself: see assets/fonts. Safari draws New York instead, as the Mac app does. */
+@font-face {
+  font-family: "Zone Serif";
+  src: url("/font/zone-serif.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
 :root {
-  --bg: #121214;
-  --surface: #1a1a1e;
-  --raised: #222227;
-  --line: #2d2d34;
-  --line-soft: #25252b;
-  --text: #e8e7ec;
-  --muted: #a09eab;
-  --faint: #6e6c79;
-  --accent: #a78bfa;
-  --accent-strong: #8b5cf6;
-  --accent-wash: rgba(167, 139, 250, 0.13);
-  --accent-ink: #f4f0ff;
-  --good: #86d3ad;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
-  --radius: 12px;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --paper: #2a2a2a;
+  --card: #333333;
+  --field: #262626;
+  --ink: #f1e9d2;
+  --muted: #c9c1ab;
+  --quiet: #a5a092;
+  --faint: rgba(241, 233, 210, 0.42);
+  --rule: rgba(241, 233, 210, 0.16);
+  --rule-strong: rgba(241, 233, 210, 0.3);
+  --hover: rgba(241, 233, 210, 0.07);
+  --press: rgba(241, 233, 210, 0.12);
+  --accent: #9b7dff;
+  --accent-text: #a68bff;
+  --accent-wash: rgba(155, 125, 255, 0.2);
+  --on-ink: #2a2a2a;
+  --alarm: #ff6b6b;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --qr-paper: #f7f2e4;
+  --qr-ink: #2a2a2a;
+  --serif: ui-serif, "Zone Serif", Charter, "Iowan Old Style", "Sitka Text", Cambria, Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --bar: 60px;
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f5f4f7;
-    --surface: #ffffff;
-    --raised: #f1f0f5;
-    --line: #dfdde6;
-    --line-soft: #e9e7ef;
-    --text: #1c1a22;
-    --muted: #5f5c6c;
-    --faint: #8d8a9a;
-    --accent: #6d49e8;
-    --accent-strong: #5b36d6;
-    --accent-wash: rgba(109, 73, 232, 0.09);
-    --accent-ink: #ffffff;
-    --good: #2d8a5f;
-    --shadow: 0 18px 50px rgba(40, 30, 80, 0.18);
+    --paper: #f1e9d2;
+    --card: #f7f2e4;
+    --field: #f6efdb;
+    --ink: #333333;
+    --muted: #555555;
+    --quiet: #686660;
+    --faint: rgba(51, 51, 51, 0.5);
+    --rule: rgba(51, 51, 51, 0.18);
+    --rule-strong: rgba(51, 51, 51, 0.32);
+    --hover: rgba(51, 51, 51, 0.06);
+    --press: rgba(51, 51, 51, 0.11);
+    --accent: #7a5af0;
+    --accent-text: #6a4bdb;
+    --accent-wash: rgba(122, 90, 240, 0.16);
+    --on-ink: #f1e9d2;
+    --alarm: #b3261e;
+    --shadow: rgba(0, 0, 0, 0.16);
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--bar) + 60px); }
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--paper);
+  color: var(--ink);
   font: 15px/1.55 var(--sans);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
 }
+::selection { background: var(--accent-wash); }
 button, input { font: inherit; color: inherit; }
-button { cursor: pointer; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+button { cursor: pointer; background: none; border: 0; padding: 0; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+[hidden] { display: none !important; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: 12px; top: -60px; z-index: 50; padding: 8px 14px; border-radius: 999px; background: var(--ink); color: var(--on-ink); font-weight: 600; text-decoration: none; }
+.skip:focus { top: 12px; }
+code { font-family: var(--mono); font-size: 0.88em; }
 
+/* The wordmark: a serif "zone" with the purple dot from the app icon. */
+.mark { display: inline-flex; align-items: baseline; gap: 0.06em; font: 600 25px/1 var(--serif); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+.mark .dot { display: inline-block; width: 0.2em; height: 0.2em; border-radius: 50%; background: var(--accent); }
+
+/* Buttons: an ink capsule for the one main action, an outlined one for the rest. */
+.button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 36px; padding: 0 18px; border-radius: 999px; white-space: nowrap;
+  font-size: 13.5px; font-weight: 550; text-decoration: none;
+  background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule);
+}
+.button:hover { background: var(--hover); }
+.button:active { transform: scale(0.97); }
+.button.primary { background: var(--ink); color: var(--on-ink); box-shadow: none; font-weight: 600; }
+.button.primary:hover { opacity: 0.9; }
+.navlink { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; margin: 0 -6px; border-radius: 999px; color: var(--ink); font-size: 14px; font-weight: 550; text-decoration: none; }
+.navlink:hover { background: var(--hover); }
+.navlink svg { width: 15px; height: 15px; color: var(--muted); }
+.textbutton { color: var(--accent-text); font-size: 13.5px; font-weight: 550; }
+.textbutton:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* ---------------------------------------------------------------- the bar */
 header.top {
   position: sticky; top: 0; z-index: 20;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--line-soft);
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
 }
-.bar { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -0.01em; font-size: 17px; }
-.brand svg { width: 24px; height: 24px; display: block; }
-.search { flex: 1; min-width: 0; position: relative; }
+.bar { display: flex; align-items: center; gap: 22px; height: var(--bar); max-width: 1160px; margin: 0 auto; padding: 0 32px; }
+.wave {
+  flex: 0 1 380px; min-width: 40px; height: 26px; display: block; margin-right: auto;
+  -webkit-mask-image: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.55) 30%, #000 60%, #000 93%, transparent);
+  mask-image: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.55) 30%, #000 60%, #000 93%, transparent);
+}
+.device {
+  display: inline-flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px 0 8px; margin: 0 -4px 0 0;
+  border-radius: 999px; color: var(--muted); font-size: 13.5px; white-space: nowrap;
+}
+.device:hover { background: var(--hover); }
+.device b { color: var(--ink); font-weight: 600; }
+/* A state light: purple when a phone is paired, a hollow ring when none is. */
+.light { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.light.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
+.light::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1.5px solid var(--accent); opacity: 0; }
+.light.ping::after { animation: ping 2s var(--settle); }
+@keyframes ping { from { opacity: 0.8; transform: scale(0.6); } to { opacity: 0; transform: scale(1.8); } }
+.nav { display: flex; align-items: center; gap: 18px; }
+
+/* ---------------------------------------------------------------- the page */
+.page {
+  display: grid; grid-template-columns: 252px minmax(0, 720px); grid-template-rows: auto 1fr;
+  grid-template-areas: "rail head" "rail doc"; column-gap: 72px;
+  max-width: 1160px; margin: 0 auto; padding: 0 32px;
+}
+.masthead { grid-area: head; padding: 34px 0 6px; min-width: 0; }
+.doc { grid-area: doc; min-width: 0; padding: 0 0 120px; }
+.rail {
+  grid-area: rail;
+  position: sticky; top: var(--bar); align-self: start;
+  max-height: calc(100vh - var(--bar)); overflow-y: auto; scrollbar-width: none;
+  padding: 34px 0 32px;
+}
+.rail::-webkit-scrollbar { display: none; }
+.search { position: relative; display: block; }
+.search svg { position: absolute; left: 12px; top: 50%; width: 15px; height: 15px; margin-top: -7.5px; color: var(--quiet); pointer-events: none; }
 .search input {
-  width: 100%; height: 38px; padding: 0 12px 0 36px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  width: 100%; height: 40px; padding: 0 34px 0 35px; border-radius: 10px;
+  background: var(--field); border: 0; box-shadow: inset 0 0 0 1px var(--rule);
+  font-size: 14.5px; -webkit-appearance: none; appearance: none;
 }
-.search input::placeholder { color: var(--faint); }
-.search svg { position: absolute; left: 11px; top: 11px; width: 16px; height: 16px; color: var(--faint); pointer-events: none; }
-.btn {
-  height: 38px; padding: 0 14px; border-radius: 10px; white-space: nowrap;
-  background: var(--surface); border: 1px solid var(--line); color: var(--text);
-  display: inline-flex; align-items: center; gap: 8px;
+.search input::placeholder { color: var(--quiet); opacity: 1; }
+.search input:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-wash); }
+.search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.search kbd {
+  position: absolute; right: 9px; top: 50%; margin-top: -10px; height: 20px; min-width: 20px; padding: 0 5px;
+  display: grid; place-items: center; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--rule);
+  font: 500 11.5px/1 var(--sans); color: var(--quiet);
 }
-.btn:hover { border-color: var(--faint); }
-a.btn { text-decoration: none; display: inline-flex; align-items: center; }
-.btn.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; font-weight: 600; }
-.btn.primary:hover { filter: brightness(1.08); }
-.btn.quiet { height: 30px; padding: 0 10px; font-size: 13px; color: var(--muted); background: transparent; }
-.btn.quiet:hover { color: var(--text); }
+.search input:focus ~ kbd, .search input:not(:placeholder-shown) ~ kbd { display: none; }
 
-.status {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  color: var(--muted); font-size: 13px; padding: 14px 0 2px;
+.group { margin-top: 30px; }
+.eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 550; letter-spacing: 0; color: var(--quiet); }
+.choices { display: flex; flex-direction: column; gap: 1px; margin: 0 -10px; }
+.choice {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  min-height: 34px; padding: 6px 10px; border-radius: 8px; text-align: left;
+  color: var(--muted); font-size: 14.5px;
 }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-.dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
-.status b { color: var(--text); font-weight: 600; }
-.status .sep { color: var(--faint); }
+.choice:hover { background: var(--hover); color: var(--ink); }
+.choice .n { font: 600 14px/1 var(--serif); color: var(--quiet); }
+.choice[aria-pressed="true"] { background: var(--press); color: var(--ink); font-weight: 600; }
+.choice[aria-pressed="true"] .n { color: var(--ink); }
 
-.filters { display: flex; flex-direction: column; gap: 10px; padding: 14px 0 6px; }
-.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.row .label { color: var(--faint); font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; width: 54px; flex: none; }
-.chip {
-  height: 30px; padding: 0 12px; border-radius: 999px; font-size: 13px;
-  background: transparent; border: 1px solid var(--line); color: var(--muted);
-  display: inline-flex; align-items: center; gap: 7px;
+/* When: a few quick ranges and a month to pick days from. */
+.seg { display: flex; padding: 2px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--rule); }
+.seg button { flex: 1 1 auto; height: 30px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; font-weight: 550; color: var(--muted); white-space: nowrap; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--press); color: var(--ink); }
+.datesToggle { display: none; }
+.cal { margin-top: 18px; }
+.calHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.calHead h3 { margin: 0; font: 600 16px/1.2 var(--serif); }
+.calHead div { display: flex; gap: 2px; margin-right: -6px; }
+.calHead button { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
+.calHead button:hover { background: var(--hover); color: var(--ink); }
+.calHead button:disabled { opacity: 0.35; cursor: default; background: none; }
+.calHead svg { width: 14px; height: 14px; }
+table.month { width: 100%; border-collapse: separate; border-spacing: 0 2px; table-layout: fixed; }
+.month th { height: 26px; font-size: 11.5px; font-weight: 550; color: var(--quiet); }
+.month td { padding: 0; text-align: center; }
+.month td.in { background: var(--accent-wash); }
+.month td.first { border-radius: 999px 0 0 999px; }
+.month td.last { border-radius: 0 999px 999px 0; }
+.month td.first.last { border-radius: 999px; }
+.day-cell {
+  position: relative; width: 32px; height: 32px; margin: 0 auto; border-radius: 50%;
+  display: grid; place-items: center; font-size: 13px; color: var(--quiet);
 }
-.chip:hover { color: var(--text); border-color: var(--faint); }
-.chip[aria-pressed="true"] { background: var(--accent-wash); border-color: var(--accent); color: var(--text); }
-.chip .n { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 12px; }
-.chip[aria-pressed="true"] .n { color: var(--accent); }
-input[type="date"] {
-  height: 30px; padding: 0 8px; border-radius: 8px; font-size: 13px;
-  background: var(--surface); border: 1px solid var(--line); color: var(--text);
-}
-.to { color: var(--faint); font-size: 13px; }
+.day-cell.has { color: var(--ink); }
+.day-cell.has::after { content: ""; position: absolute; left: 50%; bottom: 4px; width: 3px; height: 3px; margin-left: -1.5px; border-radius: 50%; background: var(--accent); }
+.day-cell:hover:not(:disabled) { background: var(--hover); }
+.day-cell.today { box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.day-cell.edge { background: var(--ink); color: var(--on-ink); font-weight: 650; }
+.day-cell.edge::after { background: var(--on-ink); }
+.day-cell:disabled { opacity: 0.4; cursor: default; }
+.day-cell.out { visibility: hidden; }
+.calNote { margin: 10px 0 0; font-size: 12.5px; color: var(--quiet); min-height: 20px; }
+.calNote button { font-size: 12.5px; }
+.colophon { margin: 34px 0 0; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 12.5px; line-height: 1.6; color: var(--quiet); }
+.colophon p { margin: 0 0 6px; }
 
-main { padding: 6px 0 80px; }
-.summary { color: var(--muted); font-size: 13px; padding: 10px 0 0; min-height: 30px; }
-.day {
-  position: sticky; top: 63px; z-index: 5;
-  display: flex; align-items: baseline; gap: 10px;
-  padding: 18px 0 8px; margin-top: 4px;
-  background: linear-gradient(var(--bg) 78%, transparent);
-}
-.day h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.005em; }
-.day span { color: var(--faint); font-size: 12px; }
+/* ---------------------------------------------------------------- the document */
+.masthead h1 { margin: 0; font: 600 42px/1.08 var(--serif); letter-spacing: -0.015em; overflow-wrap: anywhere; text-wrap: balance; }
+.masthead p { margin: 10px 0 0; color: var(--muted); font-size: 15px; min-height: 23px; }
+.masthead p .device-inline { display: none; }
 
-.item {
-  background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--radius);
-  padding: 12px 14px 13px; margin-bottom: 8px;
+section.day { margin-top: 34px; }
+.dayHead {
+  position: sticky; top: var(--bar); z-index: 5;
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 16px 0 10px; background: var(--paper); border-bottom: 1px solid var(--rule);
 }
-.item:hover { border-color: var(--line); }
-.meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; }
-.meta time { font-family: var(--mono); font-size: 12px; color: var(--text); }
-.tag {
-  padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em;
-  border: 1px solid var(--line); color: var(--muted);
-}
-.tag.note { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
-.tag.clip { color: var(--warn, var(--accent)); border-color: color-mix(in srgb, var(--warn, var(--accent)) 45%, transparent); }
-.tag.meeting { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.meta .grow { flex: 1; }
+.dayHead h2 { margin: 0; font: 600 22px/1.2 var(--serif); letter-spacing: -0.005em; }
+.dayHead .date { color: var(--quiet); font-size: 13.5px; }
+.dayHead .count { margin-left: auto; color: var(--quiet); font-size: 13px; }
+ol.entries { list-style: none; margin: 0; padding: 0; }
+.entry { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 0 8px; padding: 18px 0 16px; border-bottom: 1px solid var(--rule); }
+.entry:last-child { border-bottom: 0; }
+.entry > time { padding-top: 2px; color: var(--quiet); font-size: 13px; white-space: nowrap; }
+.entry h3 { margin: 0 0 6px; font: 600 19px/1.3 var(--serif); }
+.text { margin: 0; font-size: 16px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.text.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; line-clamp: 6; overflow: hidden; }
+.turns { font-size: 15.5px; line-height: 1.6; }
+.turns p { margin: 0 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.turns b { font-weight: 650; margin-right: 0.35em; }
+.turns.clamp { max-height: calc(1.6em * 7); overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.more { display: inline-block; margin-top: 6px; }
+.meta { display: flex; align-items: center; gap: 12px; margin-top: 8px; color: var(--quiet); font-size: 13px; min-height: 26px; }
+.meta .info { flex: 1 1 auto; min-width: 0; line-height: 1.55; }
+.meta svg { width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; color: var(--muted); }
+.meta .kind { color: var(--muted); white-space: nowrap; }
+.meta .sep::before { content: "\00b7"; margin: 0 7px; color: var(--faint); }
+.meta .mtime { display: none; }
+.meta .after-time::before { display: none; }
+.meta .copy { flex: none; }
 .copy {
-  height: 26px; padding: 0 9px; border-radius: 7px; font-size: 12px;
-  background: transparent; border: 1px solid var(--line); color: var(--muted);
+  height: 26px; padding: 0 12px; border-radius: 999px; font-size: 12px; font-weight: 550;
+  background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule);
 }
-.copy:hover { color: var(--text); border-color: var(--faint); }
-.copy.done { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
-.title { font-weight: 650; margin: 8px 0 0; }
-.text { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.text.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; line-clamp: 7; overflow: hidden; }
-.more { margin-top: 6px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 13px; }
-mark { background: var(--accent-wash); color: inherit; border-radius: 3px; padding: 0 2px; box-shadow: inset 0 -1px 0 var(--accent); }
-
-.empty { text-align: center; color: var(--muted); padding: 70px 10px; }
-.empty h3 { color: var(--text); margin: 0 0 6px; font-size: 17px; font-weight: 650; }
-.empty p { margin: 0 auto 18px; max-width: 420px; }
-.loadmore { display: flex; justify-content: center; padding: 16px 0; }
-.pill {
-  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 30;
-  background: var(--accent-strong); color: #fff; border: 0; border-radius: 999px;
-  height: 38px; padding: 0 18px; font-weight: 600; box-shadow: var(--shadow);
+.copy:hover { background: var(--hover); }
+.copy.done { color: var(--accent-text); }
+@media (hover: hover) {
+  .entry .copy { opacity: 0; }
+  .entry:hover .copy, .entry:focus-within .copy, .copy.done { opacity: 1; }
 }
-[hidden] { display: none !important; }
+mark { background: var(--accent-wash); color: inherit; border-radius: 2px; padding: 0 1px; box-shadow: inset 0 -1.5px 0 var(--accent); }
 
+.empty { padding: 72px 0 40px; max-width: 460px; }
+.empty h2 { margin: 0 0 10px; font: 600 28px/1.15 var(--serif); }
+.empty p { margin: 0 0 22px; color: var(--muted); font-size: 15.5px; }
+.status-line { margin: 26px 0 0; color: var(--muted); }
+.loadmore { display: flex; justify-content: center; padding: 26px 0 0; }
+
+/* New words land in the accent and settle to ink, as they do in the Mac app. */
+.entry.arrived .text, .entry.arrived .turns, .entry.arrived h3 { animation: land 1.6s var(--settle) both; }
+@keyframes land { from { color: var(--accent-text); } to { color: var(--ink); } }
+
+.fresh {
+  position: fixed; left: 50%; bottom: 24px; z-index: 30; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 20px 0 16px; border-radius: 999px;
+  background: var(--ink); color: var(--on-ink); font-size: 13.5px; font-weight: 600;
+  box-shadow: 2px 3px 0 var(--shadow);
+}
+.fresh i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+/* ---------------------------------------------------------------- pairing */
 dialog {
-  border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(440px, calc(100vw - 28px));
-  background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+  width: min(420px, calc(100vw - 28px)); max-height: calc(100vh - 40px); padding: 0; border: 0; border-radius: 16px;
+  background: var(--card); color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--rule), 3px 4px 0 var(--shadow);
 }
-dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); }
-.sheet { padding: 20px; }
-.sheet h3 { margin: 0 0 4px; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
-.sheet p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
-.qr { background: #fff; border-radius: 12px; padding: 6px; width: min(280px, 100%); margin: 0 auto 12px; aspect-ratio: 1; }
+dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
+.sheet { padding: 26px 26px 22px; }
+.sheet h2 { margin: 0 0 6px; font: 600 26px/1.15 var(--serif); }
+.sheet > p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+.qr { width: min(232px, 100%); aspect-ratio: 1; margin: 0 auto; padding: 10px; border-radius: 14px; background: var(--qr-paper); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08), 2px 3px 0 var(--shadow); }
 .qr svg { display: block; width: 100%; height: 100%; }
-.expires { text-align: center; font-size: 13px; color: var(--muted); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+.qr svg rect { fill: var(--qr-paper); }
+.qr svg path { fill: var(--qr-ink); }
+.expires { margin: 14px 0 18px; text-align: center; color: var(--muted); font-size: 13.5px; }
+.expires b { font: 600 15px/1 var(--serif); color: var(--ink); }
 .linkrow { display: flex; gap: 8px; }
 .linkrow input {
-  flex: 1; min-width: 0; height: 34px; padding: 0 10px; font-family: var(--mono); font-size: 11.5px;
-  background: var(--raised); border: 1px solid var(--line); border-radius: 8px; color: var(--muted);
+  flex: 1; min-width: 0; height: 36px; padding: 0 12px; border-radius: 10px; border: 0;
+  background: var(--field); box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); font: 12px var(--mono);
 }
-.phones { margin: 16px 0 0; padding: 14px 0 0; border-top: 1px solid var(--line-soft); }
-.phones h4 { margin: 0 0 8px; font-size: 12px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; }
-.phone { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 14px; }
-.phone small { color: var(--muted); font-size: 12.5px; text-align: right; }
-.sheet .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-.err { color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; margin: 12px 0; }
+.phones { margin: 22px 0 0; }
+.phones h3 { margin: 0 0 4px; font-size: 12px; font-weight: 550; color: var(--quiet); }
+.phone { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 10px 0; border-top: 1px solid var(--rule); font-size: 14px; }
+.phone small { display: block; color: var(--quiet); font-size: 12.5px; }
+.phone .right { text-align: right; color: var(--quiet); font-size: 12.5px; }
+.sheet .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.err { margin: 0 0 16px; padding: 2px 0 2px 14px; border-left: 2px solid var(--alarm); color: var(--ink); font-size: 14px; }
 
-@media (max-width: 640px) {
-  .wrap { padding: 0 14px; }
-  .bar { flex-wrap: wrap; gap: 10px; }
-  .search { order: 3; flex-basis: 100%; }
-  .brand { flex: 1; }
-  .day { top: 111px; }
-  .row { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
-  .row::-webkit-scrollbar { display: none; }
-  .row .label { width: auto; }
-  .chip, input[type="date"] { flex: none; }
+/* ---------------------------------------------------------------- narrow windows */
+@media (max-width: 900px) {
+  :root { --bar: 56px; }
+  .bar { gap: 14px; padding: 0 18px; }
+  .device { display: none; }
+  .nav { gap: 14px; }
+  .page { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "rail" "doc"; padding: 0 18px; }
+  .masthead { padding: 24px 0 0; }
+  .rail { position: static; max-height: none; overflow: visible; padding: 16px 0 0; }
+  .search kbd { display: none; }
+  .group { margin-top: 16px; }
+  .eyebrow { display: none; }
+  .choices { flex-direction: row; gap: 4px; margin: 0 -18px; padding: 0 18px 2px; overflow-x: auto; scrollbar-width: none; }
+  .choices::-webkit-scrollbar { display: none; }
+  .choice { flex: none; align-items: center; min-height: 32px; padding: 0 12px; border-radius: 999px; gap: 7px; font-size: 14px; }
+  .choice[aria-pressed="false"] { box-shadow: inset 0 0 0 1px var(--rule); }
+  .choice .n { font-size: 13px; }
+  #sourcesGroup { margin-top: 8px; }
+  #sourcesGroup.optional { display: none; }
+  .whenRow { display: flex; gap: 8px; align-items: center; }
+  .whenRow .seg { flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }
+  .datesToggle { display: inline-flex; height: 34px; padding: 0 14px; }
+  .when:not(.open) .cal { display: none; }
+  .cal { max-width: 340px; }
+  .colophon { display: none; }
+  .doc { padding: 0 0 100px; }
+  section.day:first-child { margin-top: 22px; }
+  .masthead h1 { font-size: 34px; }
+  .masthead p .device-inline { display: inline; }
+  .dayHead { padding: 14px 0 8px; }
+  .dayHead .date { display: none; }
+  .entry { display: block; padding: 16px 0 14px; }
+  .entry > time { display: none; }
+  .meta .mtime { display: inline; }
+  .meta .after-time::before { display: inline; }
+}
+@media (max-width: 420px) {
+  .navlink { padding: 0 8px; margin: 0 -4px; }
+  .bar .button { padding: 0 14px; }
+  .masthead h1 { font-size: 30px; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .item { transition: border-color 0.12s; }
-  .chip, .btn, .copy { transition: border-color 0.12s, background 0.12s, color 0.12s; }
+  .choice, .seg button, .day-cell, .button, .copy, .device, .navlink { transition: background-color 0.2s, color 0.2s, opacity 0.2s, transform 0.2s; }
+  dialog[open] { animation: rise 0.45s var(--settle); }
+  .fresh:not([hidden]) { animation: rise 0.45s var(--settle); }
+  @keyframes rise { from { opacity: 0; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .entry.arrived .text, .entry.arrived .turns, .entry.arrived h3 { animation: none; }
+  .light.ping::after { animation: none; }
+}
+@media (forced-colors: active) {
+  .day-cell.edge, .choice[aria-pressed="true"], .seg button[aria-pressed="true"] { outline: 2px solid CanvasText; }
 }
 </style>
 </head>
 <body>
+<a class="skip" href="#list">Skip to your library</a>
 <header class="top">
-  <div class="wrap bar">
-    <div class="brand">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#8b5cf6"/><path d="M10 10h12v2.6L13.6 20H22v2H10v-2.6L18.4 12H10z" fill="#fff"/></svg>
-      Zone
-    </div>
-    <label class="search">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.6"/><path d="M10.6 10.6 14 14"/></svg>
-      <input id="q" type="search" placeholder="Search what you said" autocomplete="off" spellcheck="false" aria-label="Search">
-    </label>
-    <a class="btn" href="/flash" title="Send from the phone's screen to this computer's camera, with no network">Flash</a>
-    <button class="btn primary" id="pairOpen" type="button">Pair a phone</button>
+  <div class="bar">
+    <a class="mark" href="/" aria-label="Zone, your library">zone<span class="dot" aria-hidden="true"></span></a>
+    <canvas class="wave" id="wave" aria-hidden="true"></canvas>
+    <button class="device" id="device" type="button" aria-label="Paired phones"><span class="light off" id="light"></span><span id="deviceText">Loading</span></button>
+    <nav class="nav" aria-label="Zone">
+      <a class="navlink" href="/flash" title="Send from the phone's screen to this computer's camera, with no network"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9.2 1.75 3.5 9.1h4.1l-.8 5.15L12.5 6.9H8.4z"/></svg>Flash</a>
+      <button class="button primary" id="pairOpen" type="button">Pair a phone</button>
+    </nav>
   </div>
 </header>
 
-<div class="wrap">
-  <div class="status" id="status" aria-live="polite"><span class="dot"></span><span>Loading</span></div>
-
-  <div class="filters">
-    <div class="row" id="kinds" role="group" aria-label="Kind"><span class="label">Kind</span></div>
-    <div class="row" id="sources" role="group" aria-label="Source" hidden><span class="label">Source</span></div>
-    <div class="row" role="group" aria-label="Dates">
-      <span class="label">Dates</span>
-      <input type="date" id="from" aria-label="From date">
-      <span class="to">to</span>
-      <input type="date" id="to" aria-label="To date">
-      <button class="chip" type="button" data-range="today">Today</button>
-      <button class="chip" type="button" data-range="7">7 days</button>
-      <button class="chip" type="button" data-range="30">30 days</button>
-      <button class="chip" type="button" data-range="all" aria-pressed="true">All time</button>
-    </div>
+<main class="page" id="main">
+  <div class="masthead">
+    <h1 id="title">Your library</h1>
+    <p id="summary" aria-live="polite"></p>
   </div>
 
-  <main>
-    <div class="summary" id="summary"></div>
-    <div id="list"></div>
-    <div class="loadmore"><button class="btn" id="more" type="button" hidden>Load more</button></div>
-  </main>
-</div>
+  <aside class="rail" aria-label="Find in your library">
+    <label class="search">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.7"/><path d="M10.6 10.6 14 14"/></svg>
+      <input id="q" type="search" placeholder="Search everything you said" autocomplete="off" spellcheck="false" aria-label="Search" aria-keyshortcuts="/">
+      <kbd aria-hidden="true">/</kbd>
+    </label>
 
-<button class="pill" id="fresh" type="button" hidden>New items. Show them</button>
+    <section class="group">
+      <h2 class="eyebrow" id="kindLabel">Kind</h2>
+      <div class="choices" id="kinds" role="group" aria-labelledby="kindLabel"></div>
+    </section>
+    <section class="group" id="sourcesGroup" hidden>
+      <h2 class="eyebrow" id="sourceLabel">Dictations from</h2>
+      <div class="choices" id="sources" role="group" aria-labelledby="sourceLabel"></div>
+    </section>
+
+    <section class="group when" id="when">
+      <h2 class="eyebrow" id="whenLabel">When</h2>
+      <div class="whenRow">
+        <div class="seg" role="group" aria-labelledby="whenLabel">
+          <button type="button" data-range="all" aria-pressed="true">Any time</button>
+          <button type="button" data-range="today" aria-pressed="false">Today</button>
+          <button type="button" data-range="7" aria-pressed="false">7 days</button>
+          <button type="button" data-range="30" aria-pressed="false">30 days</button>
+        </div>
+        <button class="button datesToggle" id="datesToggle" type="button" aria-expanded="false" aria-controls="cal">Dates</button>
+      </div>
+      <div class="cal" id="cal">
+        <div class="calHead">
+          <h3 id="calTitle" aria-live="polite"></h3>
+          <div>
+            <button type="button" id="calPrev" aria-label="Previous month"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>
+            <button type="button" id="calNext" aria-label="Next month"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
+          </div>
+        </div>
+        <table class="month" role="grid" aria-labelledby="calTitle">
+          <thead><tr id="calDays"></tr></thead>
+          <tbody id="calBody"></tbody>
+        </table>
+        <p class="calNote" id="calNote"></p>
+      </div>
+    </section>
+
+    <div class="colophon" id="colophon"></div>
+  </aside>
+
+  <div class="doc">
+    <div id="list" tabindex="-1"></div>
+    <div class="loadmore"><button class="button" id="more" type="button" hidden>Show older items</button></div>
+  </div>
+</main>
+
+<button class="fresh" id="fresh" type="button" hidden><i aria-hidden="true"></i>New items. Show them</button>
 
 <dialog id="pair" aria-labelledby="pairTitle">
   <div class="sheet">
-    <h3 id="pairTitle">Pair a phone</h3>
-    <p>In Zone on your iPhone, open the Link settings and scan this code. It works once and stays valid for ten minutes.</p>
+    <h2 id="pairTitle">Pair a phone</h2>
+    <p>In Zone on your iPhone, open Settings, then Computers, and scan this code. It works once and stays valid for ten minutes.</p>
+    <div class="err" id="pairErr" hidden></div>
     <div id="pairBody">
       <div class="qr" id="qr"></div>
-      <div class="expires" id="expires"></div>
+      <div class="expires" id="expires" aria-live="polite"></div>
       <div class="linkrow">
         <input id="pairUrl" readonly aria-label="Pairing link">
-        <button class="btn" id="pairCopy" type="button">Copy</button>
+        <button class="button" id="pairCopy" type="button">Copy</button>
       </div>
     </div>
-    <div class="err" id="pairErr" hidden></div>
     <div class="phones">
-      <h4>Paired phones</h4>
+      <h3>Paired phones</h3>
       <div id="phones"></div>
     </div>
     <div class="actions">
-      <button class="btn" id="pairNew" type="button">New code</button>
-      <button class="btn primary" id="pairClose" type="button" autofocus>Done</button>
+      <button class="button" id="pairNew" type="button">New code</button>
+      <button class="button primary" id="pairClose" type="button" autofocus>Done</button>
     </div>
   </div>
 </dialog>
@@ -280,29 +475,52 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     if (text !== undefined && text !== null) node.textContent = text;
     return node;
   };
+  const svg = (markup) => new DOMParser().parseFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + markup + "</svg>", "image/svg+xml").documentElement;
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+  const KINDS = ["dictation", "note", "meeting", "clip"];
   const KIND_NAMES = { dictation: "Dictations", note: "Notes", meeting: "Meetings", clip: "Clips" };
   const KIND_ONE = { dictation: "Dictation", note: "Note", meeting: "Meeting", clip: "Clip" };
   // The first four are where a dictation was spoken, the rest how a clip was sent.
   const SOURCE_NAMES = { keyboard: "Keyboard", app: "In Zone", note: "Voice note", remote: "Remote", clipboard: "From the clipboard", share: "Shared", shortcut: "Shortcut", typed: "Typed" };
   const ALWAYS_SHOWN = ["dictation", "note", "meeting"];
+  // The same symbols as the Mac app: a waveform, a page, two people, a clipboard.
+  const ICONS = {
+    dictation: '<path d="M2.5 7v2M5 5v6M7.5 2.75v10.5M10 5v6M12.5 6.5v3"/>',
+    note: '<rect x="3" y="2.25" width="10" height="11.5" rx="2"/><path d="M5.75 5.75h4.5M5.75 8h4.5M5.75 10.25h2.75"/>',
+    meeting: '<circle cx="6" cy="5.5" r="2.25"/><path d="M1.75 13c.4-2.3 2.1-3.6 4.25-3.6s3.85 1.3 4.25 3.6"/><path d="M10.6 3.4a2.2 2.2 0 1 1 .4 4.3M11.6 9.6c1.4.4 2.4 1.5 2.65 3.4"/>',
+    clip: '<rect x="3.25" y="3" width="9.5" height="11" rx="2"/><path d="M6 3V2.5c0-.4.3-.75.75-.75h2.5c.4 0 .75.35.75.75V3c0 .4-.3.75-.75.75h-2.5C6.35 3.75 6 3.4 6 3z"/><path d="M5.75 7.5h4.5M5.75 10h3"/>',
+  };
 
-  const state = { q: "", kinds: new Set(), sources: new Set(), from: "", to: "", cursor: null, loading: false, revision: null, lastDay: null, shown: 0, total: 0 };
+  const state = { q: "", kinds: new Set(), sources: new Set(), from: "", to: "", range: "all", cursor: null, loading: false, revision: null, lastDay: null, shown: 0, total: 0, matched: null };
   let status = null;
   let request = 0;
+  let known = new Set();
+  let firstLoad = true;
 
   async function api(path, options) {
     const response = await fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {}));
-    if (response.status === 401) {
-      document.body.textContent = "";
-      const box = el("div", "empty");
-      box.append(el("h3", null, "This page is locked"), el("p", null, "Run zone open in a terminal to unlock it in this browser."));
-      document.body.append(box);
-      throw new Error("locked");
-    }
+    if (response.status === 401) { showLocked(); throw new Error("locked"); }
     if (!response.ok) throw new Error("request failed: " + response.status);
     return response.json();
   }
 
+  function showLocked() {
+    document.body.textContent = "";
+    const box = el("main", "empty locked");
+    const code = el("code", null, "zone open");
+    const p = el("p");
+    p.append("Run ", code, " in a terminal. It opens this page with the key that unlocks it in this browser.");
+    const mark = el("div", "mark");
+    mark.append("zone", el("span", "dot"));
+    box.append(mark, el("h2", null, "This page is locked."), p);
+    document.body.append(box);
+  }
+
+  // ---------------------------------------------------------------- words
+
+  const plural = (n, one, many) => n.toLocaleString() + " " + (n === 1 ? one : many);
+  const listing = (words) => (words.length < 2 ? words.join("") : words.slice(0, -1).join(", ") + " and " + words[words.length - 1]);
   function ago(seconds) {
     if (seconds === null || seconds === undefined) return "never";
     if (seconds < 45) return "just now";
@@ -313,71 +531,192 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
   function duration(seconds) {
     if (seconds === null || seconds === undefined) return null;
     const total = Math.round(seconds);
-    if (total < 60) return total + "s";
-    if (total < 3600) return Math.floor(total / 60) + "m " + String(total % 60).padStart(2, "0") + "s";
-    return Math.floor(total / 3600) + "h " + String(Math.floor((total % 3600) / 60)).padStart(2, "0") + "m";
+    if (total < 60) return Math.max(1, total) + " s";
+    if (total < 3600) return Math.floor(total / 60) + " min" + (total % 60 && total < 600 ? " " + (total % 60) + " s" : "");
+    return Math.floor(total / 3600) + " h " + Math.floor((total % 3600) / 60) + " min";
   }
-  const plural = (n, one, many) => n.toLocaleString() + " " + (n === 1 ? one : many);
+  const pad = (n) => String(n).padStart(2, "0");
+  const iso = (date) => date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+  const fromIso = (day) => { const [y, m, d] = day.split("-").map(Number); return new Date(y, m - 1, d); };
+  const todayIso = () => iso(new Date());
+  const addDays = (day, n) => { const date = fromIso(day); date.setDate(date.getDate() + n); return iso(date); };
+  const daysBetween = (a, b) => Math.round((fromIso(b) - fromIso(a)) / 86400000);
+  const clock = (rfc) => new Date(rfc).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  function longDate(day, withYear) {
+    const options = { weekday: "long", month: "long", day: "numeric" };
+    if (withYear) options.year = "numeric";
+    return fromIso(day).toLocaleDateString([], options);
+  }
+  function shortDate(day) {
+    const options = { month: "long", day: "numeric" };
+    if (fromIso(day).getFullYear() !== new Date().getFullYear()) options.year = "numeric";
+    return fromIso(day).toLocaleDateString([], options);
+  }
+  // A day's heading: Today, Yesterday, a weekday this week, or the date.
+  function dayName(day) {
+    const back = daysBetween(day, todayIso());
+    if (back === 0) return ["Today", longDate(day)];
+    if (back === 1) return ["Yesterday", longDate(day)];
+    if (back > 1 && back < 7) return [fromIso(day).toLocaleDateString([], { weekday: "long" }), shortDate(day)];
+    const sameYear = fromIso(day).getFullYear() === new Date().getFullYear();
+    return [longDate(day, !sameYear), ""];
+  }
+  function rangeWords() {
+    if (!state.from && !state.to) return "";
+    if (state.range === "today") return "today";
+    if (state.range === "7") return "in the last 7 days";
+    if (state.range === "30") return "in the last 30 days";
+    if (state.from === state.to) return "on " + longDate(state.from, fromIso(state.from).getFullYear() !== new Date().getFullYear());
+    return "from " + span(state.from, state.to);
+  }
+  function span(from, to) {
+    const a = fromIso(from), b = fromIso(to);
+    if (a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()) return shortDate(from) + " to " + b.getDate();
+    return shortDate(from) + " to " + shortDate(to);
+  }
 
-  function chip(label, count, pressed, onClick) {
-    const button = el("button", "chip");
+  // ---------------------------------------------------------------- the wave
+
+  // The voice as one wave flowing right to left, mirrored about a center line, as in the Mac
+  // app's header. It lies flat as a hairline until something arrives, then wakes for a moment.
+  const wave = { canvas: $("wave"), energy: 0, target: 0, until: 0, raf: 0, last: 0 };
+  function voice(t) {
+    const phrase = Math.max(0, Math.sin(t * 0.83) * 0.75 + Math.sin(t * 0.31 + 1.7) * 0.45);
+    const syllable = 0.55 + 0.45 * Math.sin(t * 6.1 + Math.sin(t * 1.3) * 1.5);
+    const texture = 0.8 + 0.2 * Math.sin(t * 17.3 + 0.6);
+    return Math.min(1, Math.max(0, phrase * syllable * texture));
+  }
+  function drawWave(time) {
+    const canvas = wave.canvas;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+    if (!w || !h) return;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    const color = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#9b7dff";
+    const mid = h / 2, amplitude = h / 2 - dpr, count = Math.max(24, Math.round(canvas.clientWidth / 7));
+    const interval = 0.05, phase = (time / interval) % 1, newest = Math.floor(time / interval) * interval;
+    const step = w / (count - 2);
+    const top = [];
+    for (let i = 0; i < count; i++) {
+      const value = voice(newest - (count - 1 - i) * interval) * wave.energy;
+      const entry = i === count - 1 ? Math.max(phase, 0.15) : 1;
+      top.push([(i - 0.5 - phase) * step, mid - Math.max(0.75 * dpr, Math.pow(value, 0.62) * amplitude * entry)]);
+    }
+    const bottom = top.slice().reverse().map(([x, y]) => [x, 2 * mid - y]);
+    const path = (points, move) => {
+      if (move) ctx.moveTo(points[0][0], points[0][1]); else ctx.lineTo(points[0][0], points[0][1]);
+      for (let i = 0; i < points.length - 1; i++) {
+        const p0 = points[Math.max(i - 1, 0)], p1 = points[i], p2 = points[i + 1], p3 = points[Math.min(i + 2, points.length - 1)];
+        ctx.bezierCurveTo(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6, p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6, p2[0], p2[1]);
+      }
+    };
+    // Pale at the center line and deeper toward the reaches, as the Mac draws it.
+    const rgb = (color.match(/[0-9a-f]{2}/gi) || ["9b", "7d", "ff"]).slice(0, 3).map((x) => parseInt(x, 16)).join(", ");
+    const gradient = ctx.createLinearGradient(0, 0, 0, h);
+    [[0, 1], [0.32, 0.85], [0.5, 0.18], [0.68, 0.85], [1, 1]].forEach(([at, alpha]) => gradient.addColorStop(at, "rgba(" + rgb + ", " + alpha + ")"));
+    ctx.beginPath(); path(top, true); path(bottom, false); ctx.closePath();
+    ctx.fillStyle = gradient;
+    ctx.fill();
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath(); path(top, true); path(bottom, true);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.25 * dpr; ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  function waveFrame(now) {
+    wave.raf = 0;
+    const dt = Math.min(0.05, wave.last ? (now - wave.last) / 1000 : 1 / 60);
+    wave.last = now;
+    if (now > wave.until) wave.target = 0;
+    wave.energy += (wave.target - wave.energy) * (1 - Math.exp(-dt / 0.35));
+    drawWave(now / 1000);
+    if (wave.target > 0 || wave.energy > 0.01) wave.raf = requestAnimationFrame(waveFrame);
+    else { wave.energy = 0; wave.last = 0; drawWave(now / 1000); }
+  }
+  function wake(seconds) {
+    if (reduceMotion.matches) {
+      // Held still: one frame of the wave, then flat again.
+      wave.energy = 1; drawWave(12);
+      clearTimeout(wake.timer);
+      wake.timer = setTimeout(() => { wave.energy = 0; drawWave(12); }, seconds * 1000);
+      return;
+    }
+    wave.target = 1;
+    wave.until = performance.now() + seconds * 1000;
+    if (!wave.raf) wave.raf = requestAnimationFrame(waveFrame);
+  }
+  window.addEventListener("resize", () => { if (!wave.raf) drawWave(12); });
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (!wave.raf) drawWave(12); });
+
+  // ---------------------------------------------------------------- the rail
+
+  function choice(label, count, pressed, onClick) {
+    const button = el("button", "choice");
     button.type = "button";
     button.setAttribute("aria-pressed", pressed ? "true" : "false");
-    button.append(document.createTextNode(label));
+    button.append(el("span", null, label));
     if (count !== null) button.append(el("span", "n", count.toLocaleString()));
     button.addEventListener("click", onClick);
     return button;
   }
+  const showsSources = () => state.kinds.size === 0 || state.kinds.has("dictation");
 
   function renderStatus() {
-    const box = $("status");
-    box.textContent = "";
     const phones = status.phones;
-    const dot = el("span", "dot" + (phones.length ? " on" : ""));
-    box.append(dot);
+    const light = $("light");
+    light.className = "light" + (phones.length ? "" : " off");
+    const text = $("deviceText");
+    text.textContent = "";
     if (!phones.length) {
-      box.append(el("span", null, "No phone paired yet"));
+      text.append("No phone paired");
     } else {
-      phones.forEach((phone, index) => {
-        if (index) box.append(el("span", "sep", "·"));
-        box.append(el("b", null, phone.name || "iPhone"), el("span", null, "synced " + ago(phone.last_sync_age_s)));
-      });
+      const newest = phones.slice().sort((a, b) => (a.last_sync_age_s ?? 1e12) - (b.last_sync_age_s ?? 1e12))[0];
+      text.append(el("b", null, newest.name || "iPhone"), ", synced " + ago(newest.last_sync_age_s));
+      if (phones.length > 1) text.append(", and " + (phones.length - 1) + " more");
     }
-    if (status.backup_folder) {
-      const watch = status.backup_folder_state || {};
-      const said = watch.state === "waiting" ? watch.message
-        : watch.state === "error" ? "backup folder cannot be read (run zone doctor)"
-        : "backup folder read " + ago(status.last_sync.backup_age_s);
-      box.append(el("span", "sep", "·"), el("span", null, said));
-    }
-    box.append(el("span", "sep", "·"), el("span", null, plural(status.items.total, "item", "items")));
+    $("device").setAttribute("aria-label", text.textContent + ". Show paired phones");
 
     const kinds = $("kinds");
-    kinds.querySelectorAll(".chip").forEach((node) => node.remove());
-    kinds.append(chip("All", status.items.total, state.kinds.size === 0, () => { state.kinds.clear(); state.sources.clear(); changed(); }));
-    // Clips (text sent from the phone on purpose) get a chip once there is one.
+    kinds.textContent = "";
+    kinds.append(choice("All", status.items.total, state.kinds.size === 0, () => { state.kinds.clear(); state.sources.clear(); changed(); }));
+    // Clips (text sent from the phone on purpose) get a row once there is one.
     for (const kind of ALWAYS_SHOWN.concat(Object.keys(status.items.by_kind).filter((k) => !ALWAYS_SHOWN.includes(k)))) {
       const count = status.items.by_kind[kind] || 0;
       if (!count && !ALWAYS_SHOWN.includes(kind)) continue;
-      kinds.append(chip(KIND_NAMES[kind] || kind, count, state.kinds.has(kind), () => {
+      kinds.append(choice(KIND_NAMES[kind] || kind, count, state.kinds.has(kind), () => {
         if (state.kinds.has(kind)) state.kinds.delete(kind); else state.kinds.add(kind);
         if (!showsSources()) state.sources.clear();
         changed();
       }));
     }
     const sources = $("sources");
-    sources.querySelectorAll(".chip").forEach((node) => node.remove());
+    sources.textContent = "";
     const names = Object.keys(status.items.dictations_by_source);
-    sources.hidden = !showsSources() || names.length < 2;
+    $("sourcesGroup").hidden = !showsSources() || names.length < 2;
+    // In a narrow window the sources wait until dictations are chosen, to keep the list near.
+    $("sourcesGroup").classList.toggle("optional", !state.kinds.has("dictation") && !state.sources.size);
     for (const source of names) {
-      sources.append(chip(SOURCE_NAMES[source] || source, status.items.dictations_by_source[source], state.sources.has(source), () => {
+      sources.append(choice(SOURCE_NAMES[source] || source, status.items.dictations_by_source[source], state.sources.has(source), () => {
         if (state.sources.has(source)) state.sources.delete(source); else state.sources.add(source);
         changed();
       }));
     }
+
+    const colophon = $("colophon");
+    colophon.textContent = "";
+    if (status.backup_folder) {
+      const watch = status.backup_folder_state || {};
+      const said = watch.state === "waiting" ? watch.message
+        : watch.state === "error" ? "The backup folder cannot be read. Run zone doctor."
+        : "Backup folder read " + ago(status.last_sync.backup_age_s) + ".";
+      colophon.append(el("p", null, said));
+    }
+    const computer = status.computer || {};
+    colophon.append(el("p", null, plural(status.items.total, "item", "items") + " kept on " + (computer.name || "this computer") + ", in zone " + (computer.version || "") + ". This page loads nothing from the internet."));
     renderPhones();
   }
-  const showsSources = () => state.kinds.size === 0 || state.kinds.has("dictation");
 
   function renderPhones() {
     const box = $("phones");
@@ -390,12 +729,16 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
       const row = el("div", "phone");
       const left = el("div");
       left.append(el("div", null, phone.name || "iPhone"));
-      const detail = [phone.app ? "Zone " + phone.app : null, phone.last_path ? phone.last_path + " connection" : null].filter(Boolean).join(" · ");
+      const detail = [phone.app ? "Zone " + phone.app : null, phone.last_path ? phone.last_path + " connection" : null].filter(Boolean).join(", ");
       if (detail) left.append(el("small", null, detail));
-      row.append(left, el("small", null, "synced " + ago(phone.last_sync_age_s) + ", " + plural(phone.items_received, "item", "items") + " received"));
+      const right = el("div", "right");
+      right.append(el("div", null, "synced " + ago(phone.last_sync_age_s)), el("div", null, plural(phone.items_received, "item", "items") + " received"));
+      row.append(left, right);
       box.append(row);
     }
   }
+
+  // ---------------------------------------------------------------- the list
 
   function highlight(node, snippet) {
     // Matches arrive wrapped in [brackets]. Everything is added as text, never as HTML.
@@ -406,29 +749,37 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     }
   }
 
-  function renderItem(item) {
-    const card = el("article", "item");
-    const meta = el("div", "meta");
-    const time = el("time", null, item.time);
+  // A meeting's transcript is one line per turn, "Name: words". The name is set in bold.
+  function turns(node, text) {
+    node.textContent = "";
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      const p = el("p");
+      const match = line.match(/^([^:\n]{1,40}):\s+(.*)$/);
+      if (match) p.append(el("b", null, match[1]), match[2]); else p.append(line);
+      node.append(p);
+    }
+  }
+
+  function renderItem(item, arrived) {
+    const entry = el("li", "entry" + (arrived ? " arrived" : ""));
+    const when = clock(item.rfc3339);
+    const time = el("time", null, when);
     time.dateTime = item.rfc3339;
     time.title = item.full_time;
-    meta.append(time, el("span", "tag " + item.kind, KIND_ONE[item.kind] || item.kind));
-    if (item.source) meta.append(el("span", null, SOURCE_NAMES[item.source] || item.source));
-    const length = duration(item.duration_s);
-    if (length) meta.append(el("span", null, length));
-    meta.append(el("span", null, plural(item.words, "word", "words")), el("span", "grow"));
-    const copy = el("button", "copy", "Copy");
-    copy.type = "button";
-    meta.append(copy);
-    card.append(meta);
-    if (item.title) card.append(el("div", "title", item.title));
+    entry.append(time);
+    const body = el("div", "body");
+    if (item.title) body.append(el("h3", null, item.title));
 
-    const text = el("div", "text");
+    const meeting = item.kind === "meeting" && !item.snippet;
+    const text = el(meeting ? "div" : "p", meeting ? "turns" : "text");
     let full = item.truncated ? null : item.text;
-    const long = item.truncated || item.text.length > 900 || item.text.split("\n").length > 8;
-    if (item.snippet) highlight(text, item.snippet); else text.textContent = item.text;
+    const long = item.truncated || item.text.length > 700 || item.text.split("\n").length > (meeting ? 7 : 8);
+    if (item.snippet) highlight(text, item.snippet);
+    else if (meeting) turns(text, item.text);
+    else text.textContent = item.text;
     if (long && !item.snippet) text.classList.add("clamp");
-    card.append(text);
+    body.append(text);
 
     async function whole() {
       if (full === null) full = (await api("/api/item?id=" + encodeURIComponent(item.id))).text;
@@ -437,15 +788,47 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     // A snippet that already is the whole text needs no button.
     const partial = item.snippet && (item.truncated || item.snippet.replace(/[\[\]]/g, "") !== item.text);
     if (long || partial) {
-      const more = el("button", "more", item.snippet ? "Show all of it" : "Show more");
+      const more = el("button", "textbutton more", item.kind === "meeting" ? "Show the whole meeting" : "Show all " + plural(item.words, "word", "words"));
       more.type = "button";
       more.addEventListener("click", async () => {
-        text.textContent = await whole();
-        text.classList.remove("clamp");
+        const all = await whole();
+        if (item.kind === "meeting") {
+          const box = el("div", "turns");
+          turns(box, all);
+          text.replaceWith(box);
+        } else {
+          text.textContent = all;
+          text.classList.remove("clamp");
+        }
         more.remove();
       });
-      card.append(more);
+      body.append(more);
     }
+
+    const meta = el("div", "meta");
+    const info = el("span", "info");
+    const kind = el("span", "kind");
+    if (ICONS[item.kind]) kind.append(svg(ICONS[item.kind]));
+    kind.append(KIND_ONE[item.kind] || item.kind);
+    const mtime = el("span", "mtime", when);
+    mtime.setAttribute("aria-hidden", "true");
+    info.append(mtime);
+    const mkind = el("span", "sep after-time");
+    mkind.append(kind);
+    info.append(mkind);
+    // A voice note's source says the same as its kind.
+    if (item.source && !(item.kind === "note" && item.source === "note")) info.append(el("span", "sep", SOURCE_NAMES[item.source] || item.source));
+    const length = duration(item.duration_s);
+    if (length && item.kind !== "clip") info.append(el("span", "sep", length));
+    if (item.words) info.append(el("span", "sep", plural(item.words, "word", "words")));
+    meta.append(info);
+    const copy = el("button", "copy", "Copy");
+    copy.type = "button";
+    copy.setAttribute("aria-label", "Copy the " + (KIND_ONE[item.kind] || item.kind).toLowerCase() + " from " + when);
+    meta.append(copy);
+    body.append(meta);
+    entry.append(body);
+
     copy.addEventListener("click", async () => {
       const value = (item.title ? item.title + "\n\n" : "") + (await whole());
       try {
@@ -460,73 +843,129 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
       }
       copy.textContent = "Copied";
       copy.classList.add("done");
-      setTimeout(() => { copy.textContent = "Copy"; copy.classList.remove("done"); }, 1400);
+      clearTimeout(copy.timer);
+      copy.timer = setTimeout(() => { copy.textContent = "Copy"; copy.classList.remove("done"); }, 1600);
     });
-    return card;
+    return entry;
+  }
+
+  function title() {
+    if (state.q) return "“" + state.q + "”";
+    const kinds = KINDS.filter((k) => state.kinds.has(k)).concat([...state.kinds].filter((k) => !KINDS.includes(k)));
+    if (!kinds.length) return "Your library";
+    const names = kinds.map((k, i) => (i ? (KIND_NAMES[k] || k).toLowerCase() : KIND_NAMES[k] || k));
+    return listing(names);
+  }
+
+  function summarize(data) {
+    const summary = $("summary");
+    summary.textContent = "";
+    const parts = [];
+    if (state.q) {
+      parts.push(plural(data.total, "match", "matches"));
+      if (data.total > state.shown) parts.push("the newest " + state.shown.toLocaleString() + " shown");
+      if (data.matched === "prefix") parts.push("found by the beginnings of words");
+    } else {
+      const single = state.kinds.size === 1 ? [...state.kinds][0] : null;
+      parts.push(single ? plural(data.total, (KIND_ONE[single] || single).toLowerCase(), (KIND_NAMES[single] || single).toLowerCase()) : plural(data.total, "item", "items"));
+    }
+    let sentence = parts.join(", ");
+    if (state.sources.size) sentence += " from " + listing([...state.sources].map((s) => (SOURCE_NAMES[s] || s).toLowerCase().replace(/^in zone$/, "Zone")));
+    const range = rangeWords();
+    if (range) sentence += " " + range;
+    summary.append(sentence + ".");
+    if (status && status.phones.length) {
+      const span = el("span", "device-inline", " " + (status.phones[0].name || "iPhone") + " synced " + ago(status.phones[0].last_sync_age_s) + ".");
+      summary.append(span);
+    }
   }
 
   async function load(reset) {
     if (state.loading && !reset) return;
     const mine = ++request;
     state.loading = true;
-    if (reset) { state.cursor = null; state.lastDay = null; state.shown = 0; }
     const params = new URLSearchParams();
     if (state.q) params.set("q", state.q);
     if (state.kinds.size) params.set("kinds", [...state.kinds].join(","));
     if (state.sources.size) params.set("sources", [...state.sources].join(","));
     if (state.from) params.set("start", state.from);
     if (state.to) params.set("end", state.to);
-    if (state.cursor) params.set("cursor", state.cursor);
+    if (!reset && state.cursor) params.set("cursor", state.cursor);
     let data;
     try {
       data = await api("/api/items?" + params.toString());
     } catch (error) {
-      state.loading = false;
-      if (error.message !== "locked") $("summary").textContent = "Could not load items. Is zone still running?";
+      if (mine === request) state.loading = false;
+      if (error.message !== "locked") {
+        $("summary").textContent = "Could not load your library. Is zone still running?";
+      }
       return;
     }
     if (mine !== request) return;
     const list = $("list");
-    if (reset) list.textContent = "";
+    if (reset) { list.textContent = ""; state.lastDay = null; state.shown = 0; }
+    $("title").textContent = title();
+    document.title = state.q || state.kinds.size ? title() + ", Zone" : "Zone";
+    let entries = list.querySelector("section.day:last-of-type ol.entries");
+    const seen = new Set();
     for (const item of data.items) {
+      seen.add(item.id);
       if (item.day !== state.lastDay) {
         state.lastDay = item.day;
-        const head = el("div", "day");
-        head.append(el("h2", null, item.day_label));
-        if (data.day_counts && data.day_counts[item.day]) head.append(el("span", null, plural(data.day_counts[item.day], "item", "items")));
-        list.append(head);
+        const section = el("section", "day");
+        const head = el("div", "dayHead");
+        const [name, date] = dayName(item.day);
+        const h2 = el("h2", null, name);
+        h2.id = "day-" + item.day;
+        section.setAttribute("aria-labelledby", h2.id);
+        head.append(h2);
+        if (date) head.append(el("span", "date", date));
+        if (data.day_counts && data.day_counts[item.day]) head.append(el("span", "count", plural(data.day_counts[item.day], "item", "items")));
+        entries = el("ol", "entries");
+        section.append(head, entries);
+        list.append(section);
       }
-      list.append(renderItem(item));
+      const arrived = !firstLoad && reset && !state.q && !known.has(item.id);
+      entries.append(renderItem(item, arrived));
     }
+    if (reset && !state.q && !state.kinds.size && !state.sources.size && !state.from) known = seen;
+    else for (const id of seen) known.add(id);
+    firstLoad = false;
     state.shown += data.items.length;
     state.total = data.total;
     state.cursor = data.next_cursor;
     $("more").hidden = !data.next_cursor;
-    const summary = $("summary");
+    summarize(data);
     if (!data.total) {
-      summary.textContent = "";
       const empty = el("div", "empty");
       const filtered = state.q || state.kinds.size || state.sources.size || state.from || state.to;
       if (filtered) {
-        empty.append(el("h3", null, "Nothing matches"), el("p", null, "Try other words, another kind, or a wider range of dates."));
+        empty.append(el("h2", null, "Nothing matches."), el("p", null, "Try other words, another kind, or a wider range of dates."));
+        const button = el("button", "button", "Show everything");
+        button.type = "button";
+        button.addEventListener("click", clearAll);
+        empty.append(button);
       } else {
-        empty.append(el("h3", null, "Nothing here yet"), el("p", null, "Pair your iPhone and everything you dictate in Zone will appear here, on this computer only."));
-        const button = el("button", "btn primary", "Pair a phone");
+        empty.append(el("h2", null, "Nothing here yet."), el("p", null, "Pair your iPhone and everything you dictate in Zone will appear here, on this computer only."));
+        const button = el("button", "button primary", "Pair a phone");
         button.type = "button";
         button.addEventListener("click", openPair);
         empty.append(button);
       }
       list.append(empty);
-    } else if (state.q) {
-      summary.textContent = plural(data.total, "match", "matches") + (data.total > state.shown ? ", showing the newest " + state.shown : "") + (data.matched === "prefix" ? " (matched by the beginnings of words)" : "");
-    } else {
-      summary.textContent = plural(data.total, "item", "items");
     }
     state.loading = false;
   }
 
+  function clearAll() {
+    state.q = ""; $("q").value = "";
+    state.kinds.clear(); state.sources.clear();
+    pickRange("all");
+  }
+
   function changed() {
     if (status) renderStatus();
+    calendar.load();
     load(true);
   }
 
@@ -534,49 +973,205 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     let next;
     try { next = await api("/api/status"); } catch (_) { return; }
     const first = status === null;
+    const grew = status && next.items.total > status.items.total;
     status = next;
     renderStatus();
     if (first) {
       state.revision = next.revision;
+      drawWave(12);
     } else if (next.revision !== state.revision) {
       state.revision = next.revision;
+      if (grew) {
+        wake(4);
+        const light = $("light");
+        light.classList.remove("ping"); void light.offsetWidth; light.classList.add("ping");
+      }
+      calendar.load(true);
       if (window.scrollY < 200 && !state.q) load(true); else $("fresh").hidden = false;
     }
   }
 
-  // Search, as the person types.
+  // ---------------------------------------------------------------- search
+
   let typing = 0;
   $("q").addEventListener("input", (event) => {
     clearTimeout(typing);
     typing = setTimeout(() => { state.q = event.target.value.trim(); load(true); }, 180);
   });
+  $("q").addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && event.target.value) { event.preventDefault(); event.target.value = ""; state.q = ""; load(true); }
+  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "/" && document.activeElement !== $("q") && !$("pair").open) { event.preventDefault(); $("q").focus(); }
+    const typingSomewhere = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (event.key === "/" && !typingSomewhere && !$("pair").open && !event.metaKey && !event.ctrlKey) { event.preventDefault(); $("q").focus(); }
   });
 
-  // Dates.
-  const iso = (date) => date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
-  function setRange(name) {
+  // ---------------------------------------------------------------- when
+
+  function pickRange(name) {
+    state.range = name;
+    const today = todayIso();
+    if (name === "all") { state.from = ""; state.to = ""; }
+    else if (name === "today") { state.from = today; state.to = today; }
+    else if (name !== "custom") { state.from = addDays(today, -(Number(name) - 1)); state.to = today; }
     document.querySelectorAll("[data-range]").forEach((node) => node.setAttribute("aria-pressed", node.dataset.range === name ? "true" : "false"));
-  }
-  document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => {
-    const range = button.dataset.range;
-    const today = new Date();
-    if (range === "all") { state.from = ""; state.to = ""; }
-    else if (range === "today") { state.from = iso(today); state.to = iso(today); }
-    else { const start = new Date(today); start.setDate(start.getDate() - (Number(range) - 1)); state.from = iso(start); state.to = iso(today); }
-    $("from").value = state.from;
-    $("to").value = state.to;
-    setRange(range);
+    calendar.anchor = "";
+    if (name !== "custom" && state.to) calendar.show(state.to);
+    calendar.render();
     load(true);
-  }));
-  for (const id of ["from", "to"]) {
-    $(id).addEventListener("change", (event) => {
-      state[id] = event.target.value;
-      setRange(state.from || state.to ? "" : "all");
-      load(true);
-    });
   }
+  document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => pickRange(button.dataset.range)));
+  $("datesToggle").addEventListener("click", () => {
+    const open = !$("when").classList.contains("open");
+    $("when").classList.toggle("open", open);
+    $("datesToggle").setAttribute("aria-expanded", String(open));
+  });
+
+  // A month of days to pick from. Days with something in them carry a dot. Pick one day, then
+  // another to make a range; Shift extends from the first.
+  const calendar = {
+    year: new Date().getFullYear(), month: new Date().getMonth(), counts: {}, key: "", anchor: "", focus: "",
+    firstDay: (() => {
+      try {
+        const locale = new Intl.Locale(navigator.language || "en-US");
+        const info = locale.getWeekInfo ? locale.getWeekInfo() : locale.weekInfo;
+        if (info && info.firstDay) return info.firstDay % 7;
+      } catch (_) { /* fall through */ }
+      return /^en-(US|CA)|^ja|^zh-TW|^ko|^he|^pt-BR/.test(navigator.language || "en-US") ? 0 : 1;
+    })(),
+    show(day) { const date = fromIso(day); this.year = date.getFullYear(); this.month = date.getMonth(); this.load(); },
+    async load(force) {
+      const first = iso(new Date(this.year, this.month, 1)), last = iso(new Date(this.year, this.month + 1, 0));
+      const params = new URLSearchParams({ start: first, end: last });
+      if (state.kinds.size) params.set("kinds", [...state.kinds].join(","));
+      if (state.sources.size) params.set("sources", [...state.sources].join(","));
+      const key = params.toString();
+      if (!force && key === this.key) return;
+      this.key = key;
+      try {
+        const data = await api("/api/items?" + key);
+        if (this.key === key) { this.counts = data.day_counts || {}; this.render(); }
+      } catch (_) { /* the dots are optional */ }
+    },
+    render() {
+      const title = new Date(this.year, this.month, 1).toLocaleDateString([], { month: "long", year: "numeric" });
+      $("calTitle").textContent = title;
+      const head = $("calDays");
+      if (!head.childNodes.length) {
+        for (let i = 0; i < 7; i++) {
+          const date = new Date(2026, 10, 1 + ((this.firstDay + i) % 7)); // November 1, 2026 is a Sunday
+          const th = el("th", null, date.toLocaleDateString([], { weekday: "narrow" }));
+          th.scope = "col";
+          th.setAttribute("abbr", date.toLocaleDateString([], { weekday: "long" }));
+          head.append(th);
+        }
+      }
+      const today = todayIso();
+      const now = new Date();
+      $("calNext").disabled = this.year > now.getFullYear() || (this.year === now.getFullYear() && this.month >= now.getMonth());
+      const body = $("calBody");
+      body.textContent = "";
+      const start = new Date(this.year, this.month, 1);
+      const lead = (start.getDay() - this.firstDay + 7) % 7;
+      const days = new Date(this.year, this.month + 1, 0).getDate();
+      const from = state.from, to = state.to || state.from;
+      if (!this.focus || fromIso(this.focus).getMonth() !== this.month || fromIso(this.focus).getFullYear() !== this.year) {
+        this.focus = from && fromIso(from).getMonth() === this.month && fromIso(from).getFullYear() === this.year ? from : iso(new Date(this.year, this.month, Math.min(now.getDate(), days)));
+        if (this.focus > today) this.focus = iso(new Date(this.year, this.month, 1));
+      }
+      let row = el("tr");
+      for (let i = 0; i < lead; i++) row.append(el("td"));
+      for (let d = 1; d <= days; d++) {
+        const day = iso(new Date(this.year, this.month, d));
+        const count = this.counts[day] || 0;
+        const td = el("td");
+        td.setAttribute("role", "gridcell");
+        const inRange = from && day >= from && day <= to;
+        if (inRange && from !== to) {
+          td.className = "in";
+          const column = (lead + d - 1) % 7;
+          if (day === from || column === 0 || d === 1) td.classList.add("first");
+          if (day === to || column === 6 || d === days) td.classList.add("last");
+        }
+        td.setAttribute("aria-selected", inRange ? "true" : "false");
+        const button = el("button", "day-cell" + (count ? " has" : "") + (day === today ? " today" : "") + (day === from || day === to ? (inRange ? " edge" : "") : ""), String(d));
+        button.type = "button";
+        button.dataset.day = day;
+        button.tabIndex = day === this.focus ? 0 : -1;
+        const label = longDate(day) + ", " + (count ? plural(count, "item", "items") : "nothing");
+        button.setAttribute("aria-label", label);
+        if (day === today) button.setAttribute("aria-current", "date");
+        if (day > today) button.disabled = true;
+        td.append(button);
+        row.append(td);
+        if ((lead + d) % 7 === 0) { body.append(row); row = el("tr"); }
+      }
+      if (row.childNodes.length) { while (row.childNodes.length < 7) row.append(el("td")); body.append(row); }
+      const note = $("calNote");
+      note.textContent = "";
+      if (state.range === "custom" && from) {
+        note.append(from === to ? longDate(from) : span(from, to), " · ");
+        const clear = el("button", "textbutton", "Clear");
+        clear.type = "button";
+        clear.addEventListener("click", () => pickRange("all"));
+        note.append(clear);
+      } else if (this.anchor) {
+        note.append("Now pick the last day.");
+      } else {
+        note.append("Pick a day, or two for a range.");
+      }
+    },
+    pick(day, extend) {
+      if (day > todayIso()) return;
+      const anchor = extend ? this.anchor || state.from : this.anchor;
+      if (anchor && anchor !== day) {
+        state.from = anchor < day ? anchor : day;
+        state.to = anchor < day ? day : anchor;
+        this.anchor = "";
+      } else {
+        state.from = day; state.to = day;
+        this.anchor = day;
+      }
+      this.focus = day;
+      state.range = "custom";
+      document.querySelectorAll("[data-range]").forEach((node) => node.setAttribute("aria-pressed", "false"));
+      this.render();
+      const button = $("calBody").querySelector('[data-day="' + day + '"]');
+      if (button) button.focus();
+      load(true);
+    },
+    move(day) {
+      const date = fromIso(day);
+      if (day > todayIso()) return;
+      this.focus = day;
+      if (date.getMonth() !== this.month || date.getFullYear() !== this.year) { this.year = date.getFullYear(); this.month = date.getMonth(); this.load(); }
+      this.render();
+      const button = $("calBody").querySelector('[data-day="' + day + '"]');
+      if (button) button.focus();
+    },
+  };
+  $("calBody").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-day]");
+    if (button && !button.disabled) calendar.pick(button.dataset.day, event.shiftKey);
+  });
+  $("calBody").addEventListener("keydown", (event) => {
+    const button = event.target.closest("[data-day]");
+    if (!button) return;
+    const day = button.dataset.day;
+    const column = (fromIso(day).getDay() - calendar.firstDay + 7) % 7;
+    const moves = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7, Home: -column, End: 6 - column };
+    if (event.key in moves) { event.preventDefault(); calendar.move(addDays(day, moves[event.key])); }
+    else if (event.key === "PageUp" || event.key === "PageDown") {
+      event.preventDefault();
+      const date = fromIso(day);
+      date.setMonth(date.getMonth() + (event.key === "PageUp" ? -1 : 1));
+      calendar.move(iso(date) > todayIso() ? todayIso() : iso(date));
+    }
+  });
+  $("calPrev").addEventListener("click", () => { calendar.month--; if (calendar.month < 0) { calendar.month = 11; calendar.year--; } calendar.load(); calendar.render(); });
+  $("calNext").addEventListener("click", () => { calendar.month++; if (calendar.month > 11) { calendar.month = 0; calendar.year++; } calendar.load(); calendar.render(); });
+
+  // ---------------------------------------------------------------- paging
 
   $("more").addEventListener("click", () => load(false));
   new IntersectionObserver((entries) => {
@@ -584,7 +1179,8 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
   }, { rootMargin: "600px" }).observe($("more"));
   $("fresh").addEventListener("click", () => { $("fresh").hidden = true; window.scrollTo({ top: 0 }); load(true); });
 
-  // Pairing.
+  // ---------------------------------------------------------------- pairing
+
   let countdown = 0;
   async function newCode() {
     clearInterval(countdown);
@@ -602,13 +1198,16 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
       return;
     }
     // The server drew this SVG itself from the link. It contains only rectangles.
-    const svg = new DOMParser().parseFromString(offer.svg, "image/svg+xml").documentElement;
-    if (svg && svg.nodeName === "svg") $("qr").append(document.importNode(svg, true));
+    const code = new DOMParser().parseFromString(offer.svg, "image/svg+xml").documentElement;
+    if (code && code.nodeName === "svg") $("qr").append(document.importNode(code, true));
     $("pairUrl").value = offer.url;
     const ends = Date.now() + offer.expires_in_s * 1000;
     const tick = () => {
       const left = Math.max(0, Math.round((ends - Date.now()) / 1000));
-      $("expires").textContent = left ? "Valid for " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") : "This code has expired. Make a new one.";
+      const expires = $("expires");
+      expires.textContent = "";
+      if (left) expires.append("Valid for ", el("b", null, Math.floor(left / 60) + ":" + pad(left % 60)));
+      else expires.append("This code has expired. Make a new one.");
       if (!left) { clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; }
     };
     tick();
@@ -619,6 +1218,7 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     newCode();
   }
   $("pairOpen").addEventListener("click", openPair);
+  $("device").addEventListener("click", openPair);
   $("pairNew").addEventListener("click", newCode);
   $("pairClose").addEventListener("click", () => $("pair").close());
   $("pair").addEventListener("close", () => { clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; refreshStatus(); });
@@ -630,6 +1230,8 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     setTimeout(() => { $("pairCopy").textContent = "Copy"; }, 1400);
   });
 
+  calendar.render();
+  calendar.load();
   refreshStatus().then(() => load(true));
   setInterval(refreshStatus, 8000);
 })();
