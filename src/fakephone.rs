@@ -39,6 +39,12 @@ pub struct Options {
     pub file: Option<PathBuf>,
     /// Send deletions for these item ids after the items.
     pub delete: Vec<String>,
+    /// Send each of these texts as a clip, after the items.
+    pub clips: Vec<String>,
+    /// The source the clips claim: clipboard, share, shortcut or typed.
+    pub clip_source: Option<String>,
+    /// How many seconds ago the clips say they were sent (negative: in the future).
+    pub clip_age: f64,
     /// Use only the relay: no direct addresses are ever tried.
     pub relay_only: bool,
     /// Direct addresses of the computer to try, skipping address lookup.
@@ -134,6 +140,15 @@ pub fn synthetic_items(start_index: usize, count: usize) -> Vec<Value> {
             }
         })
         .collect()
+}
+
+/// A clip as the phone sends one: text the person chose to send, with a new id.
+pub fn clip_item(text: &str, source: &str, created_at: f64) -> Value {
+    json!({
+        "id": paths::new_uuid().to_ascii_uppercase(), "kind": "clip", "source": source, "created_at": created_at, "updated_at": created_at,
+        "text": text, "title": null, "duration_s": null, "engine": null, "status": null, "extra": {},
+        "rev": paths::hex(&paths::random_bytes::<8>()),
+    })
 }
 
 pub fn load_jsonl(path: &Path) -> Result<Vec<Value>> {
@@ -267,6 +282,12 @@ pub async fn run(options: Options) -> Result<Value> {
     for id in &options.delete {
         items.push(json!({ "id": id, "kind": "dictation", "deleted": true, "updated_at": now }));
     }
+    let mut clip_ids = Vec::new();
+    for text in &options.clips {
+        let item = clip_item(text, options.clip_source.as_deref().unwrap_or("clipboard"), now - options.clip_age);
+        clip_ids.push(item["id"].clone());
+        items.push(item);
+    }
     let batch = if options.batch == 0 { codec::MAX_ITEMS_PER_FRAME } else { options.batch };
     let frames = codec::batches(&items, batch);
     let mut acks = Vec::new();
@@ -292,6 +313,9 @@ pub async fn run(options: Options) -> Result<Value> {
     endpoint.close().await;
 
     report["sent"] = json!(items.len());
+    if !clip_ids.is_empty() {
+        report["clips"] = json!(clip_ids);
+    }
     report["frames"] = json!(frames.len());
     report["stored"] = json!(stored_total);
     report["acks"] = json!(acks);
@@ -322,6 +346,10 @@ mod tests {
             }
         }
         assert_eq!((dictations, notes, meetings), (270, 24, 6));
+        // A clip is an item too, with an id of its own each time.
+        let clip = Item::from_json(&clip_item("copied text", "share", 12.5)).unwrap();
+        assert_eq!((clip.kind.as_str(), clip.source.as_deref(), clip.created_at, clip.text.as_str()), ("clip", Some("share"), 12.5, "copied text"));
+        assert_ne!(clip.id, Item::from_json(&clip_item("copied text", "share", 12.5)).unwrap().id);
         // A later run continues the ids instead of repeating them.
         let more = synthetic_items(300, 5);
         assert!(more.iter().all(|v| !ids.contains(v["id"].as_str().unwrap())));

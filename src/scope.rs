@@ -10,6 +10,10 @@
 //! it cannot be listed, searched, read, counted or flagged, and the server's instructions tell
 //! the agent what it is not seeing. The default is everything.
 //!
+//! A clip (text the person sent to this computer on purpose) is a kind like the others, so
+//! `--kinds note,meeting` and `--notes-only` leave clips out, and a client registered with a
+//! list of kinds before clips existed does not start seeing them.
+//!
 //! This is a limit on what leaves the computer through one server. It is not a wall between
 //! programs: anything running as the same user can still open the library file.
 
@@ -17,7 +21,7 @@ use anyhow::{Result, bail};
 use clap::Args;
 
 /// The kinds of item, in the order they are always written.
-pub const KINDS: [&str; 3] = ["dictation", "note", "meeting"];
+pub const KINDS: [&str; 4] = ["dictation", "note", "meeting", "clip"];
 
 /// The view flags of `zone mcp` and `zone mcp install`.
 #[derive(Args, Clone, Debug, Default)]
@@ -28,14 +32,15 @@ pub struct ViewArgs {
     /// With install: let agents flag items again on a client that was registered read-only
     #[arg(long, conflicts_with = "read_only")]
     pub read_write: bool,
-    /// Show agents only these kinds: dictation, note, meeting (comma separated), or all
+    /// Show agents only these kinds: dictation, note, meeting, clip (comma separated), or all
     #[arg(long, value_name = "KINDS", value_delimiter = ',')]
     pub kinds: Vec<String>,
-    /// Hide dictations spoken in these places: keyboard (typed by voice in other apps), app,
-    /// note (comma separated), or none
+    /// Hide items from these sources: keyboard (typed by voice in other apps), app, note,
+    /// or a clip's clipboard, share, shortcut, typed (comma separated), or none
     #[arg(long, value_name = "SOURCES", value_delimiter = ',')]
     pub exclude_sources: Vec<String>,
-    /// Show agents only your voice notes. The same as --kinds note
+    /// Show agents only your voice notes (no dictations, meetings or clips). The same as
+    /// --kinds note
     #[arg(long, conflicts_with = "kinds")]
     pub notes_only: bool,
     /// Hide what you typed by voice into other apps (messages, emails, searches). The same as
@@ -75,7 +80,7 @@ impl ViewArgs {
 pub struct Scope {
     /// The kinds that can be seen, in the order of [`KINDS`]. Empty means all of them.
     pub kinds: Vec<String>,
-    /// Dictations whose source is one of these are hidden. Lowercase, sorted.
+    /// Items whose source is one of these are hidden. Lowercase, sorted.
     pub exclude_sources: Vec<String>,
 }
 
@@ -84,6 +89,7 @@ fn kind_name(kind: &str) -> Option<&'static str> {
         "dictation" | "dictations" => Some("dictation"),
         "note" | "notes" => Some("note"),
         "meeting" | "meetings" => Some("meeting"),
+        "clip" | "clips" => Some("clip"),
         _ => None,
     }
 }
@@ -92,6 +98,7 @@ fn plural(kind: &str) -> &'static str {
     match kind {
         "dictation" => "dictations",
         "note" => "voice notes",
+        "clip" => "clips",
         _ => "meeting transcripts",
     }
 }
@@ -109,7 +116,7 @@ impl Scope {
     /// A scope from what a person typed. A kind zone does not know is an error rather than a
     /// guess: a mistyped limit must never turn into no limit.
     pub fn new(kinds: &[String], exclude_sources: &[String]) -> Result<Scope> {
-        let mut seen = [false; 3];
+        let mut seen = [false; KINDS.len()];
         let mut all = false;
         for kind in kinds.iter().map(|k| k.trim()).filter(|k| !k.is_empty()) {
             if kind.eq_ignore_ascii_case("all") {
@@ -118,7 +125,7 @@ impl Scope {
             }
             match kind_name(kind).and_then(|name| KINDS.iter().position(|k| *k == name)) {
                 Some(index) => seen[index] = true,
-                None => bail!("--kinds takes dictation, note, meeting (or all), not \"{kind}\""),
+                None => bail!("--kinds takes dictation, note, meeting, clip (or all), not \"{kind}\""),
             }
         }
         let kinds: Vec<String> =
@@ -279,8 +286,12 @@ mod tests {
         assert_eq!(Scope::from_launch_args(&[list(&["mcp", "--read-only"]), scope.to_args()].concat()), Some(scope.clone()));
         assert_eq!(scope.short().unwrap(), "only voice notes and meeting transcripts, hides app, keyboard");
 
-        // All three kinds, or `all`, is no limit. `none` hides no source.
-        assert!(Scope::new(&list(&["note", "meeting", "dictation"]), &[]).unwrap().is_everything());
+        // Every kind, or `all`, is no limit. `none` hides no source.
+        assert!(Scope::new(&list(&["note", "meeting", "dictation", "clips"]), &[]).unwrap().is_everything());
+        // The three kinds there were before clips are a limit: clips stay out.
+        let spoken = Scope::new(&list(&["note", "meeting", "dictation"]), &[]).unwrap();
+        assert_eq!(spoken.to_args(), list(&["--kinds", "dictation,note,meeting"]));
+        assert!(!spoken.allows("clip", Some("clipboard")) && spoken.short().unwrap().starts_with("only dictations"));
         assert!(Scope::new(&list(&["all"]), &list(&["none"])).unwrap().is_everything());
         // A typo is refused, never read as "everything".
         assert!(Scope::new(&list(&["notse"]), &[]).unwrap_err().to_string().contains("notse"));
@@ -301,12 +312,15 @@ mod tests {
         assert!(!scope.allows("dictation", Some("keyboard")) && !scope.allows("dictation", Some("Keyboard ")));
         let notes = Scope::new(&list(&["note"]), &[]).unwrap();
         assert!(notes.allows("note", None) && !notes.allows("dictation", Some("note")) && !notes.allows("meeting", None));
+        // --notes-only leaves clips out, and a clip's source can be hidden like any other.
+        assert!(!notes.allows("clip", Some("clipboard")));
+        assert!(scope.allows("clip", Some("clipboard")) && !Scope::new(&[], &list(&["share"])).unwrap().allows("clip", Some("share")));
 
         let words = scope.for_agents().unwrap();
         assert!(words.contains("limited view") && words.contains("`keyboard` (what they typed by voice into other apps)") && words.contains("not the whole library"), "{words}");
         let words = Scope::new(&list(&["note", "meeting"]), &list(&["keyboard"])).unwrap().for_agents().unwrap();
         // With dictations hidden altogether, their sources need no mention.
-        assert!(words.contains("only voice notes and meeting transcripts (dictations are hidden)") && !words.contains("keyboard"), "{words}");
+        assert!(words.contains("only voice notes and meeting transcripts (dictations and clips are hidden)") && !words.contains("keyboard"), "{words}");
         assert_eq!(notes.for_people().unwrap(), "Limited view for agents there: only voice notes.");
         assert!(!words.contains('\u{2014}'));
     }

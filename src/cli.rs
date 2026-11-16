@@ -20,10 +20,11 @@ pub struct FilterArgs {
     /// Only items created before this time (a bare date means through the end of that day)
     #[arg(long, value_name = "TIME")]
     pub until: Option<String>,
-    /// Only this kind: dictation, note or meeting. Repeat for more than one
+    /// Only this kind: dictation, note, meeting or clip. Repeat for more than one
     #[arg(long, value_name = "KIND")]
     pub kind: Vec<String>,
-    /// Only dictations spoken here: keyboard, app or note. Repeat for more than one
+    /// Only items from here: keyboard, app or note (dictations), clipboard, share, shortcut
+    /// or typed (clips). Repeat for more than one
     #[arg(long, value_name = "SOURCE")]
     pub source: Vec<String>,
     /// Only items no agent has flagged as processed

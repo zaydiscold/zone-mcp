@@ -311,7 +311,7 @@ async fn session(
 struct Tally {
     applied: Applied,
     frames: usize,
-    /// Items without an id, kind or time.
+    /// Items that could not be stored: no id, kind or time, or a clip over its size limit.
     rejected: usize,
 }
 
@@ -355,14 +355,19 @@ async fn exchange(
                     let endpoint_id = endpoint_id.to_string();
                     let device_id = phone.id.clone();
                     let path = path_kind(connection);
+                    let phone_name = phone.name.clone();
                     blocking(move || {
                         let now = paths::now_unix();
                         let mut db = db.lock().map_err(poisoned)?;
                         let delivery = Delivery { carrier: Carrier::Link, device_id: device_id.as_deref(), received_at: now };
                         // Committed before the ack is written.
-                        let applied = db.apply_items(&parsed, &delivery)?;
+                        let (applied, changed) = db.apply_items_noting(&parsed, &delivery)?;
                         // Counts what was new to this library, so sending an item twice counts once.
                         db.record_delivery(&endpoint_id, applied.changed(), Some(path), now)?;
+                        // A clip the person just sent goes in the feed, and on the clipboard
+                        // when they turned that on.
+                        let arrival = crate::clip::Arrival { carrier: Carrier::Link, device: phone_name.as_deref(), device_id: Some(&endpoint_id), now };
+                        crate::clip::arrived(&db, &parsed, &changed, &arrival);
                         Ok(applied)
                     })
                     .await?
@@ -372,8 +377,8 @@ async fn exchange(
                 tally.rejected += rejected;
                 let mut ack = json!({ "t": "ack", "seq": seq, "stored": applied.stored() });
                 if rejected > 0 {
-                    // Items without an id, kind or time cannot be stored. Saying so lets the
-                    // phone log it. They still count as handled, so they are not sent forever.
+                    // Items without an id, kind or time, and clips over their size limit, cannot
+                    // be stored. Saying so lets the phone log it. They still count as handled, so they are not sent forever.
                     ack["rejected"] = json!(rejected);
                     warn!("link: {short} sent {rejected} items that could not be read (frame {seq})");
                 }

@@ -52,6 +52,11 @@ pub struct Item {
 const MAX_ID_LEN: usize = 128;
 const MAX_LABEL_LEN: usize = 64;
 
+/// The kind of a clip: text the person sent to this computer on purpose (PROTOCOL.md, Clips).
+pub const CLIP: &str = "clip";
+/// The most text a clip may carry, in bytes of UTF-8. A larger one is not stored.
+pub const MAX_CLIP_BYTES: usize = 256 * 1024;
+
 impl Item {
     /// Reads one item object. Unknown fields are ignored. Errors describe the field that is
     /// wrong and never include the item's text.
@@ -84,13 +89,17 @@ impl Item {
             Some(Value::Object(map)) if !deleted => Value::Object(map.clone()).to_string(),
             _ => "{}".to_string(),
         };
+        let text = if deleted { String::new() } else { string(object, "text").unwrap_or_default() };
+        if kind == CLIP && text.len() > MAX_CLIP_BYTES {
+            bail!("clip text is {} bytes, more than the {MAX_CLIP_BYTES} a clip may carry", text.len());
+        }
         Ok(Item {
             id,
             kind,
             source: string(object, "source"),
             created_at,
             updated_at,
-            text: if deleted { String::new() } else { string(object, "text").unwrap_or_default() },
+            text,
             title: if deleted { None } else { string(object, "title") },
             duration_s: number(object, "duration_s"),
             engine: string(object, "engine"),
@@ -222,6 +231,19 @@ mod tests {
         let item = Item::from_json(&json!({ "id": "A", "kind": "note", "created_at": 5.0 })).unwrap();
         assert_eq!(item.updated_at, 5.0);
         assert_eq!(item.extra, "{}");
+    }
+
+    #[test]
+    fn a_clip_is_an_item_with_a_size_limit() {
+        let clip = |text: String| json!({ "id": "C", "kind": "clip", "source": "clipboard", "created_at": 9.0, "text": text });
+        let item = Item::from_json(&clip("copied on the phone".to_string())).unwrap();
+        assert_eq!((item.kind.as_str(), item.source.as_deref(), item.title.as_deref()), ("clip", Some("clipboard"), None));
+        assert!(Item::from_json(&clip("x".repeat(MAX_CLIP_BYTES))).is_ok());
+        // One byte more is refused, and the reason never holds the text.
+        let error = Item::from_json(&clip("secret ".repeat(MAX_CLIP_BYTES / 7 + 1))).unwrap_err().to_string();
+        assert!(error.contains("more than") && !error.contains("secret"), "{error}");
+        // The limit is on clips only: a long meeting transcript is still an item.
+        assert!(Item::from_json(&json!({ "id": "M", "kind": "meeting", "created_at": 9.0, "text": "x".repeat(MAX_CLIP_BYTES + 1) })).is_ok());
     }
 
     #[test]

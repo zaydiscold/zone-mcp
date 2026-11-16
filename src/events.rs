@@ -6,8 +6,8 @@
 //! and the commands a person runs (`zone pair`, `zone unpair`, `zone import`). The table keeps
 //! the newest two thousand.
 //!
-//! An event holds names and counts only: which phone, how many items, which path. It never
-//! holds an item's text, a pairing secret or the web page's key.
+//! An event holds names and counts only: which phone, how many items, which path, how long a
+//! clip was. It never holds an item's text, a pairing secret or the web page's key.
 //!
 //! Every line has `seq` (a number that only goes up and is never used twice), `at` (Unix
 //! seconds), `time` (the same moment as local RFC 3339) and `event` (the kind). The rest
@@ -120,6 +120,23 @@ pub fn describe(event: &Value) -> String {
         ),
         "flash_failed" => format!("A Flash was not stored: {}", text("reason")),
         "backup_import" => format!("Backup folder read: {}", counts(event)),
+        "clip" => {
+            let length = event["length"].as_u64().unwrap_or(0);
+            let from = match text("source") {
+                "clipboard" => " from its clipboard",
+                "share" => " shared from an app",
+                "shortcut" => " from a shortcut",
+                "typed" => " typed in Zone",
+                _ => "",
+            };
+            let then = match (event["copied"] == true, text("not_copied")) {
+                (true, _) => ", now on this computer's clipboard",
+                (false, "failed") => ", kept (the clipboard could not be written)",
+                (false, "old") => ", kept (sent a while ago, so the clipboard was left alone)",
+                _ => ", kept",
+            };
+            format!("{device} sent a clip: {}{from}{then}", plural(length, "character", "characters"))
+        }
         "resync_requested" => match event["device"].as_str() {
             Some(name) => format!("{name} was asked to send everything again"),
             None => "Every phone was asked to send everything again".to_string(),
@@ -261,6 +278,9 @@ mod tests {
         assert_eq!(say("link_session", json!({ "items": 4, "path": "relay", "duration_s": 61.0, "end": "idle" })), "A phone synced over Link: 4 items, all already here (relay, 61.0 s), then went quiet");
         assert_eq!(say("flash_received", json!({ "device": "P", "items": 9, "new": 9, "color": true, "paired": true })), "P sent a Color Flash: 9 new, and is now paired");
         assert_eq!(say("paired", json!({ "device": "P", "via": "flash" })), "P paired by Flash");
+        assert_eq!(say("clip", json!({ "device": "P", "source": "clipboard", "length": 42, "copied": true })), "P sent a clip: 42 characters from its clipboard, now on this computer's clipboard");
+        assert_eq!(say("clip", json!({ "device": "P", "source": "typed", "length": 1, "copied": false, "not_copied": "off" })), "P sent a clip: 1 character typed in Zone, kept");
+        assert_eq!(say("clip", json!({ "source": "share", "length": 9, "copied": false, "not_copied": "old" })), "A phone sent a clip: 9 characters shared from an app, kept (sent a while ago, so the clipboard was left alone)");
         assert_eq!(say("link_refused", json!({ "device": null, "reason": "not_paired" })), "A phone was refused: it is not paired with this computer");
         assert_eq!(say("daemon_stopped", json!({ "uptime_s": 125.0 })), "Zone stopped after 2m 05s");
         assert_eq!(say("resync_requested", json!({ "device": null, "phones": 2 })), "Every phone was asked to send everything again");

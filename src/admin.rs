@@ -787,12 +787,21 @@ fn run_checks() -> Vec<Check> {
         } else {
             checks.push(ok("Backup folder", "not used"));
         }
+        checks.push(clipboard_check(db));
     }
 
     let clock = Clock::system();
     checks.push(ok("Clock", format!("{} ({})", clock.full(paths::now_unix()), clock.zone_name())));
     checks.push(version_check());
     checks
+}
+
+/// Whether clips go on the clipboard, and whether anything here can write it.
+fn clipboard_check(db: &Db) -> Check {
+    match crate::clip::doctor_line(db) {
+        (true, detail, _) => ok("Clipboard", detail),
+        (false, detail, fix) => warn("Clipboard", detail, fix.unwrap_or_default()),
+    }
 }
 
 /// Whether a newer release is out. One question to GitHub, asked because a person ran

@@ -368,7 +368,10 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored> {
     let batches: Vec<&[crate::item::Item]> = if flash.items.is_empty() { vec![empty] } else { flash.items.chunks(BATCH).collect() };
     let mut changed = 0;
     for batch in batches {
-        let applied = db.apply_items(batch, &delivery)?;
+        let (applied, arrived) = db.apply_items_noting(batch, &delivery)?;
+        // Clips go in the feed. A Flash never puts one on the clipboard.
+        let arrival = crate::clip::Arrival { carrier: Carrier::Flash, device: flash.phone.name.as_deref(), device_id: Some(&device), now };
+        crate::clip::arrived(db, batch, &arrived, &arrival);
         stored.inserted += applied.inserted;
         stored.replaced += applied.replaced;
         stored.unchanged += applied.unchanged;

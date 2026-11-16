@@ -920,6 +920,14 @@ fn a_held_backup_read_is_reported_and_blocks_nothing() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    // Standard output is read as it comes, so the command never waits on a full pipe while
+    // this test is still reading its standard error.
+    let mut stdout = child.stdout.take().unwrap();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        out
+    });
     // Wait for the explanation itself, however long a busy computer takes to get there.
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut err = String::new();
@@ -929,9 +937,9 @@ fn a_held_backup_read_is_reported_and_blocks_nothing() {
     assert_eq!(total_items(&sandbox), 0, "nothing is imported while the read is held");
     std::fs::remove_file(&hold).unwrap();
     stderr.read_to_string(&mut err).unwrap();
-    let output = child.wait_with_output().unwrap();
-    let out = String::from_utf8_lossy(&output.stdout).to_string();
-    assert!(output.status.success(), "{out}\n{err}");
+    let status = child.wait().unwrap();
+    let out = stdout_reader.join().unwrap();
+    assert!(status.success(), "{out}\n{err}");
     assert!(out.contains("43 new") && out.contains("Watching "), "{out}");
     assert_eq!(total_items(&sandbox), 43);
 
@@ -1187,6 +1195,212 @@ fn the_feed_tells_what_happened_and_never_the_words() {
     }
     #[cfg(not(unix))]
     drop(daemon);
+}
+
+// ------------------------------------------------------------------------- clips
+
+/// A command that stands in for the system clipboard: it writes what it is given to a file.
+fn fake_clipboard(file: &Path) -> String {
+    if cfg!(windows) { format!("findstr \"^\" > \"{}\"", file.display()) } else { format!("cat > '{}'", file.display()) }
+}
+
+/// What the stand-in clipboard holds. Line ends are made alike, since Windows' tools write
+/// their own.
+fn clipboard_holds(file: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    Some(text.replace("\r\n", "\n").trim_end_matches('\n').to_string())
+}
+
+/// Text sent from the phone on purpose: stored like any item, printed by `zone clip`, listed
+/// by `zone clip list`, and put on the clipboard as it arrives only when the person turned that
+/// on, it came over Link and it was just sent. The feed and the log hold its length, never it.
+#[test]
+fn clips_from_the_phone_reach_the_command_line_and_the_clipboard() {
+    let sandbox = Sandbox::new();
+    let clipboard_file = sandbox.home.join("clipboard.txt");
+    let command = fake_clipboard(&clipboard_file);
+    let zone = |args: &[&str]| sandbox.zone().env("ZONE_CLIPBOARD_COMMAND", &command).args(args).output().unwrap();
+    let zone_json = |args: &[&str]| -> Value {
+        let output = zone(args);
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("zone {args:?} did not print JSON ({e}): {}", String::from_utf8_lossy(&output.stderr)))
+    };
+
+    // Before anything arrived: nothing to print, and saying so is not a crash.
+    let none = zone(&["clip"]);
+    assert_eq!((none.status.code(), none.stdout.len()), (Some(2), 0));
+    assert!(String::from_utf8_lossy(&none.stderr).contains("No clips yet"));
+    let none = zone(&["clip", "--json"]);
+    assert_eq!((none.status.code(), serde_json::from_slice::<Value>(&none.stdout).unwrap()), (Some(0), json!({ "clip": null })));
+    assert_eq!(zone_json(&["clip", "list", "--json"]), json!({ "total": 0, "clips": [] }));
+
+    let _daemon = Daemon::start_with_env(&sandbox, &[("ZONE_CLIPBOARD_COMMAND", &command)]);
+    let addr = loopback_addr(&sandbox);
+    let identity = sandbox.home.join("phone.json");
+    let identity = identity.to_str().unwrap();
+    let url = pair_url(&sandbox);
+    let secret = url.split("&s=").nth(1).unwrap().split('&').next().unwrap().to_string();
+
+    // The setting is off until the person turns it on.
+    let status = zone_json(&["clipboard", "status", "--json"]);
+    assert_eq!(
+        status,
+        json!({ "clipboard": "off", "enabled": false, "available": true, "tool": "ZONE_CLIPBOARD_COMMAND", "fix": null, "max_age_s": 120.0, "daemon_running": true })
+    );
+    assert!(String::from_utf8_lossy(&zone(&["clipboard", "status"]).stdout).contains("Clipboard: off"));
+
+    // Off: a clip is kept, and the clipboard is left alone.
+    let first = "the gate code is 4417";
+    let report = phone(&sandbox, &["--url", &url, "--identity", identity, "--clip", first, "--clip-source", "typed", "--addr", &addr]);
+    assert_eq!((report["result"].as_str(), report["stored"].as_u64(), report["clips"].as_array().map(Vec::len)), (Some("welcome"), Some(1), Some(1)), "{report}");
+    assert!(!clipboard_file.exists(), "the clipboard was written while the setting was off");
+    assert_eq!(String::from_utf8(zone(&["clip"]).stdout).unwrap(), first, "zone clip prints the text and nothing else");
+
+    // On: a clip that was just sent is on the clipboard by the time the phone has its ack.
+    let on = zone_json(&["clipboard", "on", "--json"]);
+    assert_eq!((on["clipboard"].as_str(), on["enabled"].as_bool()), (Some("on"), Some(true)), "{on}");
+    assert!(String::from_utf8_lossy(&zone(&["clipboard", "status"]).stdout).contains("Clipboard: on"));
+    // Windows' stand-in is not trusted with anything but plain letters.
+    let second = if cfg!(windows) { "https://example.com/harbor-map\nsecond line" } else { "https://example.com/harbor-map\ncaf\u{e9} \u{65e5}\u{672c}\u{8a9e} \u{1F600}" };
+    let report = phone(&sandbox, &["--identity", identity, "--clip", second, "--addr", &addr]);
+    assert_eq!(report["stored"], 1, "{report}");
+    let second_id = report["clips"][0].as_str().unwrap().to_string();
+    assert_eq!(clipboard_holds(&clipboard_file).as_deref(), Some(second));
+
+    // A clip sent five minutes ago (the phone was offline) is kept and not copied. So is the
+    // same clip arriving again.
+    let report = phone(&sandbox, &["--identity", identity, "--clip", "an older thought", "--clip-age", "300", "--addr", &addr]);
+    assert_eq!(report["stored"], 1, "{report}");
+    assert_eq!(clipboard_holds(&clipboard_file).as_deref(), Some(second), "an old clip reached the clipboard");
+
+    // A clip over the size limit is turned away by itself: the note beside it is stored.
+    let big = sandbox.home.join("big.jsonl");
+    let lines = [
+        json!({ "id": "B16C0000-0000-4000-8000-000000000001", "kind": "clip", "source": "share", "created_at": 1794427200.0, "text": "x".repeat(256 * 1024 + 1) }),
+        json!({ "id": "B16C0000-0000-4000-8000-000000000002", "kind": "note", "created_at": 1794427200.0, "text": "a note beside it" }),
+    ];
+    std::fs::write(&big, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+    let report = phone(&sandbox, &["--identity", identity, "--file", big.to_str().unwrap(), "--addr", &addr]);
+    assert_eq!((report["acks"][0]["stored"].as_u64(), report["acks"][0]["rejected"].as_u64()), (Some(1), Some(1)), "{report}");
+
+    // A clip that comes by Flash is kept and never copied, however new it is.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    let flashed = sandbox.home.join("flashed.jsonl");
+    let flashed_text = "flashed across the room";
+    std::fs::write(&flashed, json!({ "id": "F1A50000-0000-4000-8000-000000000001", "kind": "clip", "source": "clipboard", "created_at": now, "text": flashed_text }).to_string()).unwrap();
+    let frames = sandbox.home.join("frames");
+    sandbox.ok(&["dev", "flash-encode", "--out", frames.to_str().unwrap(), "--secret", &secret, "--file", flashed.to_str().unwrap(), "--scale", "3", "--name", "Fake iPhone"]);
+    let port = sandbox.daemon_info().unwrap()["http_port"].as_u64().unwrap() as u16;
+    let cookie = page_cookie(&sandbox, port);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&frames).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    let mut last = Value::Null;
+    for file in &files {
+        let (width, height, pixels) = read_gray_png(file);
+        let (status, answer) = http_post(port, &format!("/api/flash/picture?w={width}&h={height}"), &cookie, &pixels);
+        assert_eq!(status, 200, "{answer}");
+        last = answer;
+        if last["state"] == "done" {
+            break;
+        }
+    }
+    assert_eq!((last["state"].as_str(), last["result"]["new"].as_u64()), (Some("done"), Some(1)), "{last}");
+    assert_eq!(clipboard_holds(&clipboard_file).as_deref(), Some(second), "a flashed clip reached the clipboard");
+
+    // `zone clip`: the newest by when it was sent, exactly, and as JSON.
+    assert_eq!(String::from_utf8(zone(&["clip"]).stdout).unwrap(), flashed_text);
+    let newest = zone_json(&["clip", "--json"]);
+    let card_keys = ["id", "source", "created_at", "created_local", "received_at", "age_s", "carrier", "device_id", "length", "bytes", "lines", "first_line"];
+    for key in card_keys.iter().chain(&["text"]) {
+        assert!(newest["clip"].get(key).is_some(), "zone clip --json has no \"{key}\": {newest}");
+    }
+    assert_eq!((newest["clip"]["text"].as_str(), newest["clip"]["carrier"].as_str(), newest["clip"]["source"].as_str()), (Some(flashed_text), Some("flash"), Some("clipboard")));
+    assert!(newest.get("copied").is_none(), "nothing was asked to be copied: {newest}");
+
+    // Another one by the beginning of its id, copied on request.
+    let picked = zone(&["clip", "--id", &second_id[..8], "--copy", "--json"]);
+    assert!(picked.status.success());
+    let picked: Value = serde_json::from_slice(&picked.stdout).unwrap();
+    assert_eq!((picked["clip"]["text"].as_str(), picked["copied"].as_bool(), picked["tool"].as_str(), &picked["error"]), (Some(second), Some(true), Some("ZONE_CLIPBOARD_COMMAND"), &Value::Null), "{picked}");
+    std::fs::remove_file(&clipboard_file).unwrap();
+    let copied = zone(&["clip", "--copy"]);
+    assert_eq!((copied.status.code(), String::from_utf8(copied.stdout).unwrap().as_str()), (Some(0), flashed_text));
+    assert_eq!(clipboard_holds(&clipboard_file).as_deref(), Some(flashed_text));
+    // A clipboard that cannot be written: the text is still printed, and the exit code says so.
+    let broken = sandbox.zone().env("ZONE_CLIPBOARD_COMMAND", "exit 7").args(["clip", "--copy", "--json"]).output().unwrap();
+    let answer: Value = serde_json::from_slice(&broken.stdout).unwrap();
+    assert_eq!((broken.status.code(), answer["copied"].as_bool(), answer["clip"]["text"].as_str()), (Some(1), Some(false), Some(flashed_text)), "{answer}");
+    assert!(answer["error"].as_str().unwrap().contains("could not write the clipboard") && !answer["error"].as_str().unwrap().contains("flashed"));
+    // Something that is not a clip is not printed as one.
+    let not_a_clip = zone(&["clip", "--id", "B16C0000-0000-4000-8000-000000000002"]);
+    assert!(!not_a_clip.status.success() && String::from_utf8_lossy(&not_a_clip.stderr).contains("not a clip"));
+
+    // The list: cards, newest first, without the text.
+    let list = zone_json(&["clip", "list", "--json"]);
+    assert_eq!(list["total"], 4, "{list}");
+    let cards = list["clips"].as_array().unwrap();
+    let firsts: Vec<&str> = cards.iter().map(|c| c["first_line"].as_str().unwrap()).collect();
+    assert_eq!(firsts, ["flashed across the room", "https://example.com/harbor-map", first, "an older thought"]);
+    for card in cards {
+        let keys: Vec<&str> = card.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, card_keys, "a card has other fields: {card}");
+    }
+    assert_eq!((cards[1]["lines"].as_u64(), cards[1]["length"].as_u64(), cards[2]["source"].as_str()), (Some(2), Some(second.chars().count() as u64), Some("typed")));
+    assert_eq!(zone_json(&["clip", "list", "--json", "--limit", "1"])["clips"].as_array().unwrap().len(), 1);
+    let text_list = String::from_utf8(zone(&["clip", "list"]).stdout).unwrap();
+    assert!(text_list.contains("flashed across the room") && text_list.contains("typed") && text_list.contains("4 clips"), "{text_list}");
+
+    // Clips are items: counted, listed and searched with everything else, under their own kind.
+    assert_eq!(sandbox.json(&["status", "--json"])["items"]["by_kind"], json!({ "clip": 4, "note": 1 }));
+    let listed = sandbox.json(&["list", "--kind", "clip", "--json"]);
+    assert_eq!((listed["total"].as_i64(), listed["items"][0]["kind"].as_str()), (Some(4), Some("clip")));
+    assert_eq!(sandbox.json(&["search", "harbor", "--json"])["items"][0]["id"].as_str(), Some(second_id.as_str()));
+    let (code, page) = http(port, &format!("GET /api/items?kinds=clip HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"));
+    let page: Value = serde_json::from_str(page.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!((code, page["items"].as_array().unwrap().len(), page["items"][0]["kind"].as_str()), (200, 4, Some("clip")), "{page}");
+
+    // The feed: one line a clip, with its length and source, and whether it was copied and why not.
+    let events = feed(&sandbox, &[]);
+    let clips: Vec<&Value> = events.iter().filter(|e| e["event"] == "clip").collect();
+    let seen: Vec<Value> = clips.iter().map(|e| json!([e["carrier"], e["source"], e["copied"], e["not_copied"]])).collect();
+    assert_eq!(
+        seen,
+        [
+            json!(["link", "typed", false, "off"]),
+            json!(["link", "clipboard", true, null]),
+            json!(["link", "clipboard", false, "old"]),
+            json!(["flash", "clipboard", false, "carrier"]),
+        ],
+        "{clips:#?}"
+    );
+    for key in ["seq", "at", "time", "event", "id", "device", "device_id", "carrier", "source", "length", "bytes", "copied", "not_copied", "tool"] {
+        assert!(clips[1].get(key).is_some(), "a clip event has no \"{key}\": {}", clips[1]);
+    }
+    assert_eq!((clips[1]["length"].as_u64(), clips[1]["bytes"].as_u64(), clips[1]["device"].as_str(), clips[1]["tool"].as_str()), (Some(second.chars().count() as u64), Some(second.len() as u64), Some("Fake iPhone"), Some("ZONE_CLIPBOARD_COMMAND")));
+    assert_eq!(clips[1]["id"].as_str(), Some(second_id.as_str()));
+    let words = sandbox.ok(&["events"]);
+    assert!(words.contains("Fake iPhone sent a clip") && words.contains("now on this computer's clipboard"), "{words}");
+
+    // Neither the feed nor the log holds what was sent.
+    let feed_text = sandbox.ok(&["events", "--json"]);
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap_or_default();
+    assert!(log.contains("clip: ") && log.contains("put on the clipboard"), "{log}");
+    for secret_word in ["4417", "harbor-map", "older thought", "flashed across"] {
+        assert!(!feed_text.contains(secret_word) && !words.contains(secret_word), "the feed holds clip text ({secret_word})");
+        assert!(!log.contains(secret_word), "the log holds clip text ({secret_word})");
+    }
+
+    // `zone doctor` says whether clips are copied and with what.
+    let doctor: Value = serde_json::from_slice(&zone(&["doctor", "--json"]).stdout).unwrap();
+    let check = doctor["checks"].as_array().unwrap().iter().find(|c| c["check"] == "Clipboard").unwrap().clone();
+    assert_eq!(check["result"], "ok", "{check}");
+    assert!(check["detail"].as_str().unwrap().starts_with("on"), "{check}");
+
+    // Off again, and the next clip is left where it is.
+    let off = zone_json(&["clipboard", "off", "--json"]);
+    assert_eq!((off["clipboard"].as_str(), off["enabled"].as_bool()), (Some("off"), Some(false)));
+    std::fs::remove_file(&clipboard_file).unwrap();
+    phone(&sandbox, &["--identity", identity, "--clip", "after turning it off", "--addr", &addr]);
+    assert!(!clipboard_file.exists());
 }
 
 // ------------------------------------------------------------------------- installing and updating
@@ -1612,7 +1826,7 @@ fn json_outputs_keep_their_shape() {
         has(check, &["check", "result", "detail", "fix"], "doctor.checks");
         assert!(matches!(check["result"].as_str(), Some("ok" | "warn" | "fail")), "{check}");
     }
-    for name in ["Data folder", "Library", "Identity key", "Daemon", "Web page", "Start at login", "AI clients", "Paired phones", "Backup folder", "Clock", "Version"] {
+    for name in ["Data folder", "Library", "Identity key", "Daemon", "Web page", "Start at login", "AI clients", "Paired phones", "Backup folder", "Clipboard", "Clock", "Version"] {
         assert!(names.contains(&name), "doctor has no {name} check: {names:?}");
     }
 
@@ -1633,6 +1847,12 @@ fn json_outputs_keep_their_shape() {
     let cursor = mcp["clients"].as_array().unwrap().iter().find(|c| c["client"] == "cursor").unwrap();
     has(cursor, &["client", "label", "profile", "path", "installed", "state", "detail", "read_only", "scope"], "mcp status.clients");
     has(&cursor["scope"], &["limited", "kinds", "exclude_sources"], "mcp status.clients.scope");
+
+    has(&sandbox.json(&["clip", "--json"]), &["clip"], "clip");
+    has(&sandbox.json(&["clip", "list", "--json"]), &["total", "clips"], "clip list");
+    for action in ["status", "on", "off"] {
+        has(&sandbox.json(&["clipboard", action, "--json"]), &["clipboard", "enabled", "available", "tool", "fix", "max_age_s", "daemon_running"], "clipboard");
+    }
 
     let update: Value = serde_json::from_slice(&sandbox.run(&["update", "--check", "--json"]).stdout).unwrap();
     has(&update, &["current", "latest", "newer", "checked", "page", "note", "update_with"], "update --check");
@@ -1866,7 +2086,7 @@ fn mcp_with_a_limited_view_over_stdio() {
 
     // Notes and meetings only.
     let mut mcp = Mcp::start(&sandbox, &["--kinds", "meeting,note"]);
-    assert!(mcp.instructions.contains("only voice notes and meeting transcripts (dictations are hidden)"), "{}", mcp.instructions);
+    assert!(mcp.instructions.contains("only voice notes and meeting transcripts (dictations and clips are hidden)"), "{}", mcp.instructions);
     let tools = mcp.request("tools/list", json!({}));
     assert_eq!(tools["result"]["tools"][0]["inputSchema"]["properties"]["kinds"]["items"]["enum"], json!(["note", "meeting"]));
     let listed = mcp.tool("list_items", json!({}));
@@ -2015,7 +2235,7 @@ fn mcp_install_gives_each_client_its_own_view() {
     let client = |status: &Value, name: &str| -> Value { status["clients"].as_array().unwrap().iter().find(|c| c["client"] == name).unwrap().clone() };
     assert_eq!(client(&status, "cursor")["scope"], json!({ "limited": true, "kinds": ["note"], "exclude_sources": [] }));
     assert_eq!((client(&status, "cursor")["state"].as_str(), client(&status, "cursor")["read_only"].as_bool()), (Some("registered"), Some(false)));
-    assert_eq!(client(&status, "gemini")["scope"], json!({ "limited": false, "kinds": ["dictation", "note", "meeting"], "exclude_sources": [] }));
+    assert_eq!(client(&status, "gemini")["scope"], json!({ "limited": false, "kinds": ["dictation", "note", "meeting", "clip"], "exclude_sources": [] }));
     assert_eq!((&client(&status, "zed")["scope"], &client(&status, "zed")["read_only"]), (&Value::Null, &Value::Null), "not registered: nothing to say");
     let text = sandbox.ok(&["mcp", "status"]);
     assert!(line_for(&text, "Cursor").contains("registered, only voice notes"), "{text}");

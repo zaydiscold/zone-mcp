@@ -43,16 +43,21 @@ pub fn instructions(scope: &Scope) -> String {
 /// What every agent is told once, when it connects.
 pub const INSTRUCTIONS: &str = "\
 Zone is this person's dictation library: everything they spoke into the Zone app on their iPhone, \
-copied to this computer. Every item is their own spoken words turned into text, so expect speech \
-recognition mistakes and informal phrasing.
+copied to this computer. Dictations, notes and meetings are their own spoken words turned into \
+text, so expect speech recognition mistakes and informal phrasing.
 
-There are three kinds of item. Filter on `kinds` to pick one.
+There are four kinds of item. Filter on `kinds` to pick one.
 - `dictation`: something they dictated. Most dictations have source `keyboard`: those are messages \
 and text they typed by voice into other apps (chats, emails, search boxes, prompts), so they are \
 usually short and addressed to someone else. Source `app` was dictated inside the Zone app, and \
 source `note` is the raw dictation behind a voice note.
 - `note`: a voice note they chose to save in Zone. These are notes to self.
 - `meeting`: a recorded meeting with a transcript, one line per speaker turn, with a title.
+- `clip`: text the person sent to this computer on purpose, for example something they copied on \
+the phone (source `clipboard`), shared from another app (`share`), sent with a shortcut (`shortcut`) \
+or typed (`typed`). It is exact text, not speech. Treat the newest clip as \"the thing I just sent \
+you\": when they say \"what I just sent\" or \"the link from my phone\", call `list_items` with \
+`kinds: [\"clip\"]` and `limit: 1`.
 
 How to work with it:
 - Call `sync_status` first when a request mentions a day or time (\"Wednesday afternoon\", \
@@ -92,13 +97,13 @@ fn common_filters(scope: &Scope) -> Map<String, Value> {
     let mut properties = Map::new();
     properties.insert("start".into(), time_property("start"));
     properties.insert("end".into(), time_property("end"));
-    let all = if scope.kinds.is_empty() { "Leave out for all three." } else { "Leave out for every kind this server shows." };
+    let all = if scope.kinds.is_empty() { "Leave out for all of them." } else { "Leave out for every kind this server shows." };
     properties.insert(
         "kinds".into(),
         json!({
             "type": "array",
             "items": { "type": "string", "enum": scope.visible_kinds() },
-            "description": format!("Which kinds to include. {all} dictation = text typed by voice (mostly messages in other apps), note = saved voice notes, meeting = meeting transcripts.")
+            "description": format!("Which kinds to include. {all} dictation = text typed by voice (mostly messages in other apps), note = saved voice notes, meeting = meeting transcripts, clip = text the person sent to this computer on purpose (the newest clip is \"the thing I just sent you\").")
         }),
     );
     properties.insert(
@@ -106,7 +111,7 @@ fn common_filters(scope: &Scope) -> Map<String, Value> {
         json!({
             "type": "array",
             "items": { "type": "string" },
-            "description": "Only dictations spoken in these places: keyboard (typed by voice in another app), app (inside Zone), note (the dictation behind a voice note). Notes and meetings have no source, so this filter leaves them out."
+            "description": "Only items from these sources. For dictations, where they were spoken: keyboard (typed by voice in another app), app (inside Zone), note (the dictation behind a voice note). For clips, how they were sent: clipboard, share, shortcut, typed. Notes and meetings have no source, so this filter leaves them out."
         }),
     );
     properties.insert(
@@ -174,15 +179,15 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
     let mut tools = vec![
         ToolDef {
             name: "list_items",
-            title: "List dictations, notes and meetings",
-            description: format!("{}{limit}", "List the person's spoken items in a time range as short cards (id, kind, source, local time with weekday and UTC offset, duration, word count, first 200 characters, processed flag), with the total number that match and a cursor for the next page. Use it for requests like \"everything from Wednesday 12pm to 5pm\" (start \"2026-11-11 12:00\", end \"2026-11-11 17:00\") or to work through the library newest to oldest. Kinds: dictation items with source keyboard are messages and text the person typed by voice in other apps; note items are voice notes they saved; meeting items are meeting transcripts. Cards are previews: call get_items for full text."),
+            title: "List dictations, notes, meetings and clips",
+            description: format!("{}{limit}", "List the person's spoken items in a time range as short cards (id, kind, source, local time with weekday and UTC offset, duration, word count, first 200 characters, processed flag), with the total number that match and a cursor for the next page. Use it for requests like \"everything from Wednesday 12pm to 5pm\" (start \"2026-11-11 12:00\", end \"2026-11-11 17:00\") or to work through the library newest to oldest. Kinds: dictation items with source keyboard are messages and text the person typed by voice in other apps; note items are voice notes they saved; meeting items are meeting transcripts; clip items are text they sent to this computer on purpose (kinds [\"clip\"] with limit 1 is \"the thing I just sent you\"). Cards are previews: call get_items for full text."),
             input_schema: json!({ "type": "object", "properties": list_properties, "additionalProperties": false }),
             read_only: true,
         },
         ToolDef {
             name: "search_items",
             title: "Search the spoken library",
-            description: format!("{}{limit}", "Full-text search over everything the person dictated: dictations (mostly messages typed by voice in other apps), voice notes, and meeting transcripts and titles. Returns the best matches with a snippet around the matching words (matches are wrapped in [brackets]), plus the total number of matches and a truncated flag when there are more than were returned. Narrow with start, end, kinds or sources."),
+            description: format!("{}{limit}", "Full-text search over everything the person dictated: dictations (mostly messages typed by voice in other apps), voice notes, meeting transcripts and titles, and clips (text they sent to this computer on purpose). Returns the best matches with a snippet around the matching words (matches are wrapped in [brackets]), plus the total number of matches and a truncated flag when there are more than were returned. Narrow with start, end, kinds or sources."),
             input_schema: json!({ "type": "object", "properties": search_properties, "required": ["query"], "additionalProperties": false }),
             read_only: true,
         },
@@ -206,7 +211,7 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         ToolDef {
             name: "library_stats",
             title: "Count items by day, kind or source",
-            description: format!("{}{limit}", "Counts, word totals and recorded seconds for the library or a time range, grouped by local calendar day, by kind (dictation, note, meeting) or by source (keyboard, app, note). Use it to see how much there is before listing, or to find the busy days."),
+            description: format!("{}{limit}", "Counts, word totals and recorded seconds for the library or a time range, grouped by local calendar day, by kind (dictation, note, meeting, clip) or by source (keyboard, app, note for dictations; clipboard, share, shortcut, typed for clips). Use it to see how much there is before listing, or to find the busy days."),
             input_schema: json!({ "type": "object", "properties": stats_properties, "additionalProperties": false }),
             read_only: true,
         },
@@ -340,7 +345,7 @@ fn filter(args: &Map<String, Value>, clock: &Clock, scope: &Scope) -> Result<(Fi
     }
     if let Some(hidden) = sources.iter().find(|s| scope.hides_source(s)) {
         bail!(
-            "this server does not show dictations with source {hidden}: it has a limited view ({}). Tell the person this connection does not include them.",
+            "this server does not show items with source {hidden}: it has a limited view ({}). Tell the person this connection does not include them.",
             scope.short().unwrap_or_default()
         );
     }
@@ -359,6 +364,7 @@ pub fn normalize_kind(kind: &str) -> String {
         "dictations" => "dictation".to_string(),
         "notes" => "note".to_string(),
         "meetings" => "meeting".to_string(),
+        "clips" => "clip".to_string(),
         _ => lower,
     }
 }
@@ -1051,6 +1057,70 @@ mod tests {
     }
 
     #[test]
+    fn clips_are_a_kind_agents_can_ask_for_and_a_view_can_hide() {
+        let mut db = library();
+        let clip = |id: &str, source: &str, time: &str, text: &str| Item {
+            id: id.to_string(),
+            kind: "clip".to_string(),
+            source: Some(source.to_string()),
+            created_at: at(time),
+            updated_at: at(time),
+            text: text.to_string(),
+            title: None,
+            duration_s: None,
+            engine: None,
+            status: None,
+            extra: "{}".to_string(),
+            rev: None,
+            deleted: false,
+        };
+        let clips = [
+            clip("G-CLIP", "clipboard", "2026-11-12T19:00:00Z", "https://example.com/harbor-map"),
+            clip("H-CLIP", "typed", "2026-11-12T19:05:00Z", "the gate code is four two"),
+        ];
+        db.apply_items(&clips, &Delivery { carrier: Carrier::Link, device_id: None, received_at: 0.0 }).unwrap();
+        let everything = Access::default();
+        let ask = |db: &mut Db, access: &Access, name: &str, a: Value| super::call(db, name, &args(a), access);
+
+        // "The thing I just sent you": the newest clip.
+        let out = ask(&mut db, &everything, "list_items", json!({ "kinds": ["clip"], "limit": 1 })).unwrap();
+        assert_eq!((out["total"].as_i64(), out["items"][0]["id"].as_str(), out["items"][0]["source"].as_str()), (Some(2), Some("H-CLIP"), Some("typed")));
+        assert_eq!(out["items"][0]["preview"], "the gate code is four two");
+        let out = ask(&mut db, &everything, "list_items", json!({ "kinds": "clips", "sources": ["clipboard"] })).unwrap();
+        assert_eq!((out["total"].as_i64(), out["items"][0]["id"].as_str()), (Some(1), Some("G-CLIP")));
+        let out = ask(&mut db, &everything, "search_items", json!({ "query": "harbor", "kinds": ["clip"] })).unwrap();
+        assert_eq!((out["total"].as_i64(), out["items"][0]["id"].as_str()), (Some(1), Some("G-CLIP")));
+        let out = ask(&mut db, &everything, "library_stats", json!({ "kinds": ["clip"], "group_by": "source" })).unwrap();
+        assert_eq!((out["total"]["items"].as_i64(), out["groups"].as_array().unwrap().len()), (Some(2), 2));
+        let out = ask(&mut db, &everything, "library_stats", json!({ "group_by": "kind" })).unwrap();
+        assert!(out["groups"].as_array().unwrap().iter().any(|g| g["kind"] == "clip" && g["items"] == 2), "{out}");
+        let out = ask(&mut db, &everything, "get_items", json!({ "ids": ["G-CLIP"] })).unwrap();
+        assert_eq!(out["items"][0]["text"], "https://example.com/harbor-map");
+        assert_eq!(super::sync_status(&mut db, &Scope::default()).unwrap()["items"]["by_kind"]["clip"], 2);
+
+        // Notes only, and any list of kinds without clip, leaves clips out of every tool.
+        for view in [limited(&["note"], &[]), limited(&["dictation", "note", "meeting"], &[])] {
+            let refused = ask(&mut db, &view, "list_items", json!({ "kinds": ["clip"] })).unwrap_err().to_string();
+            assert!(refused.contains("does not show clip items"), "{refused}");
+            let out = ask(&mut db, &view, "list_items", json!({})).unwrap();
+            assert!(out["items"].as_array().unwrap().iter().all(|i| i["kind"] != "clip"), "{out}");
+            assert_eq!(ask(&mut db, &view, "search_items", json!({ "query": "gate" })).unwrap()["total"], 0);
+            assert_eq!(ask(&mut db, &view, "get_items", json!({ "ids": ["H-CLIP"] })).unwrap()["not_found"], json!(["H-CLIP"]));
+            assert_eq!(ask(&mut db, &view, "mark_processed", json!({ "ids": ["H-CLIP"] })).unwrap()["updated"], 0);
+            assert!(ask(&mut db, &view, "sync_status", json!({})).unwrap()["items"]["by_kind"].get("clip").is_none());
+            let told = instructions(&view.scope);
+            assert!(told.contains("clips") && told.contains("hidden"), "{told}");
+        }
+        // Only clips: an agent that gets what the person sends and nothing they said.
+        let only_clips = limited(&["clip"], &[]);
+        let out = ask(&mut db, &only_clips, "list_items", json!({})).unwrap();
+        assert_eq!(out["total_by_kind"], json!({ "clip": 2 }));
+        // A clip's source can be hidden like a dictation's.
+        let no_typed = limited(&[], &["typed"]);
+        assert_eq!(ask(&mut db, &no_typed, "list_items", json!({ "kinds": ["clip"] })).unwrap()["total"], 1);
+    }
+
+    #[test]
     fn a_limited_view_is_told_to_the_agent() {
         let access = limited(&["note", "meeting"], &["keyboard"]);
         let told = instructions(&access.scope);
@@ -1063,16 +1133,16 @@ mod tests {
         for name in ["search_items", "library_stats"] {
             assert!(tools.iter().find(|t| t.name == name).unwrap().description.contains("limited view"), "{name}");
         }
-        // The default says nothing of the kind and offers all three.
+        // The default says nothing of the kind and offers every kind.
         let plain = definitions(false);
         assert!(plain.iter().all(|t| !t.description.contains("limited view")));
-        assert_eq!(plain[0].input_schema["properties"]["kinds"]["items"]["enum"], json!(["dictation", "note", "meeting"]));
+        assert_eq!(plain[0].input_schema["properties"]["kinds"]["items"]["enum"], json!(["dictation", "note", "meeting", "clip"]));
         assert!(!told.contains('\u{2014}'));
     }
 
     #[test]
     fn instructions_explain_the_kinds_plainly() {
-        for needle in ["dictation", "note", "meeting", "keyboard", "typed by voice", "voice note", "transcript"] {
+        for needle in ["dictation", "note", "meeting", "keyboard", "typed by voice", "voice note", "transcript", "`clip`", "sent to this computer on purpose", "the thing I just sent you"] {
             assert!(INSTRUCTIONS.contains(needle), "instructions should mention {needle}");
         }
         for tool in definitions(false) {

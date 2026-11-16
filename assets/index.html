@@ -137,6 +137,7 @@ main { padding: 6px 0 80px; }
   border: 1px solid var(--line); color: var(--muted);
 }
 .tag.note { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, transparent); }
+.tag.clip { color: var(--warn, var(--accent)); border-color: color-mix(in srgb, var(--warn, var(--accent)) 45%, transparent); }
 .tag.meeting { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .meta .grow { flex: 1; }
 .copy {
@@ -279,9 +280,11 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     if (text !== undefined && text !== null) node.textContent = text;
     return node;
   };
-  const KIND_NAMES = { dictation: "Dictations", note: "Notes", meeting: "Meetings" };
-  const KIND_ONE = { dictation: "Dictation", note: "Note", meeting: "Meeting" };
-  const SOURCE_NAMES = { keyboard: "Keyboard", app: "In Zone", note: "Voice note", remote: "Remote" };
+  const KIND_NAMES = { dictation: "Dictations", note: "Notes", meeting: "Meetings", clip: "Clips" };
+  const KIND_ONE = { dictation: "Dictation", note: "Note", meeting: "Meeting", clip: "Clip" };
+  // The first four are where a dictation was spoken, the rest how a clip was sent.
+  const SOURCE_NAMES = { keyboard: "Keyboard", app: "In Zone", note: "Voice note", remote: "Remote", clipboard: "From the clipboard", share: "Shared", shortcut: "Shortcut", typed: "Typed" };
+  const ALWAYS_SHOWN = ["dictation", "note", "meeting"];
 
   const state = { q: "", kinds: new Set(), sources: new Set(), from: "", to: "", cursor: null, loading: false, revision: null, lastDay: null, shown: 0, total: 0 };
   let status = null;
@@ -352,9 +355,10 @@ dialog::backdrop { background: rgba(8, 8, 12, 0.6); backdrop-filter: blur(3px); 
     const kinds = $("kinds");
     kinds.querySelectorAll(".chip").forEach((node) => node.remove());
     kinds.append(chip("All", status.items.total, state.kinds.size === 0, () => { state.kinds.clear(); state.sources.clear(); changed(); }));
-    for (const kind of ["dictation", "note", "meeting"].concat(Object.keys(status.items.by_kind).filter((k) => !KIND_NAMES[k]))) {
+    // Clips (text sent from the phone on purpose) get a chip once there is one.
+    for (const kind of ALWAYS_SHOWN.concat(Object.keys(status.items.by_kind).filter((k) => !ALWAYS_SHOWN.includes(k)))) {
       const count = status.items.by_kind[kind] || 0;
-      if (!count && !KIND_NAMES[kind]) continue;
+      if (!count && !ALWAYS_SHOWN.includes(kind)) continue;
       kinds.append(chip(KIND_NAMES[kind] || kind, count, state.kinds.has(kind), () => {
         if (state.kinds.has(kind)) state.kinds.delete(kind); else state.kinds.add(kind);
         if (!showsSources()) state.sources.clear();

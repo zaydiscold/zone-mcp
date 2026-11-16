@@ -531,10 +531,22 @@ impl Db {
 
     /// Applies a batch in one transaction. When this returns, the batch is committed.
     pub fn apply_items(&mut self, items: &[Item], delivery: &Delivery<'_>) -> Result<Applied> {
+        Ok(self.apply_items_noting(items, delivery)?.0)
+    }
+
+    /// [`Db::apply_items`], which also says which of the items changed the library: the
+    /// positions in `items` of those that were new here or replaced a different version.
+    /// An item that was already here unchanged (a resend) is not among them.
+    pub fn apply_items_noting(&mut self, items: &[Item], delivery: &Delivery<'_>) -> Result<(Applied, Vec<usize>)> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut applied = Applied::default();
-        for item in items {
+        let mut arrived = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let before = applied.changed();
             apply_one(&tx, item, delivery, &mut applied)?;
+            if applied.changed() > before {
+                arrived.push(index);
+            }
         }
         let key = format!("last_sync_{}", delivery.carrier.as_str());
         tx.execute(
@@ -542,7 +554,7 @@ impl Db {
             params![key, delivery.received_at.to_string()],
         )?;
         tx.commit()?;
-        Ok(applied)
+        Ok((applied, arrived))
     }
 
     // ---------------------------------------------------------------- reading

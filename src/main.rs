@@ -24,6 +24,7 @@ mod admin;
 mod backup;
 mod cli;
 mod clients;
+mod clip;
 mod codec;
 mod daemon_info;
 mod db;
@@ -154,6 +155,42 @@ enum Command {
         /// Only events numbered above this one (the "seq" of the last line you read)
         #[arg(long, value_name = "SEQ")]
         after: Option<i64>,
+    },
+    /// Print the newest text you sent from your iPhone (a clip), or list recent ones
+    #[command(
+        args_conflicts_with_subcommands = true,
+        long_about = "Print the newest text you sent to this computer from Zone on your iPhone (a clip): its text and nothing \
+                      else, so it pipes cleanly.\n\n  zone clip              print the newest clip\n  zone clip --copy       \
+                      also put it on this computer's clipboard\n  zone clip list         recent clips as short cards\n  \
+                      zone clip --id <id>    another clip, by its id from the list\n\n\
+                      Exits 2 when there is no clip. `zone clipboard on` puts clips on the clipboard by themselves as they arrive."
+    )]
+    Clip {
+        /// Also put the text on this computer's clipboard
+        #[arg(long)]
+        copy: bool,
+        /// Print this clip instead of the newest: an id (or its beginning) from `zone clip list`
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+        /// Print JSON instead of the text
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        action: Option<ClipAction>,
+    },
+    /// Put text you send from your iPhone on this computer's clipboard as it arrives: on, off, status
+    #[command(long_about = "Whether text you send to this computer from Zone on your iPhone (a clip) goes on this computer's \
+                            clipboard as it arrives. Off until you turn it on.\n\n  zone clipboard on\n  zone clipboard off\n  \
+                            zone clipboard status\n\n\
+                            Only a clip that comes over Link and was sent in the last two minutes is copied. An older one (a \
+                            phone that was offline, a Flash) is kept and the clipboard is left alone. Set ZONE_CLIPBOARD_COMMAND \
+                            to a command that reads the text on its standard input to use another clipboard tool.")]
+    Clipboard {
+        #[command(subcommand)]
+        action: ClipboardAction,
+        /// Print JSON instead of text
+        #[arg(long, global = true)]
+        json: bool,
     },
     /// Check the setup and explain how to fix anything that is wrong
     Doctor {
@@ -299,6 +336,29 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum ClipAction {
+    /// Recent clips as short cards, newest first: when, how it was sent, how long, its first line
+    List {
+        /// How many to show
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ClipboardAction {
+    /// Put clips on this computer's clipboard as they arrive
+    On,
+    /// Leave the clipboard alone (clips are still kept)
+    Off,
+    /// Say whether it is on, and which clipboard tool zone would use
+    Status,
+}
+
+#[derive(Subcommand)]
 enum McpAction {
     /// Register zone with AI clients: name them, or --all for every one on this computer
     #[command(long_about = "Register zone with AI clients: name them, or use --all for every one on this computer.\n\n\
@@ -368,6 +428,15 @@ enum DevAction {
         /// Send a deletion for this item id (repeatable)
         #[arg(long)]
         delete: Vec<String>,
+        /// Send this text as a clip, as if the person had just sent it (repeatable)
+        #[arg(long, value_name = "TEXT")]
+        clip: Vec<String>,
+        /// The source the clips claim: clipboard, share, shortcut or typed
+        #[arg(long, value_name = "SOURCE")]
+        clip_source: Option<String>,
+        /// How many seconds ago the clips say they were sent
+        #[arg(long, value_name = "SECONDS", default_value_t = 0.0, allow_hyphen_values = true)]
+        clip_age: f64,
         /// Never try a direct address: everything goes through the relay
         #[arg(long)]
         relay_only: bool,
@@ -553,6 +622,24 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Devices { json } => admin::devices(json)?,
         Command::Unpair { device } => admin::unpair(&device)?,
         Command::Resync { device } => admin::resync(device.as_deref())?,
+        Command::Clip { copy, id, json, action } => match action {
+            Some(ClipAction::List { limit, json }) => clip::list(limit, json)?,
+            None => match clip::show(id.as_deref(), copy, json)? {
+                clip::Shown::Ok => {}
+                // With --json, "there is none" is an answer, not a failure.
+                clip::Shown::Nothing if json && !copy => {}
+                clip::Shown::Nothing => return Ok(ExitCode::from(2)),
+                clip::Shown::NotCopied => return Ok(ExitCode::from(1)),
+            },
+        },
+        Command::Clipboard { action, json } => {
+            let action = match action {
+                ClipboardAction::On => clip::Setting::On,
+                ClipboardAction::Off => clip::Setting::Off,
+                ClipboardAction::Status => clip::Setting::Status,
+            };
+            clip::clipboard(action, json)?
+        }
         Command::Doctor { json } => {
             if !admin::doctor(json)? {
                 return Ok(ExitCode::from(1));
@@ -612,6 +699,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 batch,
                 file,
                 delete,
+                clip,
+                clip_source,
+                clip_age,
                 relay_only,
                 addr,
                 name,
@@ -628,6 +718,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     batch,
                     file,
                     delete,
+                    clips: clip,
+                    clip_source,
+                    clip_age,
                     relay_only,
                     addrs: addr,
                     name,
