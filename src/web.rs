@@ -802,7 +802,7 @@ mod tests {
         // The pages' serif is served from the binary, to anyone on this computer's address: it
         // holds nothing private, and the locked page uses it too.
         let state = state();
-        for page in [PAGE, LOCKED_PAGE] {
+        for page in [PAGE, FLASH_PAGE, LOCKED_PAGE] {
             assert!(page.contains("url(\"/font/zone-serif.woff2\")"), "every page draws its serif from zone");
         }
         let reply = route(&head(Method::GET, "/font/zone-serif.woff2"), &state, "n");
