@@ -41,7 +41,7 @@ jobs:
       - name: Install Rust
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --component clippy --no-self-update
+          rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
           rustc --version
 
@@ -51,7 +51,36 @@ jobs:
         run: cargo build --locked --all-targets
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked --no-fail-fast
+
+  # The linter runs with the oldest Rust the project supports (rust-version in Cargo.toml), so
+  # it also proves that version still builds everything, and a new Rust release with new lints
+  # cannot turn a green build red by itself.
+  lint:
+    name: Lint (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Linux
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust 1.91
+        shell: bash
+        run: |
+          rustup toolchain install 1.91 --profile minimal --component clippy --no-self-update
+          rustup default 1.91
+          rustc --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Lint
         run: cargo clippy --locked --all-targets -- -D warnings
