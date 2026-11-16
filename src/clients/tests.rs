@@ -271,17 +271,20 @@ fn codex_homes_and_hermes_profiles() {
     let codex: Vec<String> = Client::Codex.targets(&env).iter().map(|t| t.label()).collect();
     assert_eq!(codex, vec!["Codex (default)".to_string(), format!("Codex (~{}.codex_team)", std::path::MAIN_SEPARATOR)]);
 
-    write(&home.join(".hermes").join("config.yaml"), "mcp_servers: {}\n");
-    write(&home.join(".hermes").join("profiles").join("work").join("config.yaml"), "model: x\n");
-    std::fs::create_dir_all(home.join(".hermes").join("profiles").join("empty")).unwrap();
+    // Where Hermes keeps its files on this system (under the home folder, or on Windows under
+    // the local application data).
+    let hermes_home = env.hermes_dir();
+    write(&hermes_home.join("config.yaml"), "mcp_servers: {}\n");
+    write(&hermes_home.join("profiles").join("work").join("config.yaml"), "model: x\n");
+    std::fs::create_dir_all(hermes_home.join("profiles").join("empty")).unwrap();
     let hermes = Client::Hermes.targets(&env);
     assert_eq!(hermes.iter().map(|t| t.label()).collect::<Vec<_>>(), vec!["Hermes (default)", "Hermes (profile work)"]);
     let mut state = State::default();
     assert_eq!(register_many(&[Client::Codex, Client::Hermes], &launch(), Mode::All, &env, &mut state, false), 0);
     assert!(std::fs::read_to_string(home.join(".codex_team").join("config.toml")).unwrap().contains("[mcp_servers.zone]"));
-    let work = std::fs::read_to_string(home.join(".hermes").join("profiles").join("work").join("config.yaml")).unwrap();
+    let work = std::fs::read_to_string(hermes_home.join("profiles").join("work").join("config.yaml")).unwrap();
     assert!(work.starts_with("model: x\nmcp_servers:\n  zone:\n"), "{work}");
-    let default = std::fs::read_to_string(home.join(".hermes").join("config.yaml")).unwrap();
+    let default = std::fs::read_to_string(hermes_home.join("config.yaml")).unwrap();
     assert!(default.starts_with("mcp_servers:\n  zone:\n"), "{default}");
 }
 

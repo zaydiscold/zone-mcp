@@ -803,7 +803,7 @@ fn is_broken_pipe(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.downcast_ref::<std::io::Error>().map(|e| e.kind() == std::io::ErrorKind::BrokenPipe).unwrap_or(false))
 }
 
-fn main() -> ExitCode {
+fn real_main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => code,
@@ -812,5 +812,18 @@ fn main() -> ExitCode {
             eprintln!("zone: {error:#}");
             ExitCode::from(1)
         }
+    }
+}
+
+/// The stack every command runs on. Windows gives a program's first thread 1 MB, which an
+/// unoptimized build outgrows just reading the command line (the command enum is large), so
+/// the work is done on a thread whose stack is the same generous size on every system.
+const STACK_BYTES: usize = 16 * 1024 * 1024;
+
+fn main() -> ExitCode {
+    match std::thread::Builder::new().name("zone".to_string()).stack_size(STACK_BYTES).spawn(real_main) {
+        // A panic has already said what went wrong. 101 is what Rust itself exits with.
+        Ok(thread) => thread.join().unwrap_or(ExitCode::from(101)),
+        Err(_) => real_main(),
     }
 }

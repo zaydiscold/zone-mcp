@@ -95,7 +95,7 @@ fn tools() -> Vec<Tool> {
         }
     } else if cfg!(windows) {
         found.extend(clip_exe());
-        let powershell = on_path("powershell.exe").or_else(|| on_path("pwsh.exe"));
+        let powershell = Some(crate::update::windows_powershell()).filter(|full| full.is_file()).or_else(|| on_path("powershell.exe")).or_else(|| on_path("pwsh.exe"));
         if let Some(powershell) = powershell {
             // Read as UTF-8 whatever the console's code page is.
             let script = "[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; Set-Clipboard -Value ([Console]::In.ReadToEnd())";
@@ -163,8 +163,14 @@ fn run_tool(tool: &Tool, text: &str) -> Result<()> {
         }
     };
     if tool.name == "pbcopy" {
-        // pbcopy reads its input in the locale's encoding, and a login item has no locale.
+        // pbcopy reads its input in the locale's encoding, and a login item has no locale:
+        // without this, every letter outside ASCII arrives as something else.
         command.env_remove("LC_ALL").env("LC_CTYPE", "UTF-8");
+    }
+    if tool.name == "Set-Clipboard" {
+        // Under a PowerShell 7 terminal, Windows PowerShell would look for its commands in
+        // that one's module folders and not find Set-Clipboard.
+        command.env_remove("PSModulePath");
     }
     // Some of these tools stay behind to serve the clipboard, so nothing of theirs is waited on
     // but the program itself.

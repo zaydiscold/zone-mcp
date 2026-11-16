@@ -239,8 +239,11 @@ fn install(version: &str, folder: &Path) -> Result<()> {
         // PowerShell runs a script from a file more faithfully than from its standard input.
         let path = std::env::temp_dir().join(format!("zone-install-{}.ps1", std::process::id()));
         std::fs::write(&path, INSTALL_PS1).with_context(|| format!("cannot write {}", path.display()))?;
-        command = Command::new("powershell");
+        command = Command::new(windows_powershell());
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(&path);
+        // Started from a PowerShell 7 terminal, Windows PowerShell would inherit that one's
+        // module folders and no longer find its own commands (Get-FileHash, Expand-Archive).
+        command.env_remove("PSModulePath");
         _script_file = Some(RemoveOnDrop(path));
     } else {
         command = Command::new("sh");
@@ -258,6 +261,15 @@ fn install(version: &str, folder: &Path) -> Result<()> {
         bail!("the update did not finish (see above). The zone you have is unchanged.");
     }
     Ok(())
+}
+
+/// Windows PowerShell, which every Windows has: by its own folder when that is there (a
+/// program started with a short PATH would not find it by name), else by name.
+pub fn windows_powershell() -> std::path::PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| Path::new(&root).join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe"))
+        .filter(|full| full.is_file())
+        .unwrap_or_else(|| std::path::PathBuf::from("powershell"))
 }
 
 struct RemoveOnDrop(std::path::PathBuf);

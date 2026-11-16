@@ -1266,8 +1266,7 @@ fn clips_from_the_phone_reach_the_command_line_and_the_clipboard() {
     let second_id = report["clips"][0].as_str().unwrap().to_string();
     assert_eq!(clipboard_holds(&clipboard_file).as_deref(), Some(second));
 
-    // A clip sent five minutes ago (the phone was offline) is kept and not copied. So is the
-    // same clip arriving again.
+    // A clip sent five minutes ago (the phone was offline) is kept and not copied.
     let report = phone(&sandbox, &["--identity", identity, "--clip", "an older thought", "--clip-age", "300", "--addr", &addr]);
     assert_eq!(report["stored"], 1, "{report}");
     assert_eq!(clipboard_holds(&clipboard_file).as_deref(), Some(second), "an old clip reached the clipboard");
@@ -1454,6 +1453,7 @@ impl ReleaseServer {
 }
 
 /// The name of this computer's release file, the way the workflow and the scripts spell it.
+#[cfg(unix)]
 fn release_platform() -> &'static str {
     if cfg!(target_os = "macos") {
         "macos-universal"
@@ -1677,6 +1677,7 @@ fn install_ps1_installs_checks_and_updates() {
     std::fs::copy(ZONE, staging.join("zone.exe")).unwrap();
     let asset = "zone-99.0.0-windows-x86_64.zip";
     let made = Command::new("powershell")
+        .env_remove("PSModulePath")
         .args(["-NoProfile", "-Command"])
         .arg(format!(
             "$ErrorActionPreference='Stop'; Compress-Archive -Path '{}' -DestinationPath '{}'; (Get-FileHash -LiteralPath '{}' -Algorithm SHA256).Hash",
@@ -1712,6 +1713,9 @@ fn install_ps1_installs_checks_and_updates() {
             Command::new(shell)
                 .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
                 .arg(&script)
+                // When the tests are started from PowerShell 7, its module folders would
+                // otherwise hide Windows PowerShell's own (Get-FileHash and friends).
+                .env_remove("PSModulePath")
                 .env("LOCALAPPDATA", sandbox.home.join("AppData").join("Local"))
                 .env("ZONE_INSTALL_BASE_URL", server.url(""))
                 .env("ZONE_INSTALL_DIR", &dir)
@@ -1770,6 +1774,7 @@ fn install_ps1_installs_checks_and_updates() {
     let tampered = Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
+        .env_remove("PSModulePath")
         .env("ZONE_INSTALL_BASE_URL", server.url(""))
         .env("ZONE_INSTALL_DIR", sandbox.home.join("bin-powershell"))
         .env("ZONE_INSTALL_NO_PATH", "1")
@@ -2320,11 +2325,12 @@ fn sandbox_with_clients(sandbox: &Sandbox) -> (PathBuf, PathBuf, String, PathBuf
     std::fs::create_dir_all(home.join(".claude_work")).unwrap();
     std::fs::write(home.join(".claude_work").join(".claude.json"), "{}").unwrap();
     std::fs::create_dir_all(home.join(".gemini")).unwrap();
-    let zed = home.join(".config").join("zed").join("settings.json");
+    // Zed and Hermes keep their settings elsewhere on Windows.
+    let zed = if cfg!(windows) { home.join("AppData").join("Roaming").join("Zed") } else { home.join(".config").join("zed") }.join("settings.json");
     std::fs::create_dir_all(zed.parent().unwrap()).unwrap();
     let zed_text = "// Zed settings\n{\n  \"theme\": \"One Dark\", // dark\n  \"context_servers\": {},\n}\n".to_string();
     std::fs::write(&zed, &zed_text).unwrap();
-    let hermes = home.join(".hermes").join("config.yaml");
+    let hermes = if cfg!(windows) { home.join("AppData").join("Local").join("hermes") } else { home.join(".hermes") }.join("config.yaml");
     std::fs::create_dir_all(hermes.parent().unwrap()).unwrap();
     let hermes_text = "model:\n  default: some-model # the usual\nmcp_servers:\n  files:\n    command: npx\n    args:\n      - files\n\n# voice\nvoice:\n  enabled: false\n".to_string();
     std::fs::write(&hermes, &hermes_text).unwrap();
