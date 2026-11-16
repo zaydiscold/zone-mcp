@@ -54,8 +54,8 @@ The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 | Backup folder import | Works with real Zone backups and synthetic ones. |
 | MCP server, command line, web page | Works on macOS; registration checked against the real config files of 20 AI clients. |
 | Flash, black and white and color | Tested with pictures and recordings from the iPhone app's own code, and a simulated webcam. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is still unknown. |
-| Clips (text sent from the phone) | The computer's side works and is tested with a stand-in phone. A clip with accents, Japanese and an emoji reached the real clipboard exactly: on a Mac from a zone started by launchd (`pbcopy`), on Windows 10 (`clip.exe`), and on Linux under a virtual X11 display (`xclip`, `xsel`). **Not yet tested with the iPhone app**, whose side is being built. Wayland's `wl-copy` is written and has not been run. |
-| Downloads and one-line installs | `install.sh` installs, updates and refuses a tampered download, tested against a universal Mac archive built the way the release workflow builds it, and in the test suite on macOS and Linux. `install.ps1` passes its test on Windows 10 in Windows PowerShell and PowerShell 7. **No release is published yet**, and the release workflow has never run on GitHub. |
+| Clips (text sent from the phone) | The computer's side works and is tested with a stand-in phone. A clip with accents, Japanese and an emoji reached the real clipboard exactly: on a Mac from a zone started by launchd (`pbcopy`), on Windows 10 (`clip.exe`), and on Linux under a virtual X11 display (`xclip`, `xsel`). The iPhone app's side (Settings > Computers > Send text to your computer, a share sheet action and a Shortcut) was tested in the iOS simulator against a real zone: clips arrived in 0.2 to 1.4 seconds. **Not yet sent from a real iPhone.** Wayland's `wl-copy` is written and has not been run. |
+| Downloads and one-line installs | `install.sh` installs, updates and refuses a tampered download, tested against a universal Mac archive built the way the release workflow builds it, and in the test suite on macOS and Linux. `install.ps1` passes its test on Windows 10 in Windows PowerShell and PowerShell 7. Release 0.1.0 is published. GitHub's release workflow built all four downloads and ran `install.sh` against them on macOS, Linux x86_64 and Linux arm64 before attaching them. |
 | Windows | Built and run on Windows 10: see [Windows](#windows) for exactly what was checked. |
 | Linux | The whole test suite passes in a Debian container (arm64), Link over iroh and `install.sh` included. **Not run on a real Linux desktop** yet, so `zone install` (the systemd unit) is untested there. |
 
@@ -66,11 +66,6 @@ Zone for Mac, a menu bar app that brings `zone` with it, is on its way.
 <!-- /mac-app -->
 
 Until then, one line installs the command line program. Nothing else is needed: no Rust, no admin rights.
-
-<!-- first-release -->
-*The first release is not published yet. Until it is, these lines stop with "no release may have
-been published yet", and [building from source](#from-source) is the way in.*
-<!-- /first-release -->
 
 **macOS and Linux**
 
