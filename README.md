@@ -287,7 +287,11 @@ many are still needed, how many different codes it caught, and which code number
 nothing slipped by unnoticed and that missing some does not matter. A code misread as another
 valid code (rare, but QR error correction cannot rule it out) is found by the other codes,
 which have to agree with it, set aside, and the flash finishes without it; the page says so
-instead of failing. When it is done, zone reads every item back from the library and compares
+instead of failing. If the codes never come together (so many misread that the flash cannot be
+told apart from them: glare, a dim screen, a phone too far away or moving), zone stops once it
+has read the phone's whole loop of codes about twelve times over, and says so, instead of asking
+you to keep holding the phone up; choose Start over and try again with the phone steady and
+close. When it is done, zone reads every item back from the library and compares
 it with what the phone said it sent, count, times to the last binary digit and text: the page
 says, for example, "1,764 items, all checked" and the dates they span. The phone shows how many
 items and pieces it is sending, and asks you to tap Done only when the page says Done with

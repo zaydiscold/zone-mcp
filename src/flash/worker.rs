@@ -279,7 +279,7 @@ fn take(inner: &Inner, db: &Mutex<Db>, receiver: &mut Receiver, raw: &[u8]) -> (
         Step::AlreadyDone => return (true, false),
         Step::Progress { useful } => return (true, useful),
         Step::GaveUp { reason, bytes } => {
-            warn!("flash: every code of a flash of {bytes} bytes agrees and no key opens it: {reason}");
+            warn!("flash: gave up on a flash of {bytes} bytes: {reason}");
             if let Ok(db) = db.lock() {
                 receive::record_events(&db, &Outcome::Failed(reason), bytes, color);
             }

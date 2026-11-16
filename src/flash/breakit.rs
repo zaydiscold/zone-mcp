@@ -530,41 +530,113 @@ fn a_large_flash_through_loss_and_misreads() {
     }
 }
 
+/// The flash of [`stress_misread_rates`]: 2,500 items, 248 pieces of 300 bytes. Its secret,
+/// frames and loop.
+fn stress_flash() -> (String, Encoder, u32) {
+    let secret = "ef".repeat(32);
+    let items = crate::fakephone::synthetic_items(20_000, 2_500);
+    let key = crate::flash::seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
+    let sealed = crate::flash::seal::seal(&key, &crate::flash::seal::flash_json(&crate::db::PhoneInfo { id: Some("S".into()), name: None, app: None }, &items)).unwrap();
+    let encoder = Encoder::new(0x8123_0001, &sealed, 300).unwrap();
+    let cycle = 3 * encoder.k() as u32 + 60;
+    (secret, encoder, cycle)
+}
+
+/// How one run of [`stress_misread_rates`] ended.
+struct Ended {
+    stored: Option<receive::Stored>,
+    failed: Vec<String>,
+    /// Codes read until then.
+    codes: usize,
+    tally: crate::flash::assemble::Tally,
+}
+
+/// The camera of [`stress_misread_rates`], `rate` percent of codes misread, run `seed`: it
+/// watches the phone's loop 18 times (enough, losing 30%, for
+/// [`GIVE_UP_LOOPS`](crate::flash::assemble::GIVE_UP_LOOPS) loops of codes
+/// read), and reading stops once the flash is stored or has failed.
+fn stress_run(secret: &str, encoder: &Encoder, cycle: u32, rate: f64, seed: u64) -> Ended {
+    let mut dice = Dice(seed + 7);
+    let damage = Damage { passes: 18.0, drop: 30.0, misread: rate, ..Damage::default() };
+    let mut db = library(secret);
+    let mut receiver = Receiver::new();
+    let mut ended = Ended { stored: None, failed: Vec::new(), codes: 0, tally: Default::default() };
+    for code in readings(encoder, cycle, damage, &mut dice) {
+        ended.codes += 1;
+        let run = feed(&mut receiver, &mut db, [code]);
+        ended.failed.extend(run.failed);
+        if let Some(stored) = run.stored.into_iter().next() {
+            assert_eq!(db.total_items().unwrap(), 2_500);
+            ended.stored = Some(stored);
+        }
+        if ended.stored.is_some() || !ended.failed.is_empty() {
+            break;
+        }
+    }
+    ended.tally = receiver.tallies().into_iter().next().unwrap_or_default();
+    ended
+}
+
+/// The run of [`stress_misread_rates`] that zone 0.1.1 as first built never finished: one code
+/// in twelve misread, seed 3. Good codes set aside by mistake piled up (1,958 of them) until
+/// every code was known, the rows were complete and did not open, and no reading brought
+/// anything new: after 40 passes it still asked to keep holding the phone up. Now a loop that
+/// brings nothing helps the flash along, and the right library is stored, and checks out.
+#[test]
+fn one_code_in_twelve_misread_still_ends_with_the_right_library() {
+    use crate::flash::assemble::GIVE_UP_LOOPS;
+    let (secret, encoder, cycle) = stress_flash();
+    let ended = stress_run(&secret, &encoder, cycle, 8.0, 3);
+    assert!(ended.failed.is_empty(), "{:?}", ended.failed);
+    let stored = ended.stored.expect("stored");
+    assert!(stored.check.all_checked(), "{:?}", stored.check.problems);
+    assert_eq!((stored.items, stored.check.read_back_matching), (2_500, 2_500));
+    assert!(ended.tally.stalls >= 1, "it needed helping along: {:?}", ended.tally);
+    assert!((ended.codes as u64) < GIVE_UP_LOOPS * u64::from(cycle), "{} codes", ended.codes);
+}
+
 /// How far misreads can go: `cargo test --release stress_misread_rates -- --ignored --nocapture`.
 /// Measured on 2026-11-16 (248 pieces, 30% of codes lost, twelve runs each): every run stored
 /// the right library at 0.5, 2 and 4 percent of codes misread, after 1.0 to 4.5 times as many
-/// codes as pieces; at 8 percent eleven runs in twelve did within eight passes, after 4.6 to
-/// 7.1 times (zone 0.1.0: twelve, 1.0 to 3.6 times, and seven in twelve, 3.9 to 12.6 times).
-/// None stored anything wrong. QR error correction lets far fewer misreads through than any of
-/// these.
+/// codes as pieces. At 8 percent every run did too: eleven after 4.6 to 7.1 times, and one (seed
+/// 3) after 23.3 times, once two loops had gone by without the flash moving forward (zone 0.1.0:
+/// twelve, 1.0 to 3.6 times, and seven in twelve at 8 percent, 3.9 to 12.6 times; zone 0.1.1 as
+/// first built never finished seed 3). At 12 percent eleven runs stored the right library,
+/// after 5.7 to 34.5 times, and one was given up after 12 loops of codes read, saying so; at 16
+/// percent four stored, after 7.1 to 31.2 times, and eight were given up. None stored anything
+/// wrong, and none went on for ever. QR error correction lets far fewer misreads through than
+/// any of these.
 #[test]
 #[ignore]
 fn stress_misread_rates() {
-    for (rate, chunk) in [(0.5f64, 300usize), (2.0, 300), (4.0, 300), (8.0, 300)] {
-        let secret = "ef".repeat(32);
-        let items = crate::fakephone::synthetic_items(20_000, 2_500);
-        let key = crate::flash::seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
-        let sealed = crate::flash::seal::seal(&key, &crate::flash::seal::flash_json(&crate::db::PhoneInfo { id: Some("S".into()), name: None, app: None }, &items)).unwrap();
-        let encoder = Encoder::new(0x8123_0001, &sealed, chunk).unwrap();
-        let cycle = 3 * encoder.k() as u32 + 60;
+    let (secret, encoder, cycle) = stress_flash();
+    let k = encoder.k() as f64;
+    for rate in [0.5f64, 2.0, 4.0, 8.0, 12.0, 16.0] {
         for seed in 0..12u64 {
-            let mut dice = Dice(seed + 7);
-            let damage = Damage { passes: 8.0, drop: 30.0, misread: rate, ..Damage::default() };
-            let mut db = library(&secret);
-            let mut receiver = Receiver::new();
             let started = std::time::Instant::now();
-            let codes = readings(&encoder, cycle, damage, &mut dice);
-            let mut used = 0;
-            let mut stored = 0;
-            for code in codes {
-                used += 1;
-                let run = feed(&mut receiver, &mut db, [code]);
-                assert!(run.failed.is_empty());
-                stored += run.stored.len();
-                if stored > 0 { break; }
-            }
-            let s = receiver.status();
-            println!("rate {rate}% k {} seed {seed}: stored {stored} after {used} codes ({:.1} k), set aside {}, {:?}", encoder.k(), used as f64 / encoder.k() as f64, s["codes"]["set_aside"], started.elapsed());
+            let ended = stress_run(&secret, &encoder, cycle, rate, seed);
+            let how = match (&ended.stored, ended.failed.first()) {
+                (Some(stored), _) => {
+                    assert!(stored.check.all_checked(), "rate {rate}% seed {seed}: {:?}", stored.check.problems);
+                    "stored".to_string()
+                }
+                (None, Some(reason)) => {
+                    assert!(reason.contains("never came together"), "rate {rate}% seed {seed}: {reason}");
+                    "given up".to_string()
+                }
+                (None, None) => panic!("rate {rate}% seed {seed}: still reading after {} codes, {:?}", ended.codes, ended.tally),
+            };
+            let t = &ended.tally;
+            println!(
+                "rate {rate}% k {k} seed {seed}: {how} after {} codes ({:.1} k, {:.1} loops), set aside {}, stalls {}, restarts {}, {:?}",
+                ended.codes,
+                ended.codes as f64 / k,
+                ended.codes as f64 / f64::from(cycle),
+                t.set_aside,
+                t.stalls,
+                t.restarts,
+                started.elapsed()
+            );
         }
     }
 }

@@ -306,8 +306,9 @@ pub enum Step {
     /// The payload is ready for [`import`], and the caller reports back with
     /// [`Receiver::finish`].
     Complete { shape: Shape, payload: Vec<u8> },
-    /// Every code agrees, and still no key opens the flash: it was sealed for another
-    /// computer. The flash has failed for good; the caller records it.
+    /// The flash has failed for good, and the caller records it: every code agrees and still
+    /// no key opens the flash, so it was sealed for another computer; or its codes were read
+    /// loop after loop and never came together (see [`Assembler::gave_up`]).
     GaveUp { reason: String, bytes: usize },
 }
 
@@ -476,6 +477,12 @@ impl Receiver {
             self.remember_failed(frame.shape);
             return Step::GaveUp { reason, bytes: frame.shape.total_len as usize };
         }
+        if assembler.gave_up() {
+            let reason = gave_up_words();
+            session.close(Outcome::Failed(reason.clone()));
+            self.remember_failed(frame.shape);
+            return Step::GaveUp { reason, bytes: frame.shape.total_len as usize };
+        }
         Step::Progress { useful }
     }
 
@@ -516,6 +523,12 @@ impl Receiver {
                 }
             }
         }
+    }
+
+    /// What the code numbers say for each flash followed, for tests.
+    #[cfg(test)]
+    pub fn tallies(&self) -> Vec<Tally> {
+        self.sessions.values().map(Session::tally).collect()
     }
 
     /// Forgets everything but the flashes this library stored, for the page's "start over".
@@ -594,6 +607,10 @@ impl Receiver {
 /// digits in two groups of four, `8f3a 21c4`.
 pub fn flash_name(session: u32) -> String {
     format!("{:04x} {:04x}", session >> 16, session & 0xffff)
+}
+
+fn gave_up_words() -> String {
+    "zone read the codes of this flash round the phone's loop again and again, and they never came together into a library it could open, so it stopped. Nothing was stored. Codes may be being misread (glare on the phone's screen, a screen too dim, the phone too far from the camera or moving), or the flash may be for another computer. Choose Start over, then show the flash again with the phone steady and close to the camera.".to_string()
 }
 
 fn not_paired_words() -> String {
@@ -1112,6 +1129,58 @@ mod tests {
         let kinds: Vec<&str> = events.iter().map(|e| e.event.as_str()).filter(|e| *e == "paired" || e.starts_with("flash")).collect();
         assert_eq!(kinds, vec!["paired", "flash_received"]);
         assert_eq!((db.total_items().unwrap(), db.open_offers(110.0).unwrap(), db.devices().unwrap()[0].items_received), (1200, 0, 1200));
+    }
+
+    /// A flash whose codes can never come together (code 4 is misread the same way every time
+    /// it is shown, and so is every coded frame, each time differently) is given up, and the
+    /// page says what happened and what to do. zone 0.1.1 as first built said "a code may have
+    /// been misread, keep holding the phone up" for ever.
+    #[test]
+    fn a_flash_that_never_comes_together_is_given_up_and_says_so() {
+        use crate::flash::assemble::GIVE_UP_LOOPS;
+        let mut db = Db::open_in_memory().unwrap();
+        db.create_offer(SECRET, 100.0, 600.0).unwrap();
+        let payload = sealed(SECRET, "PHONE-G", &synthetic_items(0, 30));
+        let encoder = Encoder::new(0x8000_00b0, &payload, 300).unwrap();
+        let k = encoder.k() as u32;
+        let cycle = 3 * k + 60;
+        let frame = |n: u32| {
+            let index = n % cycle;
+            let mut frame = encoder.frame(index);
+            if index == 3 || index >= k {
+                let at = if index == 3 { 7 } else { (n as usize * 31) % 300 };
+                frame[fountain::HEADER_LEN + at] ^= 0x5a;
+            }
+            frame
+        };
+        let mut receiver = Receiver::new();
+        let mut gave_up = None;
+        for n in 0..cycle * 2 * GIVE_UP_LOOPS as u32 {
+            match receiver.add(&frame(n)) {
+                Step::Complete { shape, payload } => {
+                    let outcome = import(&mut db, &shape, &payload, 110.0);
+                    assert!(matches!(outcome, Outcome::NotOpened(_)), "{outcome:?}");
+                    receiver.finish(shape, &payload, outcome);
+                    assert_eq!(receiver.status()["trouble"], "checking");
+                }
+                Step::GaveUp { reason, bytes } => {
+                    assert_eq!(bytes, payload.len());
+                    gave_up = Some((n, reason));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let (n, reason) = gave_up.expect("given up");
+        assert!(u64::from(n) < GIVE_UP_LOOPS * u64::from(cycle), "after {n} codes");
+        assert!(reason.contains("Nothing was stored") && reason.contains("Start over") && !reason.contains('\u{2014}'), "{reason}");
+        let status = receiver.status();
+        assert_eq!((status["state"].as_str(), status["result"]["error"].as_str()), (Some("failed"), Some(reason.as_str())), "{status}");
+        // The phone still shows it: nothing changes, until the page starts over.
+        assert!(matches!(receiver.add(&frame(n + 1)), Step::AlreadyDone));
+        assert_eq!(db.total_items().unwrap(), 0);
+        receiver.reset();
+        assert!(matches!(receiver.add(&encoder.frame(0)), Step::Progress { useful: true }));
     }
 
     /// "Stored before, at ..." gives the time the library recorded, the same before and after
