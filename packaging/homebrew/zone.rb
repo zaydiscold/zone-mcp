@@ -20,7 +20,7 @@
 class Zone < Formula
   desc "Your iPhone's Zone dictations on this computer, for you and your AI agents"
   homepage "https://github.com/zaydiscold/zone-mcp"
-  version "0.1.0"
+  version "0.1.1"
   license "MIT"
 
   # One program for both kinds of Mac, so the two blocks name the same archive.

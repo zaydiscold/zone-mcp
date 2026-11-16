@@ -352,7 +352,7 @@ zone events --since 2h
 ```
 
 ```
-Sun 2026-11-15 12:00:00  Zone 0.1.0 started
+Sun 2026-11-15 12:00:00  Zone 0.1.1 started
 Sun 2026-11-15 12:00:41  My iPhone paired by Link
 Sun 2026-11-15 12:00:42  My iPhone synced over Link: 600 new (relay then direct, 1.2 s)
 Sun 2026-11-15 12:07:15  My iPhone synced over Link: 2 new, 1 deleted (direct, 0.1 s)
