@@ -30,8 +30,7 @@ use crate::daemon_info::DaemonInfo;
 use crate::db::{Cursor, Db, Filter, Order, Row};
 use crate::flash::color::{ColorRead, Rgb};
 use crate::flash::qr::Gray;
-use crate::flash::receive::{self, Outcome, PictureRead, Receiver, Step};
-use crate::info;
+use crate::flash::worker::FlashWorker;
 use crate::pairing;
 use crate::paths;
 use crate::timeparse::{Bound, Clock, unix};
@@ -64,8 +63,8 @@ pub struct WebState {
     pub computer_name: String,
     /// What the daemon currently knows about its own connectivity.
     pub info: Arc<Mutex<DaemonInfo>>,
-    /// The flash being received through the page, if any.
-    pub flash: Mutex<Receiver>,
+    /// The flash being received through the page, if any, on a thread of its own.
+    pub flash: FlashWorker,
 }
 
 /// Loads the web token, creating it the first time.
@@ -268,14 +267,8 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
         }
         "/api/flash/status" if get => flash_status(head, state),
         "/api/flash/picture" if post => flash_picture(head, state),
-        "/api/flash/frame" if post => flash_guarded(head, state, |receiver| {
-            flash_take(state, receiver, &head.body);
-            Ok(())
-        }),
-        "/api/flash/reset" if post => flash_guarded(head, state, |receiver| {
-            receiver.reset();
-            Ok(())
-        }),
+        "/api/flash/frame" if post => flash_reply(head, state, |flash| flash.frame(head.body.to_vec())),
+        "/api/flash/reset" if post => flash_reply(head, state, FlashWorker::reset),
         // The font holds nothing private, so the locked page can use it too.
         "/font/zone-serif.woff2" if get => font(),
         "/" | "/flash" | "/font/zone-serif.woff2" | "/api/status" | "/api/items" | "/api/item" | "/api/pair" | "/api/flash/status" | "/api/flash/picture"
@@ -297,48 +290,51 @@ fn guarded(head: &RequestHead, state: &WebState, work: impl FnOnce(&mut Db) -> R
     }
 }
 
-/// Runs one Flash request and answers with where the flash stands.
-fn flash_guarded(head: &RequestHead, state: &WebState, work: impl FnOnce(&mut Receiver) -> Result<()>) -> Reply {
+/// Runs one Flash request and answers with where the flash stands. The flash's own thread
+/// does the work (see flash/worker.rs), so no request waits long.
+fn flash_reply(head: &RequestHead, state: &WebState, work: impl FnOnce(&FlashWorker) -> Value) -> Reply {
     if !has_session(head, state) {
         return json_reply(StatusCode::UNAUTHORIZED, &json!({ "error": "locked", "fix": "Run `zone open` to unlock this page." }));
     }
-    let Ok(mut receiver) = state.flash.lock() else {
-        return json_reply(StatusCode::INTERNAL_SERVER_ERROR, &json!({ "error": "flash is unavailable" }));
-    };
-    match work(&mut receiver) {
-        Ok(()) => json_reply(StatusCode::OK, &receiver.status()),
-        Err(error) => json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
-    }
+    json_reply(StatusCode::OK, &work(&state.flash))
 }
 
 /// Where the flash stands, and whether this computer has anything to open one with: the page
-/// says so before anyone holds a phone up.
+/// says so before anyone holds a phone up. While a flash is being stored the library is busy,
+/// and the setup is what it was a moment ago.
 fn flash_status(head: &RequestHead, state: &WebState) -> Reply {
-    let reply = flash_guarded(head, state, |_| Ok(()));
-    if reply.status() != StatusCode::OK {
-        return reply;
-    }
-    let mut status = state.flash.lock().map(|r| r.status()).unwrap_or(Value::Null);
-    if let Ok(db) = state.db.lock() {
-        let phones = db.devices().map(|d| d.len()).unwrap_or(0);
-        let codes = db.open_offers(paths::now_unix()).unwrap_or(0);
-        status["setup"] = json!({ "phones": phones, "pairing_codes": codes });
-    }
-    json_reply(StatusCode::OK, &status)
+    flash_reply(head, state, |flash| {
+        let mut status = flash.status();
+        let fresh = match state.db.try_lock() {
+            Ok(db) => Some(setup(&db)),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(setup(&poisoned.into_inner())),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(setup) = flash.setup(fresh) {
+            status["setup"] = setup;
+        }
+        status
+    })
+}
+
+fn setup(db: &Db) -> Value {
+    let phones = db.devices().map(|d| d.len()).unwrap_or(0);
+    let codes = db.open_offers(paths::now_unix()).unwrap_or(0);
+    json!({ "phones": phones, "pairing_codes": codes })
 }
 
 /// A camera picture: `w` times `h` gray bytes, or with `format=rgb` three bytes (red, green,
 /// blue) per pixel. Every QR code in it is taken as a frame: a color picture can carry three
 /// (see flash/color.rs).
 ///
-/// The codes are read before the flash is locked, so the pictures the page sends at once are
-/// read side by side, one per processor; only taking their frames is one at a time.
+/// The codes are read here, so the pictures the page sends at once are read side by side, one
+/// per processor; the flash's thread then takes their frames one at a time.
 fn flash_picture(head: &RequestHead, state: &WebState) -> Reply {
     if !has_session(head, state) {
         return json_reply(StatusCode::UNAUTHORIZED, &json!({ "error": "locked", "fix": "Run `zone open` to unlock this page." }));
     }
     let side = |key: &str| -> Result<usize> { head.query.get(key).and_then(|v| v.parse().ok()).with_context(|| format!("{key} is required")) };
-    let thorough = state.flash.lock().map(|r| r.codes_in_view()).unwrap_or(true);
+    let thorough = state.flash.codes_in_view();
     let rgb = match head.query.get("format").map(String::as_str) {
         None | Some("gray") => false,
         Some("rgb") => true,
@@ -355,65 +351,7 @@ fn flash_picture(head: &RequestHead, state: &WebState) -> Reply {
         Ok(read) => read,
         Err(error) => return json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
     };
-    flash_guarded(head, state, |receiver| {
-        receiver.pictures += 1;
-        if !codes.is_empty() {
-            receiver.pictures_with_code += 1;
-            receiver.last_code_at = Some(std::time::Instant::now());
-        }
-        if color {
-            receiver.color_pictures += 1;
-        }
-        let mut read = PictureRead { codes: codes.len(), color, ..PictureRead::default() };
-        for code in &codes {
-            let (frame, useful) = flash_take(state, receiver, code);
-            read.frames += usize::from(frame);
-            read.useful += usize::from(useful);
-        }
-        receiver.last_picture = Some(read);
-        Ok(())
-    })
-}
-
-/// Takes the bytes of one frame. The frame that completes a flash stores it. Returns whether
-/// it was a flash frame, and whether it brought a new row.
-fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) -> (bool, bool) {
-    let (shape, payload) = match receiver.add(raw) {
-        Step::Ignored => return (false, false),
-        Step::AlreadyDone => return (true, false),
-        Step::Progress { useful } => return (true, useful),
-        Step::GaveUp { reason, bytes } => {
-            warn!("flash: every code of a flash of {bytes} bytes agrees and no key opens it: {reason}");
-            if let Ok(db) = state.db.lock() {
-                receive::record_events(&db, &Outcome::Failed(reason), bytes, receiver.color_pictures > 0);
-            }
-            return (true, false);
-        }
-        Step::Complete { shape, payload } => (shape, payload),
-    };
-    let outcome = match state.db.lock() {
-        Ok(mut db) => {
-            let outcome = receive::import(&mut db, &payload, paths::now_unix());
-            receive::record_events(&db, &outcome, payload.len(), receiver.color_pictures > 0);
-            outcome
-        }
-        Err(_) => Outcome::NotStored("The library is unavailable just now. Trying again.".to_string()),
-    };
-    match &outcome {
-        Outcome::Stored(stored) => info!(
-            "flash: {} sent {} items, {} new or changed{}{}",
-            stored.phone_name.as_deref().unwrap_or("a phone"),
-            stored.items,
-            stored.inserted + stored.replaced,
-            if stored.paired { ", and is now paired" } else { "" },
-            if stored.check.all_checked() { String::new() } else { format!(". The check found a problem: {}", stored.check.problems.join(" ")) }
-        ),
-        Outcome::Failed(reason) => warn!("flash: a complete flash of {} bytes was not stored: {reason}", payload.len()),
-        Outcome::NotOpened(_) => info!("flash: a complete flash of {} bytes did not open; reading more codes to check it", payload.len()),
-        Outcome::NotStored(reason) => warn!("flash: a flash of {} bytes opened but was not stored yet: {reason}", payload.len()),
-    }
-    receiver.finish(shape, &payload, outcome);
-    (true, true)
+    json_reply(StatusCode::OK, &state.flash.picture(codes, color))
 }
 
 // -------------------------------------------------------------------- replies
@@ -652,14 +590,16 @@ mod tests {
         let mut db = Db::open_in_memory().unwrap();
         let items: Vec<Item> = crate::fakephone::synthetic_items(0, 130).iter().map(|v| Item::from_json(v).unwrap()).collect();
         db.apply_items(&items, &Delivery { carrier: Carrier::Link, device_id: None, received_at: 5.0 }).unwrap();
+        let db = Arc::new(Mutex::new(db));
         WebState {
-            db: Arc::new(Mutex::new(db)),
+            db: db.clone(),
             token: "5e".repeat(32),
             port: PORT,
             endpoint_id: "7f".repeat(32),
             computer_name: "desk".to_string(),
             info: Arc::new(Mutex::new(DaemonInfo::default())),
-            flash: Mutex::new(Receiver::new()),
+            // Long enough that every answer is given after its picture was taken in.
+            flash: FlashWorker::start_waiting(db, std::time::Duration::from_secs(60)),
         }
     }
 

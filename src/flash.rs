@@ -29,6 +29,7 @@ pub mod fountain;
 pub mod qr;
 pub mod receive;
 pub mod seal;
+pub mod worker;
 
 use sha2::{Digest, Sha256};
 

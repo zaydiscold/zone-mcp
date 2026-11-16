@@ -262,7 +262,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
             let now = paths::now_unix();
             if options.import {
                 report["opened_with"] = json!("a key from the library");
-                let outcome = receive::import(&mut db, &payload, now);
+                let outcome = receive::import(&mut db, shape, &payload, now);
                 receive::record_events(&db, &outcome, payload.len(), color_pictures > 0);
                 match outcome {
                     Outcome::Stored(stored) => {
@@ -273,6 +273,11 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
                         report["imported"] =
                             json!({ "new": stored.inserted, "changed": stored.replaced, "unchanged": stored.unchanged, "paired": stored.paired });
                         report["check"] = stored.check.to_json();
+                    }
+                    Outcome::AlreadyStored(earlier) => {
+                        report["phone"] = json!({ "name": earlier.phone_name });
+                        report["items"] = json!(earlier.items);
+                        report["imported"] = json!({ "already_stored": true, "stored_at": earlier.stored_at });
                     }
                     Outcome::Failed(reason) | Outcome::NotOpened(reason) | Outcome::NotStored(reason) => bail!("{reason}"),
                 }

@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter, types::Value as Sql};
+use rusqlite::{Connection, OptionalExtension, Savepoint, Transaction, TransactionBehavior, params, params_from_iter, types::Value as Sql};
 use sha2::{Digest, Sha256};
 
 use crate::item::{Carrier, Item, word_count};
@@ -89,6 +89,22 @@ CREATE TABLE IF NOT EXISTS events (
     at    REAL NOT NULL,
     event TEXT NOT NULL,
     data  TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Every flash stored, by its header, so that one still on a phone's screen is never stored
+-- again: not after the page starts over, not after zone restarts. Added in zone 0.1.1; an
+-- older zone opening the library ignores it.
+CREATE TABLE IF NOT EXISTS flashes (
+    session    INTEGER NOT NULL,
+    total_len  INTEGER NOT NULL,
+    k          INTEGER NOT NULL,
+    chunk      INTEGER NOT NULL,
+    digest     TEXT NOT NULL,
+    device_id  TEXT,
+    phone_name TEXT,
+    items      INTEGER NOT NULL,
+    stored_at  REAL NOT NULL,
+    PRIMARY KEY (session, total_len, k, chunk)
 );
 "#;
 
@@ -427,6 +443,49 @@ pub struct Db {
     conn: Connection,
 }
 
+/// A flash this library stored (see the `flashes` table).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredFlash {
+    /// The flash's header: session, sealed payload length, chunk count and chunk size.
+    pub session: u32,
+    pub total_len: u32,
+    pub k: u16,
+    pub chunk: u16,
+    /// The digest of its item list as it arrived (PROTOCOL.md, "Carrier 2: Flash", `check`).
+    pub digest: String,
+    pub device_id: Option<String>,
+    pub phone_name: Option<String>,
+    pub items: usize,
+    pub stored_at: f64,
+}
+
+/// One write: a transaction of its own, or a savepoint inside the transaction
+/// [`Db::atomically`] has open, so that it is kept or undone with everything else there.
+enum Write<'a> {
+    Transaction(Transaction<'a>),
+    Savepoint(Savepoint<'a>),
+}
+
+impl std::ops::Deref for Write<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        match self {
+            Write::Transaction(tx) => tx,
+            Write::Savepoint(sp) => sp,
+        }
+    }
+}
+
+impl Write<'_> {
+    fn commit(self) -> rusqlite::Result<()> {
+        match self {
+            Write::Transaction(tx) => tx.commit(),
+            Write::Savepoint(sp) => sp.commit(),
+        }
+    }
+}
+
 impl Db {
     /// Opens the library in the data directory, creating both when missing.
     pub fn open_default() -> Result<Db> {
@@ -451,6 +510,12 @@ impl Db {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Db> {
         Db::prepare(Connection::open_in_memory()?)
+    }
+
+    /// Runs SQL against the library, for tests that need it to misbehave.
+    #[cfg(test)]
+    pub fn execute_for_tests(&self, sql: &str) -> Result<()> {
+        Ok(self.conn.execute_batch(sql)?)
     }
 
     fn prepare(conn: Connection) -> Result<Db> {
@@ -527,6 +592,32 @@ impl Db {
         Ok(answer == "ok")
     }
 
+    /// Starts a write. Writers take the library's write lock at once (IMMEDIATE), so that two
+    /// programs never both read and then both wait to write.
+    fn write(&mut self) -> Result<Write<'_>> {
+        if self.conn.is_autocommit() {
+            Ok(Write::Transaction(self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?))
+        } else {
+            Ok(Write::Savepoint(self.conn.savepoint()?))
+        }
+    }
+
+    /// Runs `work` as one transaction: everything it writes is kept when it returns Ok, and
+    /// none of it when it returns Err. The outer error is the library's own (it could not
+    /// begin or commit).
+    pub fn atomically<T, E>(&mut self, work: impl FnOnce(&mut Db) -> std::result::Result<T, E>) -> Result<std::result::Result<T, E>> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = work(self);
+        let ending = if result.is_ok() { "COMMIT" } else { "ROLLBACK" };
+        if let Err(error) = self.conn.execute_batch(ending) {
+            if !self.conn.is_autocommit() {
+                let _ = self.conn.execute_batch("ROLLBACK");
+            }
+            return Err(error.into());
+        }
+        Ok(result)
+    }
+
     // ---------------------------------------------------------------- merging
 
     /// Applies a batch in one transaction. When this returns, the batch is committed.
@@ -538,7 +629,7 @@ impl Db {
     /// positions in `items` of those that were new here or replaced a different version.
     /// An item that was already here unchanged (a resend) is not among them.
     pub fn apply_items_noting(&mut self, items: &[Item], delivery: &Delivery<'_>) -> Result<(Applied, Vec<usize>)> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self.write()?;
         let mut applied = Applied::default();
         let mut arrived = Vec::new();
         for (index, item) in items.iter().enumerate() {
@@ -808,7 +899,7 @@ impl Db {
     /// The only change agents can make: a flag beside the item, never its content.
     /// Returns the ids that were found and the ids that were not.
     pub fn mark_processed(&mut self, ids: &[String], processed: bool, now: f64) -> Result<(Vec<String>, Vec<String>)> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self.write()?;
         let mut found = Vec::new();
         let mut missing = Vec::new();
         for id in ids {
@@ -865,7 +956,7 @@ impl Db {
     /// Decides whether a phone may sync, pinning its endpoint id when it presents a valid
     /// pairing secret. Using up the secret and pinning the phone happen in one transaction.
     pub fn admit(&mut self, endpoint_id: &str, pair_secret: Option<&str>, phone: &PhoneInfo, now: f64) -> Result<Admission> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self.write()?;
         let pinned: bool =
             tx.query_row("SELECT 1 FROM devices WHERE endpoint_id = ?1", params![endpoint_id], |_| Ok(())).optional()?.is_some();
         let admission = match pair_secret {
@@ -964,7 +1055,7 @@ impl Db {
     /// A phone that has never been online has no endpoint id yet, so its row is named after
     /// its install id. `admit` renames the row when the phone first connects over Link.
     pub fn pair_by_flash(&mut self, offer_hash: &str, phone: &PhoneInfo, now: f64) -> Result<Option<String>> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self.write()?;
         // A phone already paired over Link keeps its row and gets the new key.
         let existing: Option<String> = match &phone.id {
             Some(id) => tx
@@ -1013,6 +1104,48 @@ impl Db {
             params![endpoint_id, now, items as i64, path],
         )?;
         Ok(())
+    }
+
+    /// Notes a flash as stored. A flash already noted keeps its first note.
+    pub fn record_flash(&self, flash: &StoredFlash) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO flashes (session, total_len, k, chunk, digest, device_id, phone_name, items, stored_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                flash.session,
+                flash.total_len,
+                flash.k,
+                flash.chunk,
+                flash.digest,
+                flash.device_id,
+                flash.phone_name,
+                flash.items as i64,
+                flash.stored_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The flash with this header, when this library stored it.
+    pub fn stored_flash(&self, session: u32, total_len: u32, k: u16, chunk: u16) -> Result<Option<StoredFlash>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT session, total_len, k, chunk, digest, device_id, phone_name, items, stored_at FROM flashes \
+                 WHERE session = ?1 AND total_len = ?2 AND k = ?3 AND chunk = ?4",
+                params![session, total_len, k, chunk],
+                stored_flash_of,
+            )
+            .optional()?)
+    }
+
+    /// Every flash this library stored, oldest first.
+    pub fn stored_flashes(&self) -> Result<Vec<StoredFlash>> {
+        let mut statement = self.conn.prepare(
+            "SELECT session, total_len, k, chunk, digest, device_id, phone_name, items, stored_at FROM flashes ORDER BY stored_at",
+        )?;
+        let rows = statement.query_map([], stored_flash_of)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn record_path(&self, endpoint_id: &str, path: &str, now: f64) -> Result<()> {
@@ -1217,7 +1350,21 @@ pub fn offer_id_of_hash(hash: &str) -> String {
     hash.chars().take(16).collect()
 }
 
-fn apply_one(tx: &Transaction<'_>, item: &Item, delivery: &Delivery<'_>, applied: &mut Applied) -> Result<()> {
+fn stored_flash_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredFlash> {
+    Ok(StoredFlash {
+        session: row.get(0)?,
+        total_len: row.get(1)?,
+        k: row.get(2)?,
+        chunk: row.get(3)?,
+        digest: row.get(4)?,
+        device_id: row.get(5)?,
+        phone_name: row.get(6)?,
+        items: row.get::<_, i64>(7)? as usize,
+        stored_at: row.get(8)?,
+    })
+}
+
+fn apply_one(tx: &Connection, item: &Item, delivery: &Delivery<'_>, applied: &mut Applied) -> Result<()> {
     let stored = tx
         .query_row(
             "SELECT updated_at, deleted, kind, source, created_at, text, title, duration_s, engine, status, extra, rev \

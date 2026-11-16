@@ -173,24 +173,27 @@ fn library(secret: &str) -> Db {
 struct Run {
     stored: Vec<receive::Stored>,
     failed: Vec<String>,
+    /// Flashes recognised as stored before, and not stored again.
+    already: usize,
 }
 
 /// Feeds codes as the page's route does: each complete payload is imported and reported back.
 fn feed(receiver: &mut Receiver, db: &mut Db, codes: impl IntoIterator<Item = Vec<u8>>) -> Run {
-    let mut run = Run { stored: Vec::new(), failed: Vec::new() };
+    let mut run = Run { stored: Vec::new(), failed: Vec::new(), already: 0 };
     for code in codes {
         match receiver.add(&code) {
             Step::Complete { shape, payload } => {
-                let outcome = receive::import(db, &payload, NOW);
+                let outcome = receive::import(db, &shape, &payload, NOW);
                 match &outcome {
                     Outcome::Stored(stored) => run.stored.push((**stored).clone()),
                     Outcome::Failed(reason) => run.failed.push(reason.clone()),
+                    Outcome::AlreadyStored(_) => run.already += 1,
                     Outcome::NotOpened(_) | Outcome::NotStored(_) => {}
                 }
                 receiver.finish(shape, &payload, outcome);
             }
             Step::GaveUp { reason, .. } => run.failed.push(reason),
-            Step::Ignored | Step::Progress { .. } | Step::AlreadyDone => {}
+            Step::Ignored | Step::Progress { .. } | Step::AlreadyDone | Step::Ready { .. } => {}
         }
     }
     run
@@ -360,7 +363,8 @@ fn color_pictures_with_their_channels_in_any_order() {
 }
 
 /// Another phone's flash in front of the camera at the same time, the page started over half
-/// way through, and the same flash shown again after it was stored.
+/// way through, and the same flash shown again after it was stored: after the page started
+/// over again, and to a zone that restarted, while Link updated an item in between.
 #[test]
 fn another_flash_at_the_same_time_and_the_page_started_over() {
     let fixture = fixture();
@@ -377,8 +381,9 @@ fn another_flash_at_the_same_time_and_the_page_started_over() {
     let other_cycle = 3 * other.k() as u32 + 60;
 
     let mut receiver = Receiver::new();
-    // Half of the phone's codes, then the page's Start over.
-    feed(&mut receiver, &mut db, (0..fixture.cycle / 4).map(|i| encoder.frame(i)));
+    // Half of the phone's pieces, then the page's Start over.
+    let half = feed(&mut receiver, &mut db, (0..encoder.k() as u32 / 2).map(|i| encoder.frame(i)));
+    assert!(half.stored.is_empty());
     receiver.reset();
     // Both phones at once, codes interleaved, some lost.
     let mut dice = Dice(42);
@@ -407,6 +412,30 @@ fn another_flash_at_the_same_time_and_the_page_started_over() {
     // Shown again later: the phone still has it up. Nothing changes.
     let again = feed(&mut receiver, &mut db, (0..fixture.cycle).map(|i| encoder.frame(i)));
     assert!(again.stored.is_empty() && again.failed.is_empty());
+
+    // Link brings a newer version of one of the items. Then the page starts over, and later
+    // zone restarts, with the phone still showing the flash it made before.
+    let newer_id = fixture.expected().iter().find(|e| e["deleted"] == false && e["kind"] == "dictation").unwrap()["id"].as_str().unwrap().to_string();
+    let newer = Item::from_json(&json!({ "id": newer_id, "kind": "dictation", "created_at": 1.0, "updated_at": NOW + 50.0, "text": "edited on the phone, sent by Link" })).unwrap();
+    db.apply_items(&[newer], &Delivery { carrier: Carrier::Link, device_id: Some("PHONE"), received_at: NOW + 60.0 }).unwrap();
+    let newer_text = |db: &Db| db.get(&newer_id).unwrap().unwrap().text;
+    receiver.reset();
+    let after_start_over = feed(&mut receiver, &mut db, (0..fixture.cycle).map(|i| encoder.frame(i)));
+    assert!(after_start_over.stored.is_empty() && after_start_over.failed.is_empty());
+    let status = receiver.status();
+    assert_eq!((status["state"].as_str(), status["result"]["already_stored"].as_bool()), (Some("done"), Some(true)), "{status}");
+    assert_eq!(status["result"]["items"].as_u64(), Some(fixture.expected().len() as u64));
+    let mut restarted = Receiver::with_stored(db.stored_flashes().unwrap());
+    let after_restart = feed(&mut restarted, &mut db, (0..fixture.cycle).map(|i| encoder.frame(i)));
+    assert!(after_restart.stored.is_empty() && after_restart.failed.is_empty());
+    assert_eq!(restarted.status()["result"]["already_stored"], true);
+    // A receiver that knows nothing (a zone 0.1.0 would have stored it again) still finds
+    // the flash in the library when it tries to store it.
+    let mut forgetful = Receiver::new();
+    let forgot = feed(&mut forgetful, &mut db, (0..fixture.cycle).map(|i| encoder.frame(i)));
+    assert!(forgot.stored.is_empty() && forgot.failed.is_empty() && forgot.already == 1);
+    assert_eq!(newer_text(&db), "edited on the phone, sent by Link", "Link's newer version stands");
+    assert_eq!(db.stored_flashes().unwrap().len(), 2, "each flash recorded once");
 }
 
 /// The same library sent over Link (in the order a Link session sends it) and over Flash

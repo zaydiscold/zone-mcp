@@ -84,7 +84,7 @@ pub async fn run(options: Options) -> Result<()> {
         endpoint_id: endpoint_id.clone(),
         computer_name: computer_name.clone(),
         info: info.clone(),
-        flash: Mutex::new(crate::flash::receive::Receiver::new()),
+        flash: crate::flash::worker::FlashWorker::start(db.clone()),
     });
     let web_task = tokio::spawn(web::serve(listener, web_state));
     let link_task = tokio::spawn(link::accept_loop(endpoint.clone(), LinkState::new(db.clone(), computer_name)));

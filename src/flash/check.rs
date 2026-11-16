@@ -50,6 +50,9 @@ pub struct Check {
     pub distinct: usize,
     /// Entries whose id came earlier in the same flash. The later one is what is kept.
     pub duplicates: usize,
+    /// The digest of the entries as they arrived, worked out here whether or not the phone
+    /// sent one. A stored flash is remembered by it.
+    pub digest: String,
     /// The span of `created_at` over the entries that are not deletions.
     pub oldest: Option<f64>,
     pub newest: Option<f64>,
@@ -115,7 +118,7 @@ fn same_time(a: Option<f64>, b: Option<f64>) -> bool {
 /// Checks the item list of a flash against the phone's summary, when there is one. `flash` is
 /// the whole flash object; `items` its item list.
 pub fn examine(flash: &Value, items: &[Value]) -> Check {
-    let mut check = Check { items: items.len(), ..Check::default() };
+    let mut check = Check { items: items.len(), digest: digest(items), ..Check::default() };
     let mut seen: HashMap<String, usize> = HashMap::new();
     for entry in items {
         if let Some(id) = entry.get("id").and_then(Value::as_str) {
@@ -160,7 +163,7 @@ pub fn examine(flash: &Value, items: &[Value]) -> Check {
         check.problems.push("the times of the oldest and newest items are not the ones the phone sent.".to_string());
     }
     if let Some(said) = &declared.digest
-        && *said != digest(items)
+        && *said != check.digest
     {
         check.problems.push("the items are not exactly what the phone sealed: an id, a time or a text differs.".to_string());
     }

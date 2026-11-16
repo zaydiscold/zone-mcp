@@ -3,13 +3,18 @@
 //! [`Receiver`] collects frames, whichever way they arrive (pictures from the local page, or
 //! frame bytes directly), one [`Assembler`] per flash. When a flash is complete its payload is
 //! handed to [`import`], which finds the key that opens it, merges the items like Link items,
-//! and reads them back to check them.
+//! and reads them back to check them, all in one transaction.
 //!
 //! A complete payload that no key opens is not the end of the flash: a misread code gives a
 //! wrong payload, which no key opens either. The receiver keeps reading. Uneven checks lead the
 //! assembler to the misread code, which is set aside, and the payload is solved again. If
 //! instead every later code agrees, the payload is what the phone showed, sealed for another
 //! computer, and only then does the flash fail, saying so.
+//!
+//! A stored flash is recorded in the library by its header (and the digest of its items), so
+//! its frames, still on a phone's screen, never store it again: not after the page starts
+//! over and not after zone restarts. Storing a flash again would put back the phone's older
+//! version of anything Link has updated since.
 //!
 //! Nothing here logs or returns any item's text.
 
@@ -23,21 +28,21 @@ use super::assemble::{Assembler, Tally, Took, Trouble};
 use super::check::Check;
 use super::fountain::{self, Decoder, Shape};
 use super::seal;
-use crate::db::{Db, Delivery, FlashKeyOwner};
+use crate::db::{Db, Delivery, FlashKeyOwner, StoredFlash};
 use crate::item::Carrier;
 
 /// Flashes followed at once. More than one only happens when a second phone, or a second
 /// flash from the same phone, shows up before the first is finished, or when a misread code
 /// names a flash that does not exist.
 const MAX_SESSIONS: usize = 3;
-/// Items stored per transaction.
+/// Items stored per batch, inside the one transaction of a flash.
 const BATCH: usize = 500;
 /// The page is told which chunks are known, one tile each, up to this many chunks (about
 /// 4.6 MB of sealed payload). A larger flash reports counts only.
 const MAX_TILES: usize = 16_384;
-/// Finished flashes remembered after their session is dropped, so that one still on a
-/// phone's screen is never stored twice.
-const FINISHED_REMEMBERED: usize = 64;
+/// Flashes that failed for good remembered after their session is dropped, so that one still
+/// on a phone's screen does not take the page over again.
+const FAILED_REMEMBERED: usize = 64;
 /// After the library could not take an opened flash, how long to wait before trying again.
 pub const STORE_RETRY: Duration = Duration::from_secs(3);
 
@@ -45,13 +50,16 @@ pub const STORE_RETRY: Duration = Duration::from_secs(3);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     Stored(Box<Stored>),
+    /// This library stored this very flash before. Nothing was stored again.
+    AlreadyStored(Box<StoredFlash>),
     /// Why nothing was stored, for good, in words for the person holding the phone.
     Failed(String),
     /// No key opened the payload. Either a code was misread or the flash was sealed for
     /// another computer: the receiver keeps reading codes to tell which (see the top of this
     /// file). The words are what to say if it turns out to be the second.
     NotOpened(String),
-    /// It opened, but the library could not take it just now. The receiver tries again.
+    /// It opened, but the library could not take it just now. Nothing of it was kept, and the
+    /// receiver tries again.
     NotStored(String),
 }
 
@@ -106,7 +114,7 @@ impl Stored {
 
 /// Puts what became of a completed flash in the feed: the flash itself, and the pairing when
 /// it also paired the phone. `bytes` is the size of the sealed payload. A flash that is still
-/// being checked or stored is not in the feed yet.
+/// being checked or stored is not in the feed yet, and one stored before is not in it twice.
 pub fn record_events(db: &Db, outcome: &Outcome, bytes: usize, color: bool) {
     match outcome {
         Outcome::Stored(stored) => {
@@ -116,7 +124,7 @@ pub fn record_events(db: &Db, outcome: &Outcome, bytes: usize, color: bool) {
             crate::events::record(db, "flash_received", stored.event_fields(bytes, color));
         }
         Outcome::Failed(reason) => crate::events::record(db, "flash_failed", json!({ "reason": reason, "bytes": bytes })),
-        Outcome::NotOpened(_) | Outcome::NotStored(_) => {}
+        Outcome::AlreadyStored(_) | Outcome::NotOpened(_) | Outcome::NotStored(_) => {}
     }
 }
 
@@ -135,6 +143,13 @@ impl Outcome {
                 "paired": s.paired,
                 "check": s.check.to_json(),
             }),
+            Outcome::AlreadyStored(earlier) => json!({
+                "ok": true,
+                "already_stored": true,
+                "phone": earlier.phone_name,
+                "items": earlier.items,
+                "stored_at": earlier.stored_at,
+            }),
             Outcome::Failed(reason) => json!({ "ok": false, "error": reason }),
             Outcome::NotOpened(reason) => json!({ "ok": false, "error": reason, "checking": true }),
             Outcome::NotStored(reason) => json!({ "ok": false, "error": reason, "retrying": true }),
@@ -147,7 +162,9 @@ struct Session {
     assembler: Option<Assembler>,
     k: usize,
     rank: usize,
-    /// What the code numbers say, kept after the assembler is dropped.
+    /// Different code numbers caught, as of the last frame.
+    caught: usize,
+    /// What the code numbers said when the assembler was dropped.
     tally: Tally,
     trouble: Option<Trouble>,
     /// The chunks held and solved, as the page gets them, worked out when the rows change.
@@ -155,7 +172,7 @@ struct Session {
     /// Order of arrival of the last frame that was not of a finished flash, to tell which
     /// session is the current one.
     touched: u64,
-    /// Stored, or failed for good.
+    /// Stored, stored before, or failed for good.
     outcome: Option<Outcome>,
     /// A payload that opened but that the library could not take yet, and when it was tried.
     unstored: Option<(Vec<u8>, Instant)>,
@@ -165,11 +182,52 @@ struct Session {
     misnamed: usize,
 }
 
+impl Session {
+    fn reading(shape: Shape, touched: u64) -> Session {
+        let assembler = Assembler::new(shape);
+        Session {
+            k: assembler.k(),
+            rank: 0,
+            caught: 0,
+            tally: Tally::default(),
+            trouble: None,
+            tiles: Tiles::of(assembler.decoder()),
+            assembler: Some(assembler),
+            touched,
+            outcome: None,
+            unstored: None,
+            unopened: None,
+            misnamed: 0,
+        }
+    }
+
+    fn tally(&self) -> Tally {
+        self.assembler.as_ref().map_or_else(|| self.tally.clone(), Assembler::tally)
+    }
+
+    /// Done with: the outcome is kept, the assembler's memory given back.
+    fn close(&mut self, outcome: Outcome) {
+        if let Some(assembler) = self.assembler.take() {
+            self.tally = assembler.tally();
+        }
+        self.outcome = Some(outcome);
+        self.unstored = None;
+        self.trouble = None;
+        self.rank = self.k;
+        self.tiles = Tiles::all(self.k);
+    }
+}
+
 /// True when one header is a misreading of the other: the same chunk size, and the session,
 /// the payload length and the chunk count differ by two bits at most in all. Two flashes made
 /// apart have random sessions, about 16 bits apart.
 fn near(a: &Shape, b: &Shape) -> bool {
     a.chunk == b.chunk && (a.session ^ b.session).count_ones() + (a.total_len ^ b.total_len).count_ones() + (a.k ^ b.k).count_ones() <= 2
+}
+
+/// The header of a stored flash.
+fn shape_of(flash: &StoredFlash) -> Shape {
+    Shape { session: flash.session, total_len: flash.total_len, k: flash.k, chunk: flash.chunk }
 }
 
 /// Which chunks are known, as hexadecimal bit sets: chunk `n` is bit `n % 8` (the lowest
@@ -232,6 +290,9 @@ pub enum Step {
     Progress { useful: bool },
     /// A frame of a flash that is already finished: the phone is still showing it.
     AlreadyDone,
+    /// From [`Receiver::take`]: the rows of this flash are complete, and the caller rebuilds
+    /// the payload with [`Receiver::solve`] (which takes a while for a large flash).
+    Ready { shape: Shape },
     /// The flash is complete (or a payload that could not be stored is due another try).
     /// The payload is ready for [`import`], and the caller reports back with
     /// [`Receiver::finish`].
@@ -244,8 +305,11 @@ pub enum Step {
 #[derive(Default)]
 pub struct Receiver {
     sessions: HashMap<Shape, Session>,
-    /// Flashes stored or failed for good, newest last, including ones whose session was dropped.
-    finished: VecDeque<Shape>,
+    /// Flashes this library stored, by header: the ones it had when the receiver started and
+    /// every one stored since. Kept when the page starts over.
+    stored: HashMap<Shape, StoredFlash>,
+    /// Flashes that failed for good since the page last started over, newest last.
+    failed: VecDeque<Shape>,
     clock: u64,
     /// Pictures looked at, and how many of them had a code in them.
     pub pictures: u64,
@@ -257,15 +321,19 @@ pub struct Receiver {
     pub frames_useful: u64,
     /// What the most recent picture held.
     pub last_picture: Option<PictureRead>,
-    /// When a picture last held a code of any kind.
-    pub last_code_at: Option<Instant>,
     /// How long to wait before storing an opened flash again ([`STORE_RETRY`]; tests shorten it).
     store_retry: Option<Duration>,
 }
 
 impl Receiver {
+    #[cfg(test)]
     pub fn new() -> Receiver {
         Receiver::default()
+    }
+
+    /// A receiver that knows the flashes a library has stored ([`Db::stored_flashes`]).
+    pub fn with_stored(stored: impl IntoIterator<Item = StoredFlash>) -> Receiver {
+        Receiver { stored: stored.into_iter().map(|flash| (shape_of(&flash), flash)).collect(), ..Receiver::default() }
     }
 
     /// Makes room for one more flash. A flash that has caught one code at most goes first
@@ -275,7 +343,7 @@ impl Receiver {
         if self.sessions.len() < MAX_SESSIONS {
             return;
         }
-        let barely = |s: &Session| s.outcome.is_none() && s.tally.caught <= 1;
+        let barely = |s: &Session| s.outcome.is_none() && s.caught <= 1;
         let victim = self
             .sessions
             .iter()
@@ -289,17 +357,36 @@ impl Receiver {
         }
     }
 
-    fn remember_finished(&mut self, shape: Shape) {
-        if !self.finished.contains(&shape) {
-            if self.finished.len() == FINISHED_REMEMBERED {
-                self.finished.pop_front();
+    fn remember_failed(&mut self, shape: Shape) {
+        if !self.failed.contains(&shape) {
+            if self.failed.len() == FAILED_REMEMBERED {
+                self.failed.pop_front();
             }
-            self.finished.push_back(shape);
+            self.failed.push_back(shape);
         }
     }
 
-    /// Takes the bytes of one QR code.
+    /// True when some flash is being read: it has caught a few codes and is not finished.
+    fn reading_one(&self) -> bool {
+        self.sessions.values().any(|s| s.outcome.is_none() && s.caught >= 2)
+    }
+
+    /// Takes the bytes of one QR code. When they complete a flash, the payload is rebuilt
+    /// before this returns: see [`Receiver::take`] for doing that separately.
+    #[cfg(test)]
     pub fn add(&mut self, raw: &[u8]) -> Step {
+        match self.take(raw) {
+            Step::Ready { shape } => match self.solve(shape, &|| false) {
+                Some(payload) => Step::Complete { shape, payload },
+                None => Step::Progress { useful: true },
+            },
+            step => step,
+        }
+    }
+
+    /// Takes the bytes of one QR code. A frame that completes the rows of a flash gives
+    /// [`Step::Ready`]: the payload is then rebuilt with [`Receiver::solve`].
+    pub fn take(&mut self, raw: &[u8]) -> Step {
         let frame = match fountain::parse(raw) {
             Ok(frame) => frame,
             Err(_) => return Step::Ignored,
@@ -307,7 +394,18 @@ impl Receiver {
         self.clock += 1;
         let clock = self.clock;
         if !self.sessions.contains_key(&frame.shape) {
-            if self.finished.contains(&frame.shape) {
+            if let Some(earlier) = self.stored.get(&frame.shape).cloned() {
+                // Stored before, perhaps before the page started over or zone restarted: say
+                // so, without taking the page from a flash being read.
+                self.frames_read += 1;
+                self.make_room();
+                let touched = if self.reading_one() { 0 } else { clock };
+                let mut session = Session::reading(frame.shape, touched);
+                session.close(Outcome::AlreadyStored(Box::new(earlier)));
+                self.sessions.insert(frame.shape, session);
+                return Step::AlreadyDone;
+            }
+            if self.failed.contains(&frame.shape) {
                 self.frames_read += 1;
                 return Step::AlreadyDone;
             }
@@ -315,34 +413,20 @@ impl Receiver {
             let parent = self
                 .sessions
                 .iter_mut()
-                .filter(|(shape, s)| near(shape, &frame.shape) && (s.outcome.is_some() || s.tally.caught >= 2))
-                .max_by_key(|(_, s)| s.tally.caught)
+                .filter(|(shape, s)| near(shape, &frame.shape) && (s.outcome.is_some() || s.caught >= 2))
+                .max_by_key(|(_, s)| s.caught)
                 .map(|(_, s)| s);
             if let Some(parent) = parent {
                 self.frames_read += 1;
                 parent.misnamed += 1;
                 return if parent.outcome.is_some() { Step::AlreadyDone } else { Step::Progress { useful: false } };
             }
-            if self.finished.iter().any(|shape| near(shape, &frame.shape)) {
+            if self.failed.iter().chain(self.stored.keys()).any(|shape| near(shape, &frame.shape)) {
                 self.frames_read += 1;
                 return Step::AlreadyDone;
             }
             self.make_room();
-            let assembler = Assembler::new(frame.shape);
-            let session = Session {
-                k: assembler.k(),
-                rank: 0,
-                tally: Tally::default(),
-                trouble: None,
-                tiles: Tiles::of(assembler.decoder()),
-                assembler: Some(assembler),
-                touched: clock,
-                outcome: None,
-                unstored: None,
-                unopened: None,
-                misnamed: 0,
-            };
-            self.sessions.insert(frame.shape, session);
+            self.sessions.insert(frame.shape, Session::reading(frame.shape, clock));
         }
         self.frames_read += 1;
         let session = self.sessions.get_mut(&frame.shape).expect("just inserted");
@@ -361,36 +445,50 @@ impl Receiver {
         let Some(assembler) = session.assembler.as_mut() else {
             return Step::AlreadyDone;
         };
-        let set_aside = session.tally.set_aside;
+        let set_aside = assembler.set_aside_count();
         let took = assembler.take(frame.index, frame.body);
         let useful = took == Took::New { useful: true };
         if useful {
             self.frames_useful += 1;
         }
-        session.tally = assembler.tally();
+        session.caught = assembler.caught_count();
         session.trouble = assembler.trouble();
         // Rows come with useful frames, and change when a misread one is set aside.
-        if useful || assembler.rank() != session.rank || session.tally.set_aside != set_aside {
+        if useful || assembler.rank() != session.rank || assembler.set_aside_count() != set_aside {
             session.tiles = Tiles::of(assembler.decoder());
         }
         session.rank = assembler.rank();
-        if let Some(payload) = assembler.take_payload() {
-            return Step::Complete { shape: frame.shape, payload };
+        if assembler.is_ready() {
+            return Step::Ready { shape: frame.shape };
         }
         if assembler.confirmed_unopenable() {
             let reason = session.unopened.take().unwrap_or_else(not_paired_words);
-            session.outcome = Some(Outcome::Failed(reason.clone()));
-            session.assembler = None;
-            session.trouble = None;
-            self.remember_finished(frame.shape);
+            session.close(Outcome::Failed(reason.clone()));
+            self.remember_failed(frame.shape);
             return Step::GaveUp { reason, bytes: frame.shape.total_len as usize };
         }
         Step::Progress { useful }
     }
 
+    /// Rebuilds the payload of a flash whose rows are complete ([`Step::Ready`]), for
+    /// [`import`]. None when `stop` said to give up first (the flash then stays ready), or
+    /// when the flash is not waiting for this.
+    pub fn solve(&mut self, shape: Shape, stop: &dyn Fn() -> bool) -> Option<Vec<u8>> {
+        self.sessions.get_mut(&shape)?.assembler.as_mut()?.solve_unless(stop)
+    }
+
     /// Records what became of a complete payload: final, or to be checked, or to be stored
     /// again shortly.
     pub fn finish(&mut self, shape: Shape, payload: &[u8], outcome: Outcome) {
+        match &outcome {
+            Outcome::Stored(stored) => {
+                self.stored.insert(shape, stored_flash(&shape, stored, crate::paths::now_unix()));
+            }
+            Outcome::AlreadyStored(earlier) => {
+                self.stored.insert(shape, (**earlier).clone());
+            }
+            _ => {}
+        }
         let Some(session) = self.sessions.get_mut(&shape) else { return };
         match outcome {
             Outcome::NotOpened(reason) => {
@@ -402,26 +500,18 @@ impl Receiver {
             }
             Outcome::NotStored(_) => session.unstored = Some((payload.to_vec(), Instant::now())),
             outcome => {
-                session.outcome = Some(outcome);
-                session.assembler = None;
-                session.unstored = None;
-                session.trouble = None;
-                session.rank = session.k;
-                session.tiles = Tiles::all(session.k);
-                self.remember_finished(shape);
+                let failed = matches!(outcome, Outcome::Failed(_));
+                session.close(outcome);
+                if failed {
+                    self.remember_failed(shape);
+                }
             }
         }
     }
 
-    /// Whether a code was in view in the last few seconds: then a picture that seems to hold
-    /// none is worth a slower, second look.
-    pub fn codes_in_view(&self) -> bool {
-        self.last_code_at.is_some_and(|at| at.elapsed() < Duration::from_secs(3))
-    }
-
-    /// Forgets everything, for the page's "start over".
+    /// Forgets everything but the flashes this library stored, for the page's "start over".
     pub fn reset(&mut self) {
-        *self = Receiver::default();
+        *self = Receiver { stored: std::mem::take(&mut self.stored), store_retry: self.store_retry, ..Receiver::default() };
     }
 
     /// The flash the page shows: the most recent one that is finished or has more than one
@@ -430,7 +520,7 @@ impl Receiver {
     fn current(&self) -> Option<(&Shape, &Session)> {
         self.sessions
             .iter()
-            .filter(|(_, s)| s.outcome.is_some() || s.tally.caught >= 2 || s.k == 1)
+            .filter(|(_, s)| s.outcome.is_some() || s.caught >= 2 || s.k == 1)
             .max_by_key(|(_, s)| s.touched)
             .or_else(|| self.sessions.iter().max_by_key(|(_, s)| s.touched))
     }
@@ -458,12 +548,12 @@ impl Receiver {
         // Storing: an opened flash waiting for the library, or a complete one being opened.
         let storing = session.unstored.is_some() || (session.rank == session.k && session.trouble.is_none());
         let state = match (&session.outcome, storing) {
-            (Some(Outcome::Stored(_)), _) => "done",
+            (Some(Outcome::Stored(_) | Outcome::AlreadyStored(_)), _) => "done",
             (Some(_), _) => "failed",
             (None, true) => "storing",
             (None, false) => "receiving",
         };
-        let tally = &session.tally;
+        let tally = session.tally();
         json!({
             "state": state,
             "session": format!("{:08x}", shape.session),
@@ -480,7 +570,7 @@ impl Receiver {
                 "missed": tally.missed,
                 "missed_ranges": tally.missed_ranges.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
                 "repeats": tally.repeats,
-                "set_aside": tally.set_aside + session.misnamed,
+                "set_aside": tally.set_aside + tally.out_of_range + session.misnamed,
             },
             "trouble": session.trouble.map(Trouble::as_str),
             "result": session.outcome.as_ref().map(Outcome::to_json),
@@ -491,11 +581,28 @@ impl Receiver {
 }
 
 fn not_paired_words() -> String {
-    "Every code agrees, but the flash is not from a phone paired with this computer: it is sealed with a key this computer does not have. Choose Pair a phone in your library (or run `zone pair`), scan the code with the phone, then flash again.".to_string()
+    "Every code agrees, but the flash is not from a phone paired with this computer: it is sealed with a key this computer does not have. Choose Pair a phone in your library, scan the code with the phone, then flash again.".to_string()
+}
+
+/// What the library keeps of a stored flash.
+fn stored_flash(shape: &Shape, stored: &Stored, now: f64) -> StoredFlash {
+    StoredFlash {
+        session: shape.session,
+        total_len: shape.total_len,
+        k: shape.k,
+        chunk: shape.chunk,
+        digest: stored.check.digest.clone(),
+        device_id: stored.device_id.clone(),
+        phone_name: stored.phone_name.clone(),
+        items: stored.items,
+        stored_at: now,
+    }
 }
 
 /// Why a complete payload was not stored.
 enum Problem {
+    /// This library stored this flash before.
+    Repeat(StoredFlash),
     /// No key opened it.
     NotOpened(String),
     /// The library could not take it.
@@ -505,13 +612,21 @@ enum Problem {
 }
 
 /// Opens a complete payload with whichever known key fits, merges its items and reads them
-/// back.
+/// back, and records the flash as stored, all in one transaction: when anything fails, the
+/// library is as it was, pairing included, so trying again later is the same as trying for
+/// the first time. `shape` is the flash's header; a flash with a header this library has
+/// stored before is not stored again.
 ///
 /// The keys tried are each paired phone's, then each pairing offer's that is still valid. An
 /// offer's key pairs the phone and uses the offer up.
-pub fn import(db: &mut Db, sealed: &[u8], now: f64) -> Outcome {
-    match import_inner(db, sealed, now) {
+pub fn import(db: &mut Db, shape: &Shape, sealed: &[u8], now: f64) -> Outcome {
+    let result = match db.atomically(|db| import_inner(db, shape, sealed, now)) {
+        Ok(result) => result,
+        Err(error) => Err(Problem::Storage(error)),
+    };
+    match result {
         Ok(stored) => Outcome::Stored(Box::new(stored)),
+        Err(Problem::Repeat(earlier)) => Outcome::AlreadyStored(Box::new(earlier)),
         Err(Problem::NotOpened(reason)) => Outcome::NotOpened(reason),
         Err(Problem::Storage(error)) => Outcome::NotStored(format!("The library could not take the flash just now ({error:#}). Trying again.")),
         Err(Problem::Final(error)) => Outcome::Failed(format!("{error:#}")),
@@ -526,11 +641,14 @@ pub fn open_with_key(key: &[u8; 32], sealed: &[u8]) -> Result<seal::Flash> {
     seal::parse(&seal::inflate(&packed)?)
 }
 
-fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored, Problem> {
+fn import_inner(db: &mut Db, shape: &Shape, sealed: &[u8], now: f64) -> Result<Stored, Problem> {
+    if let Some(earlier) = db.stored_flash(shape.session, shape.total_len, shape.k, shape.chunk).map_err(Problem::Storage)? {
+        return Err(Problem::Repeat(earlier));
+    }
     let keys = db.flash_keys(now).map_err(Problem::Storage)?;
     if keys.is_empty() {
         return Err(Problem::Final(anyhow::anyhow!(
-            "No phone is paired with this computer, so the flash cannot be opened. Choose Pair a phone in your library (or run `zone pair`), scan the code with the phone, then flash again."
+            "No phone is paired with this computer, so the flash cannot be opened. Choose Pair a phone in your library, scan the code with the phone, then flash again."
         )));
     }
     let Some((packed, owner)) = keys.iter().find_map(|k| seal::unseal(&k.key, sealed).map(|packed| (packed, &k.owner))) else {
@@ -544,7 +662,7 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored, Problem>
         }
         FlashKeyOwner::Offer(hash) => match db.pair_by_flash(hash, &flash.phone, now).map_err(Problem::Storage)? {
             Some(device) => (device, true, Some(crate::db::offer_id_of_hash(hash))),
-            None => return Err(Problem::Final(anyhow::anyhow!("The pairing code this flash was made with ran out. Choose Pair a phone in your library (or run `zone pair`) for a new one, scan it with the phone, then flash again."))),
+            None => return Err(Problem::Final(anyhow::anyhow!("The pairing code this flash was made with ran out. Choose Pair a phone in your library for a new one, scan it with the phone, then flash again."))),
         },
     };
     let delivery = Delivery { carrier: Carrier::Flash, device_id: flash.phone.id.as_deref(), received_at: now };
@@ -576,6 +694,7 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored, Problem>
         changed += applied.changed();
     }
     db.record_delivery(&device, changed, Some("flash"), now).map_err(Problem::Storage)?;
+    db.record_flash(&stored_flash(shape, &stored, now)).map_err(Problem::Storage)?;
     stored.check.read_back(&flash.items, |id| db.get(id).ok().flatten());
     Ok(stored)
 }
@@ -595,6 +714,13 @@ mod tests {
 
     fn phone(id: &str) -> PhoneInfo {
         PhoneInfo { id: Some(id.to_string()), name: Some("Test phone".to_string()), app: Some("1.0.3 (1)".to_string()) }
+    }
+
+    /// Imports a payload as a flash of its own: a header made up from it, so every payload
+    /// is a new flash.
+    fn import_once(db: &mut Db, payload: &[u8], now: f64) -> Outcome {
+        let shape = Shape { session: fountain::fingerprint(payload) as u32, total_len: payload.len() as u32, k: payload.len().div_ceil(300) as u16, chunk: 300 };
+        import(db, &shape, payload, now)
     }
 
     fn sealed(secret: &str, id: &str, items: &[Value]) -> Vec<u8> {
@@ -623,10 +749,10 @@ mod tests {
         let mut db = Db::open_in_memory().unwrap();
         // Nothing paired and nothing offered: the flash cannot be opened.
         let payload = sealed(SECRET, "PHONE-A", &synthetic_items(0, 40));
-        assert!(matches!(import(&mut db, &payload, 100.0), Outcome::Failed(why) if why.contains("zone pair")));
+        assert!(matches!(import_once(&mut db, &payload, 100.0), Outcome::Failed(why) if why.contains("Pair a phone") && !why.contains("zone pair")));
 
         db.create_offer(SECRET, 100.0, 600.0).unwrap();
-        let Outcome::Stored(first) = import(&mut db, &payload, 110.0) else { panic!("not stored") };
+        let Outcome::Stored(first) = import_once(&mut db, &payload, 110.0) else { panic!("not stored") };
         assert_eq!((first.items, first.inserted, first.paired, first.rejected), (40, 40, true, 0));
         assert_eq!(db.total_items().unwrap(), 40);
         assert_eq!(db.open_offers(110.0).unwrap(), 0);
@@ -638,7 +764,7 @@ mod tests {
         assert_eq!(devices[0].endpoint_id, "flash:PHONE-A");
         assert_eq!((devices[0].items_received, devices[0].last_path.as_deref()), (40, Some("flash")));
         let more = sealed(SECRET, "PHONE-A", &synthetic_items(30, 30));
-        let Outcome::Stored(second) = import(&mut db, &more, 5000.0) else { panic!("not stored") };
+        let Outcome::Stored(second) = import_once(&mut db, &more, 5000.0) else { panic!("not stored") };
         assert_eq!((second.inserted, second.unchanged, second.paired), (20, 10, false));
         assert_eq!(db.devices().unwrap()[0].items_received, 60);
         assert_eq!(db.get("FA4E0000-0000-4000-8000-000000000000").unwrap().unwrap().carrier, "flash");
@@ -646,7 +772,7 @@ mod tests {
         // A flash sealed with any other secret is not opened (the receiver then checks whether
         // a code was misread before it says so).
         let stranger = sealed(&"cd".repeat(32), "PHONE-B", &synthetic_items(500, 5));
-        assert!(matches!(import(&mut db, &stranger, 5001.0), Outcome::NotOpened(why) if why.contains("not from a phone paired")));
+        assert!(matches!(import_once(&mut db, &stranger, 5001.0), Outcome::NotOpened(why) if why.contains("not from a phone paired")));
         assert_eq!(db.total_items().unwrap(), 60);
     }
 
@@ -655,7 +781,7 @@ mod tests {
         let mut db = Db::open_in_memory().unwrap();
         db.create_offer(SECRET, 100.0, 600.0).unwrap();
         let payload = sealed(SECRET, "PHONE-A", &synthetic_items(0, 3));
-        assert!(matches!(import(&mut db, &payload, 701.0), Outcome::Failed(_)));
+        assert!(matches!(import_once(&mut db, &payload, 701.0), Outcome::Failed(_)));
         assert_eq!((db.total_items().unwrap(), db.devices().unwrap().len()), (0, 0));
     }
 
@@ -666,7 +792,7 @@ mod tests {
         db.create_offer(SECRET, 100.0, 600.0).unwrap();
         assert_eq!(db.admit("endpoint-a", Some(SECRET), &phone("PHONE-A"), 101.0).unwrap(), crate::db::Admission::Paired);
         let payload = sealed(SECRET, "PHONE-A", &synthetic_items(0, 12));
-        let Outcome::Stored(stored) = import(&mut db, &payload, 200.0) else { panic!("not stored") };
+        let Outcome::Stored(stored) = import_once(&mut db, &payload, 200.0) else { panic!("not stored") };
         assert_eq!((stored.inserted, stored.paired), (12, false));
         assert_eq!(db.device("endpoint-a").unwrap().unwrap().items_received, 12);
 
@@ -674,7 +800,7 @@ mod tests {
         let other = "ef".repeat(32);
         db.create_offer(&other, 300.0, 600.0).unwrap();
         let payload = sealed(&other, "PHONE-B", &synthetic_items(100, 7));
-        let Outcome::Stored(stored) = import(&mut db, &payload, 310.0) else { panic!("not stored") };
+        let Outcome::Stored(stored) = import_once(&mut db, &payload, 310.0) else { panic!("not stored") };
         assert!(stored.paired);
         // Somebody else with the secret but another install id is refused.
         assert_eq!(db.admit("endpoint-x", Some(&other), &phone("PHONE-X"), 320.0).unwrap(), crate::db::Admission::BadSecret);
@@ -687,7 +813,7 @@ mod tests {
         assert_eq!(db.device("endpoint-b").unwrap().unwrap().items_received, 7);
         assert_eq!(db.admit("endpoint-b", None, &phone("PHONE-B"), 9001.0).unwrap(), crate::db::Admission::Known);
         let again = sealed(&other, "PHONE-B", &synthetic_items(100, 9));
-        assert!(matches!(import(&mut db, &again, 9002.0), Outcome::Stored(s) if s.inserted == 2 && !s.paired));
+        assert!(matches!(import_once(&mut db, &again, 9002.0), Outcome::Stored(s) if s.inserted == 2 && !s.paired));
     }
 
     #[test]
@@ -695,17 +821,17 @@ mod tests {
         let mut db = Db::open_in_memory().unwrap();
         db.create_offer(SECRET, 100.0, 600.0).unwrap();
         let mut items = synthetic_items(0, 3);
-        assert!(matches!(import(&mut db, &sealed(SECRET, "P", &items), 110.0), Outcome::Stored(_)));
+        assert!(matches!(import_once(&mut db, &sealed(SECRET, "P", &items), 110.0), Outcome::Stored(_)));
         // An older time still replaces, a deletion deletes, and a live item restores.
         items[0]["text"] = json!("changed on the phone");
         items[0]["updated_at"] = json!(5.0);
         let id1 = items[1]["id"].as_str().unwrap().to_string();
         items[1] = json!({ "id": id1, "kind": "dictation", "deleted": true, "updated_at": 6.0 });
-        let Outcome::Stored(stored) = import(&mut db, &sealed(SECRET, "P", &items), 120.0) else { panic!("not stored") };
+        let Outcome::Stored(stored) = import_once(&mut db, &sealed(SECRET, "P", &items), 120.0) else { panic!("not stored") };
         assert_eq!((stored.replaced, stored.unchanged, stored.deletions), (2, 1, 1));
         assert!(db.get(&id1).unwrap().unwrap().deleted);
         let restored = synthetic_items(1, 1);
-        assert!(matches!(import(&mut db, &sealed(SECRET, "P", &restored), 130.0), Outcome::Stored(s) if s.replaced == 1));
+        assert!(matches!(import_once(&mut db, &sealed(SECRET, "P", &restored), 130.0), Outcome::Stored(s) if s.replaced == 1));
         assert!(!db.get(&id1).unwrap().unwrap().deleted);
     }
 
@@ -743,7 +869,7 @@ mod tests {
         let solved = status["blocks"]["solved"].as_str().unwrap();
         let ones: u32 = (0..solved.len()).step_by(2).map(|i| u8::from_str_radix(&solved[i..i + 2], 16).unwrap().count_ones()).sum();
         assert_eq!(ones as usize, k);
-        let outcome = import(&mut db, &rebuilt, 110.0);
+        let outcome = import(&mut db, &shape, &rebuilt, 110.0);
         receiver.finish(shape, &rebuilt, outcome);
         let status = receiver.status();
         assert_eq!((status["state"].as_str(), status["result"]["new"].as_u64(), status["result"]["paired"].as_bool()), (Some("done"), Some(200), Some(true)));
@@ -754,14 +880,14 @@ mod tests {
         // A second flash (a new session) takes over the status.
         let next = sealed(SECRET, "PHONE-A", &synthetic_items(200, 20));
         let (shape, rebuilt) = flash_through(&mut receiver, &next, 8);
-        receiver.finish(shape, &rebuilt, import(&mut db, &rebuilt, 120.0));
+        receiver.finish(shape, &rebuilt, import(&mut db, &shape, &rebuilt, 120.0));
         assert_eq!(receiver.status()["result"]["new"], 20);
         assert_eq!(db.total_items().unwrap(), 220);
 
         // A flash that cannot be opened is checked first: it might have been a misread code.
         let stranger = sealed(&"cd".repeat(32), "PHONE-B", &synthetic_items(0, 2));
         let (shape, rebuilt) = flash_through(&mut receiver, &stranger, 9);
-        let outcome = import(&mut db, &rebuilt, 130.0);
+        let outcome = import(&mut db, &shape, &rebuilt, 130.0);
         assert!(matches!(outcome, Outcome::NotOpened(_)));
         receiver.finish(shape, &rebuilt, outcome);
         let status = receiver.status();
@@ -780,7 +906,7 @@ mod tests {
         assert!(reason.contains("not from a phone paired with this computer"));
         let status = receiver.status();
         assert_eq!(status["state"], "failed");
-        assert!(status["result"]["error"].as_str().unwrap().contains("zone pair"));
+        assert!(status["result"]["error"].as_str().unwrap().contains("Choose Pair a phone in your library"));
         assert!(matches!(receiver.add(&encoder.frame(2000)), Step::AlreadyDone));
         // No text of any item is in a status.
         assert!(!receiver.status().to_string().contains("amber"));
@@ -810,7 +936,7 @@ mod tests {
         let mut outcomes = Vec::new();
         for frame in frames {
             if let Step::Complete { shape, payload } = receiver.add(&frame) {
-                let outcome = import(db, &payload, now);
+                let outcome = import(db, &shape, &payload, now);
                 outcomes.push(outcome.clone());
                 receiver.finish(shape, &payload, outcome);
             }
@@ -912,9 +1038,60 @@ mod tests {
         // The next frame brings the payload back to be stored.
         let Step::Complete { shape, payload: again } = receiver.add(&encoder.frame(index + 1)) else { panic!("not retried") };
         assert_eq!(again, rebuilt);
-        receiver.finish(shape, &again, import(&mut db, &again, 110.0));
+        receiver.finish(shape, &again, import(&mut db, &shape, &again, 110.0));
         assert_eq!(receiver.status()["state"], "done");
         assert_eq!(db.total_items().unwrap(), 30);
+    }
+
+    /// The library fails part way through a flash (here a trigger refuses one item of its
+    /// second batch of 500). Nothing of it is kept and its pairing code is not used up, so the
+    /// next try is the same as the first: it pairs the phone, says so once, and counts every
+    /// item as new. zone 0.1.0 kept the first batch and the pairing, then on the next try opened
+    /// the flash with the phone's new key, never said it paired, and counted the first 500 as
+    /// already here.
+    #[test]
+    fn a_flash_the_library_failed_part_way_through_is_stored_whole_on_the_next_try() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.create_offer(SECRET, 100.0, 600.0).unwrap();
+        let items = synthetic_items(0, 1200);
+        let refused = items[700]["id"].as_str().unwrap().to_string();
+        db.execute_for_tests(&format!(
+            "CREATE TEMP TRIGGER refuse BEFORE INSERT ON items WHEN new.id = '{refused}' BEGIN SELECT RAISE(ABORT, 'database is locked'); END;"
+        ))
+        .unwrap();
+        let payload = sealed_with_check(SECRET, "PHONE-P", &items);
+        let encoder = Encoder::new(0x8000_00ad, &payload, 900).unwrap();
+        let mut receiver = Receiver { store_retry: Some(Duration::ZERO), ..Receiver::new() };
+        let mut index = 0u32;
+        let mut tries = Vec::new();
+        while tries.len() < 2 {
+            if let Step::Complete { shape, payload } = receiver.add(&encoder.frame(index)) {
+                let outcome = import(&mut db, &shape, &payload, 110.0);
+                record_events(&db, &outcome, payload.len(), false);
+                tries.push(outcome.clone());
+                if tries.len() == 1 {
+                    assert!(matches!(&outcome, Outcome::NotStored(why) if why.contains("database is locked")), "{outcome:?}");
+                    // Nothing of the first try is kept: no items, no pairing, the code unused.
+                    assert_eq!((db.total_items().unwrap(), db.devices().unwrap().len(), db.open_offers(110.0).unwrap()), (0, 0, 1));
+                    assert!(db.stored_flashes().unwrap().is_empty());
+                    db.execute_for_tests("DROP TRIGGER refuse;").unwrap();
+                }
+                receiver.finish(shape, &payload, outcome);
+                if tries.len() == 1 {
+                    assert_eq!(receiver.status()["state"], "storing");
+                }
+            }
+            index += 1;
+            assert!(index < 1000, "{}", receiver.status());
+        }
+        let Outcome::Stored(stored) = &tries[1] else { panic!("{:?}", tries[1]) };
+        assert_eq!((stored.inserted, stored.unchanged, stored.paired, stored.check.all_checked()), (1200, 0, true, true), "{stored:?}");
+        let status = receiver.status();
+        assert_eq!((status["state"].as_str(), status["result"]["paired"].as_bool(), status["result"]["new"].as_u64()), (Some("done"), Some(true), Some(1200)));
+        let events = db.events(None, None, 100).unwrap();
+        let kinds: Vec<&str> = events.iter().map(|e| e.event.as_str()).filter(|e| *e == "paired" || e.starts_with("flash")).collect();
+        assert_eq!(kinds, vec!["paired", "flash_received"]);
+        assert_eq!((db.total_items().unwrap(), db.open_offers(110.0).unwrap(), db.devices().unwrap()[0].items_received), (1200, 0, 1200));
     }
 
     /// A finished flash still on a phone's screen, and a stray code naming a flash that does

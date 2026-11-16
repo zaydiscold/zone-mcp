@@ -476,6 +476,7 @@ impl Assembler {
     }
 
     /// [`Assembler::solve_unless`] without a way to stop.
+    #[cfg(test)]
     pub fn take_payload(&mut self) -> Option<Vec<u8>> {
         self.solve_unless(&|| false)
     }

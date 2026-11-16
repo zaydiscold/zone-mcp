@@ -616,9 +616,17 @@ fn flash_pictures_through_the_command_line_and_the_daemon() {
     assert!(log.contains("flash: Flash phone sent 130 items"), "{log}");
     assert!(!log.contains("amber") && !log.contains("harbor"));
 
-    // Later flashes open with the phone's kept key: here straight from the folder, with
+    // The same flash again (its frames are still in the folder): this library stored it, so
+    // it is not stored again, which would put back older versions of anything changed since.
+    let same = sandbox.json(&["dev", "flash-decode", frames_text, "--import"]);
+    assert_eq!(same["imported"]["already_stored"], true, "{same}");
+    // A later flash opens with the phone's kept key: here straight from its folder, with
     // --import and no secret. Everything is already there.
-    let again = sandbox.json(&["dev", "flash-decode", frames_text, "--import"]);
+    let later = sandbox.home.join("later");
+    sandbox.ok(&[
+        "dev", "flash-encode", "--out", later.to_str().unwrap(), "--secret", &secret, "--count", "130", "--scale", "3", "--phone-id", "PHONE-FLASH", "--name", "Flash phone",
+    ]);
+    let again = sandbox.json(&["dev", "flash-decode", later.to_str().unwrap(), "--import"]);
     assert_eq!(again["imported"], json!({ "new": 0, "changed": 0, "unchanged": 130, "paired": false }));
     assert_eq!(total_items(&sandbox), 130);
 
