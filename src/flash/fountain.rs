@@ -151,15 +151,15 @@ pub fn chunk_set(session: u32, index: u32, k: usize) -> Vec<usize> {
     (0..k).filter(|n| mask[n / 64] >> (n % 64) & 1 == 1).collect()
 }
 
-/// `target ^= source`, eight bytes at a time. This is where decoding spends its time.
-fn xor_into(target: &mut [u8], source: &[u8]) {
-    let mut wide = target.chunks_exact_mut(8).zip(source.chunks_exact(8));
-    for (t, s) in &mut wide {
-        let mixed = u64::from_ne_bytes((&*t).try_into().expect("eight bytes")) ^ u64::from_ne_bytes(s.try_into().expect("eight bytes"));
-        t.copy_from_slice(&mixed.to_ne_bytes());
+/// `target ^= source`, sixteen bytes at a time. This is where decoding spends its time.
+pub(super) fn xor_into(target: &mut [u8], source: &[u8]) {
+    let n = target.len().min(source.len());
+    let (wide, rest) = target[..n].as_chunks_mut::<16>();
+    let (from, from_rest) = source[..n].as_chunks::<16>();
+    for (t, s) in wide.iter_mut().zip(from) {
+        *t = (u128::from_ne_bytes(*t) ^ u128::from_ne_bytes(*s)).to_ne_bytes();
     }
-    let done = target.len().min(source.len()) / 8 * 8;
-    for (t, s) in target[done..].iter_mut().zip(&source[done..]) {
+    for (t, s) in rest.iter_mut().zip(from_rest) {
         *t ^= s;
     }
 }
@@ -241,9 +241,12 @@ pub enum Added {
 /// misread: this frame, or one of the frames that the rows it was checked against came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reduced {
-    /// A new row. `slot` numbers the rows in the order they were made, from 0.
+    /// A new row. `slot` numbers the frames that made rows, in the order they did, from 0. A
+    /// slot is never used twice, even after its frame is taken out ([`Decoder::remove`]).
     Useful { slot: usize },
-    /// A check that came out even. `support` is which rows (by slot) it was checked against.
+    /// A check that came out even. `support` is which frames (by slot, bit `s` of word
+    /// `s / 64`) the rows it was checked against add up to: the check plus those frames is
+    /// zero. Empty unless the decoder tracks.
     Agreed { support: Vec<u64> },
     /// A check that did not. `residual` is a fingerprint of the difference, which is the sum
     /// of the errors of the misread readings involved: checks that name the same misread
@@ -261,49 +264,148 @@ pub(super) fn fingerprint(bytes: &[u8]) -> u64 {
     hash ^ (hash >> 29)
 }
 
-struct Row {
-    /// The chunks this row mentions. The highest one is the row's pivot. Words above the
-    /// pivot's are not stored.
-    mask: Vec<u64>,
-    body: Vec<u8>,
-    /// Which frames this row is the sum of, by slot (bit `s` is the frame that made row `s`).
-    /// A row is only ever the sum of its own frame and rows made before it, so no bit above
-    /// its own slot is set and no word above it is stored. Empty unless the decoder tracks.
-    made_of: Vec<u64>,
+/// A set of bits kept as the words from `low` up, so that a row of one chunk is one word
+/// wherever that chunk is. Word `w` of the whole set is `words[w - low]`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Bits {
+    low: usize,
+    words: Vec<u64>,
 }
 
+impl Bits {
+    /// The set in `all` (word `w` at `all[w]`), without the zero words at either end.
+    fn of(all: &[u64]) -> Bits {
+        let Some(first) = all.iter().position(|w| *w != 0) else { return Bits::default() };
+        let last = all.iter().rposition(|w| *w != 0).expect("a nonzero word");
+        Bits { low: first, words: all[first..=last].to_vec() }
+    }
+
+    fn word(&self, w: usize) -> u64 {
+        if w < self.low { 0 } else { self.words.get(w - self.low).copied().unwrap_or(0) }
+    }
+
+    fn has(&self, n: usize) -> bool {
+        self.word(n / 64) >> (n % 64) & 1 == 1
+    }
+
+    /// `all ^= self`, where `all` is a whole set long enough to hold this one.
+    fn xor_into(&self, all: &mut [u64]) {
+        for (into, word) in all[self.low..self.low + self.words.len()].iter_mut().zip(&self.words) {
+            *into ^= word;
+        }
+    }
+
+    /// `self ^= other`.
+    fn xor_with(&mut self, other: &Bits) {
+        if other.words.is_empty() {
+            return;
+        }
+        if self.words.is_empty() {
+            *self = other.clone();
+            return;
+        }
+        let low = self.low.min(other.low);
+        let high = (self.low + self.words.len()).max(other.low + other.words.len());
+        if low < self.low || high > self.low + self.words.len() {
+            let mut words = vec![0u64; high - low];
+            words[self.low - low..self.low - low + self.words.len()].copy_from_slice(&self.words);
+            self.words = words;
+            self.low = low;
+        }
+        other.xor_into_offset(&mut self.words, self.low);
+        // Keep the ends nonzero.
+        let lead = self.words.iter().position(|w| *w != 0).unwrap_or(self.words.len());
+        let trail = self.words.iter().rposition(|w| *w != 0).map_or(0, |last| last + 1);
+        if lead >= trail {
+            *self = Bits::default();
+        } else if lead > 0 || trail < self.words.len() {
+            self.words = self.words[lead..trail].to_vec();
+            self.low += lead;
+        }
+    }
+
+    /// `words ^= self`, where `words` holds a set from word `low` up.
+    fn xor_into_offset(&self, words: &mut [u64], low: usize) {
+        let from = self.low - low;
+        for (into, word) in words[from..from + self.words.len()].iter_mut().zip(&self.words) {
+            *into ^= word;
+        }
+    }
+}
+
+struct Row {
+    /// The chunks this row mentions. The highest one is the row's pivot, so the set ends in
+    /// the pivot's word.
+    mask: Bits,
+    /// Which frames this row is the sum of, by slot (see [`Reduced::Useful`]). Empty unless
+    /// the decoder tracks.
+    made_of: Bits,
+}
+
+impl Row {
+    /// True when the row mentions a chunk besides its pivot.
+    fn mixed(&self, pivot: usize) -> bool {
+        self.mask.words.len() > 1 || self.mask.word(pivot / 64) != 1 << (pivot % 64)
+    }
+}
+
+/// Rows below this many above a group of eight chunks take the group's chunks one by one in
+/// [`Decoder::solve`]; at this many or more, a table of all 256 sums of the eight is cheaper.
+const TABLE_FROM: usize = 96;
+
 /// Rebuilds the payload from frames by elimination over GF(2), one frame at a time.
+///
+/// Rows are kept in echelon form: each held row is stored at its highest chunk (its pivot),
+/// and mentions no chunk above it. A frame is reduced from its highest chunk down, against
+/// the rows held there, until it either reaches a chunk with no row (a new row) or vanishes
+/// (a check). Plain frames come first and are one chunk each, so most rows are one word, and
+/// the rows of coded frames fill the gaps between them.
 pub struct Decoder {
     shape: Shape,
     k: usize,
     chunk: usize,
     /// The row whose highest chunk is `n`, at position `n`.
     rows: Vec<Option<Row>>,
+    /// The bodies of the rows, the row at pivot `n` at bytes `n * chunk ..`. Zero where no row is.
+    bodies: Vec<u8>,
     rank: usize,
     seen: HashSet<u32>,
     scratch: Vec<u64>,
+    work: Vec<u8>,
     /// Whether each row keeps which frames it was made of, so that a check that does not come
-    /// out even can say which frames to suspect.
+    /// out even can say which frames to suspect, and a frame found to be misread can be taken
+    /// out of the rows.
     tracking: bool,
+    /// The slot the next new row is numbered. Slots are never used twice.
+    next_slot: usize,
+    /// Bodies added into others so far: reducing, taking out and solving. The measure of the
+    /// work done, which tests hold to its bounds where a clock would be unreliable.
+    body_ops: std::cell::Cell<u64>,
 }
 
 impl Decoder {
     pub fn new(shape: Shape) -> Decoder {
         let k = shape.k as usize;
+        let chunk = shape.chunk as usize;
         Decoder {
             shape,
             k,
-            chunk: shape.chunk as usize,
+            chunk,
             rows: (0..k).map(|_| None).collect(),
+            // Zeroed memory is only taken from the system as rows are written into it.
+            bodies: vec![0; k * chunk],
             rank: 0,
             seen: HashSet::new(),
             scratch: Vec::new(),
+            work: Vec::new(),
             tracking: false,
+            next_slot: 0,
+            body_ops: std::cell::Cell::new(0),
         }
     }
 
-    /// A decoder whose rows remember which frames they were made of. It costs about as much
-    /// again as the chunk masks: `k * k / 16` bytes at most.
+    /// A decoder whose rows remember which frames they were made of. It costs at most about
+    /// as much again as the chunk masks: `k * k / 16` bytes.
     pub fn tracking(shape: Shape) -> Decoder {
         Decoder { tracking: true, ..Decoder::new(shape) }
     }
@@ -332,6 +434,16 @@ impl Decoder {
         self.rank == self.k
     }
 
+    /// Bodies added into others so far (see `body_ops`).
+    #[cfg(test)]
+    pub fn body_ops(&self) -> u64 {
+        self.body_ops.get()
+    }
+
+    fn count(&self, ops: u64) {
+        self.body_ops.set(self.body_ops.get() + ops);
+    }
+
     /// Takes one frame of this flash. `body` must be `chunk` bytes (which `parse` ensures for
     /// a frame of this shape). A frame index seen before is a duplicate, whatever its body.
     pub fn add(&mut self, index: u32, body: &[u8]) -> Added {
@@ -350,12 +462,18 @@ impl Decoder {
     /// Reduces one frame against the rows held: a new row, or a check of the rows (see
     /// [`Reduced`]). Nothing is deduplicated here; the caller decides what counts as the same
     /// frame. Works after the payload is complete too, when every frame is a check.
+    ///
+    /// It costs one pass over the rows the frame meets on the way down: a coded frame meets
+    /// about half of them, so about `k / 2` bodies at most.
     pub fn reduce(&mut self, index: u32, body: &[u8]) -> Reduced {
         assert_eq!(body.len(), self.chunk, "a frame of another shape");
+        let chunk = self.chunk;
         let mut mask = std::mem::take(&mut self.scratch);
         chunk_mask(self.shape.session, index, self.k, &mut mask);
-        let mut body = body.to_vec();
-        let mut made_of = if self.tracking { vec![0u64; self.rank / 64 + 1] } else { Vec::new() };
+        let mut work = std::mem::take(&mut self.work);
+        work.clear();
+        work.extend_from_slice(body);
+        let mut made_of = if self.tracking { vec![0u64; self.next_slot / 64 + 1] } else { Vec::new() };
         // Words at and above `top` are zero. It only ever moves down.
         let mut top = mask.len();
         let reduced = loop {
@@ -363,34 +481,65 @@ impl Decoder {
                 top -= 1;
             }
             if top == 0 {
-                let even = body.iter().all(|b| *b == 0);
-                break if even { Reduced::Agreed { support: made_of } } else { Reduced::Disagreed { support: made_of, residual: fingerprint(&body) } };
+                let even = work.iter().all(|b| *b == 0);
+                break if even { Reduced::Agreed { support: made_of } } else { Reduced::Disagreed { support: made_of, residual: fingerprint(&work) } };
             }
             let pivot = (top - 1) * 64 + 63 - mask[top - 1].leading_zeros() as usize;
             match &self.rows[pivot] {
                 Some(row) => {
-                    for (m, r) in mask.iter_mut().zip(&row.mask) {
-                        *m ^= r;
-                    }
-                    xor_into(&mut body, &row.body);
-                    for (m, r) in made_of.iter_mut().zip(&row.made_of) {
-                        *m ^= r;
+                    self.count(1);
+                    row.mask.xor_into(&mut mask);
+                    xor_into(&mut work, &self.bodies[pivot * chunk..(pivot + 1) * chunk]);
+                    if self.tracking {
+                        row.made_of.xor_into(&mut made_of);
                     }
                 }
                 None => {
-                    let slot = self.rank;
+                    let slot = self.next_slot;
+                    self.next_slot += 1;
                     if self.tracking {
                         made_of.resize(slot / 64 + 1, 0);
                         made_of[slot / 64] |= 1 << (slot % 64);
                     }
-                    self.rows[pivot] = Some(Row { mask: mask[..top].to_vec(), body, made_of });
+                    self.bodies[pivot * chunk..(pivot + 1) * chunk].copy_from_slice(&work);
+                    self.rows[pivot] = Some(Row { mask: Bits::of(&mask[..top]), made_of: Bits::of(&made_of) });
                     self.rank += 1;
                     break Reduced::Useful { slot };
                 }
             }
         };
         self.scratch = mask;
+        self.work = work;
         reduced
+    }
+
+    /// Takes the frame of `slot` out of the rows, for a tracking decoder: afterwards no row is
+    /// made of it, and there is one row fewer. False when no row was made of it.
+    ///
+    /// Of the rows made of it, the one with the lowest pivot is added to each of the others,
+    /// which takes the frame out of them without changing their pivots (everything the lowest
+    /// mentions is below theirs), and is then dropped. The rows left are sums of the other
+    /// frames only, and together they hold everything those frames say. It costs one pass over
+    /// the rows, about what one coded frame costs, where starting again from every frame
+    /// would cost what the whole flash did.
+    pub fn remove(&mut self, slot: usize) -> bool {
+        let holders: Vec<usize> = (0..self.k).filter(|pivot| self.rows[*pivot].as_ref().is_some_and(|row| row.made_of.has(slot))).collect();
+        let Some((&lowest, others)) = holders.split_first() else { return false };
+        let gone = self.rows[lowest].take().expect("a holder has a row");
+        let chunk = self.chunk;
+        let (below, above) = self.bodies.split_at_mut((lowest + 1) * chunk);
+        let source = &below[lowest * chunk..];
+        for &pivot in others {
+            let row = self.rows[pivot].as_mut().expect("a holder has a row");
+            row.mask.xor_with(&gone.mask);
+            row.made_of.xor_with(&gone.made_of);
+            let at = (pivot - lowest - 1) * chunk;
+            xor_into(&mut above[at..at + chunk], source);
+        }
+        below[lowest * chunk..].fill(0);
+        self.rank -= 1;
+        self.count(others.len() as u64);
+        true
     }
 
     /// Which chunks the decoder holds a row for, and which of those it can already rebuild,
@@ -409,8 +558,9 @@ impl Decoder {
             let Some(row) = row else { continue };
             held[pivot / 64] |= 1 << (pivot % 64);
             // Every chunk the row mentions is at or below its pivot, so already decided.
-            let pending = row.mask.iter().zip(&solved).enumerate().any(|(word, (mask, known))| {
-                let mut open = mask & !known;
+            let pending = row.mask.words.iter().enumerate().any(|(i, mask)| {
+                let word = row.mask.low + i;
+                let mut open = mask & !solved[word];
                 if word == pivot / 64 {
                     open &= !(1u64 << (pivot % 64));
                 }
@@ -425,28 +575,96 @@ impl Decoder {
 
     /// The payload, once `k` independent rows are held.
     pub fn solve(&self) -> Option<Vec<u8>> {
+        self.solve_unless(&|| false)
+    }
+
+    /// [`Decoder::solve`], which gives up (None) as soon as `stop` says so. It is asked about
+    /// every eight chunks.
+    ///
+    /// Each chunk is its row's body plus the chunks below it that the row mentions, so the
+    /// chunks are rebuilt lowest first, eight at a time. Once a group of eight is rebuilt, each
+    /// row above that mentions any of them adds what it mentions in one go: from a table of
+    /// all 256 sums of the eight when enough rows are left to make the table worth building
+    /// (the method of the Four Russians), else chunk by chunk. Rows of one chunk, most of a
+    /// flash, mention nothing below and cost nothing.
+    pub fn solve_unless(&self, stop: &dyn Fn() -> bool) -> Option<Vec<u8>> {
         if !self.is_complete() {
             return None;
         }
-        let chunk = self.chunk;
-        let mut out = vec![0u8; self.k * chunk];
-        // Lowest pivot first: every other chunk a row mentions is lower, so already solved.
-        for pivot in 0..self.k {
-            let row = self.rows[pivot].as_ref()?;
-            let (solved, rest) = out.split_at_mut(pivot * chunk);
-            let target = &mut rest[..chunk];
-            target.copy_from_slice(&row.body);
-            for (word_index, word) in row.mask.iter().enumerate() {
-                let mut bits = *word;
+        let (k, chunk) = (self.k, self.chunk);
+        let row = |pivot: usize| self.rows[pivot].as_ref().expect("a complete decoder has every row");
+        let mut out = self.bodies.clone();
+        // The rows that mention chunks below their own, lowest pivot first.
+        let mixed: Vec<usize> = (0..k).filter(|pivot| row(*pivot).mixed(*pivot)).collect();
+        let mut table: Vec<u8> = Vec::new();
+        let mut first_above = 0;
+        let mut ops = 0u64;
+        for start in (0..k).step_by(8) {
+            if stop() {
+                return None;
+            }
+            let end = (start + 8).min(k);
+            let width = end - start;
+            // What each row mentions of the group, as bits from `start`. Groups start at a
+            // multiple of eight, so they never straddle two words.
+            let in_group = |pivot: usize| ((row(pivot).mask.word(start / 64) >> (start % 64)) & ((1u64 << width) - 1)) as usize;
+            // Within the group, lowest first: what the rows mention below the group is in.
+            for pivot in start..end {
+                let mut bits = in_group(pivot) & ((1 << (pivot - start)) - 1);
+                if bits == 0 {
+                    continue;
+                }
+                let (below, rest) = out.split_at_mut(pivot * chunk);
                 while bits != 0 {
-                    let n = word_index * 64 + bits.trailing_zeros() as usize;
-                    if n != pivot {
-                        xor_into(target, &solved[n * chunk..(n + 1) * chunk]);
-                    }
+                    let n = start + bits.trailing_zeros() as usize;
+                    xor_into(&mut rest[..chunk], &below[n * chunk..(n + 1) * chunk]);
+                    ops += 1;
                     bits &= bits - 1;
                 }
             }
+            while first_above < mixed.len() && mixed[first_above] < end {
+                first_above += 1;
+            }
+            let above = &mixed[first_above..];
+            if above.is_empty() {
+                continue;
+            }
+            let (group, rest) = out.split_at_mut(end * chunk);
+            let group = &group[start * chunk..];
+            if above.len() >= TABLE_FROM {
+                // table[b] is the sum of the chunks of the group named by the bits of b.
+                table.resize((1 << width) * chunk, 0);
+                for b in 1..1usize << width {
+                    let (made, next) = table.split_at_mut(b * chunk);
+                    let lower = b & (b - 1);
+                    let n = b.trailing_zeros() as usize;
+                    let into = &mut next[..chunk];
+                    into.copy_from_slice(&made[lower * chunk..(lower + 1) * chunk]);
+                    xor_into(into, &group[n * chunk..(n + 1) * chunk]);
+                }
+                ops += (1 << width) - 1;
+                for &pivot in above {
+                    let b = in_group(pivot);
+                    if b != 0 {
+                        let at = (pivot - end) * chunk;
+                        xor_into(&mut rest[at..at + chunk], &table[b * chunk..(b + 1) * chunk]);
+                        ops += 1;
+                    }
+                }
+            } else {
+                for &pivot in above {
+                    let mut bits = in_group(pivot);
+                    let at = (pivot - end) * chunk;
+                    while bits != 0 {
+                        let n = bits.trailing_zeros() as usize;
+                        xor_into(&mut rest[at..at + chunk], &group[n * chunk..(n + 1) * chunk]);
+                        ops += 1;
+                        bits &= bits - 1;
+                    }
+                }
+            }
         }
+        self.count(ops);
         out.truncate(self.shape.total_len as usize);
         Some(out)
     }
@@ -683,6 +901,69 @@ mod tests {
         let elapsed = started.elapsed();
         // Encoding the frames is most of this. An unoptimized build takes a few seconds.
         assert!(elapsed < std::time::Duration::from_secs(60), "took {elapsed:?}");
+    }
+
+    #[test]
+    fn bits_keep_only_their_nonzero_words() {
+        let mut bits = Bits::of(&[0, 0, 0b100, 0, 1, 0]);
+        assert_eq!((bits.low, bits.words.clone()), (2, vec![0b100, 0, 1]));
+        assert!(bits.has(130) && bits.has(256) && !bits.has(0) && !bits.has(1000));
+        // Growing down and up, then cancelling an end.
+        bits.xor_with(&Bits::of(&[1, 0, 0b100]));
+        assert_eq!((bits.low, bits.words.clone()), (0, vec![1, 0, 0, 0, 1]));
+        bits.xor_with(&Bits::of(&[0, 0, 0, 0, 0, 0, 0b10]));
+        assert_eq!((bits.low, bits.words.clone()), (0, vec![1, 0, 0, 0, 1, 0, 0b10]));
+        bits.xor_with(&Bits::of(&[1, 0, 0, 0, 1, 0, 0b10]));
+        assert_eq!(bits, Bits::default());
+        let mut all = vec![0u64; 4];
+        Bits::of(&[0, 7, 0, 9]).xor_into(&mut all);
+        assert_eq!(all, vec![0, 7, 0, 9]);
+    }
+
+    /// A frame taken out of the rows leaves rows made of the other frames only, one fewer, for
+    /// one pass over them at most; more frames then complete them to the right payload.
+    #[test]
+    fn a_frame_taken_out_of_the_rows_leaves_the_others() {
+        let payload: Vec<u8> = (0..60_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+        let encoder = Encoder::new(0xBEEF, &payload, 300).unwrap();
+        let k = encoder.k();
+        let shape = parse(&encoder.frame(0)).unwrap().shape;
+        let mut decoder = Decoder::tracking(shape);
+        // A quarter of the plain frames lost and made up from coded ones, one of them misread.
+        let misread_index = k as u32 + 3;
+        let mut misread_slot = None;
+        let mut index = 0u32;
+        while !decoder.is_complete() {
+            if !(index < k as u32 && index % 4 == 0) {
+                let mut frame = encoder.frame(index);
+                if index == misread_index {
+                    frame[HEADER_LEN + 7] ^= 0x10;
+                }
+                if let Reduced::Useful { slot } = decoder.reduce(index, &frame[HEADER_LEN..])
+                    && index == misread_index
+                {
+                    misread_slot = Some(slot);
+                }
+            }
+            index += 1;
+        }
+        assert_ne!(decoder.solve().unwrap(), payload, "the misread frame is among the rows");
+        let slot = misread_slot.expect("the misread frame made a row");
+        assert!(decoder.rows.iter().flatten().filter(|row| row.made_of.has(slot)).count() > 1, "later rows were made with it");
+        let before = decoder.body_ops();
+        assert!(decoder.remove(slot));
+        assert!(decoder.body_ops() - before < k as u64, "one pass over the rows at most");
+        assert_eq!(decoder.rank(), k - 1);
+        assert!(decoder.rows.iter().flatten().all(|row| !row.made_of.has(slot)));
+        assert!(!decoder.remove(slot), "taken out once");
+        while !decoder.is_complete() {
+            let frame = encoder.frame(index);
+            decoder.reduce(index, &frame[HEADER_LEN..]);
+            index += 1;
+        }
+        assert_eq!(decoder.solve().unwrap(), payload);
+        // Giving up part way leaves nothing behind.
+        assert_eq!(decoder.solve_unless(&|| true), None);
     }
 
     #[test]
