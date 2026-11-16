@@ -7,7 +7,7 @@ voice dictation keyboard and app for iPhone. Pair once by scanning a QR code. Af
 dictation, note and meeting transcript lands in a SQLite library on your computer a few seconds
 after you make it, over any network, end to end encrypted, with no account and no Zone server.
 
-One small program (about 6 MB, Rust) is all of it: the background service, a command line, an MCP
+One small program (about 7 MB, Rust) is all of it: the background service, a command line, an MCP
 server for agents, and a local history page.
 
 <p align="center">
@@ -54,10 +54,79 @@ The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 | Backup folder import | Works with real Zone backups and synthetic ones. |
 | MCP server, command line, web page | Works on macOS; registration checked against the real config files of 20 AI clients. |
 | Flash, black and white and color | Tested with pictures and recordings from the iPhone app's own code, and a simulated webcam. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is still unknown. |
+| Clips (text sent from the phone) | The computer's side works and is tested with a stand-in phone. A clip with accents, Japanese and an emoji reached the real clipboard exactly: on a Mac from a zone started by launchd (`pbcopy`), on Windows 10 (`clip.exe`), and on Linux under a virtual X11 display (`xclip`, `xsel`). **Not yet tested with the iPhone app**, whose side is being built. Wayland's `wl-copy` is written and has not been run. |
+| Downloads and one-line installs | `install.sh` installs, updates and refuses a tampered download, tested against a universal Mac archive built the way the release workflow builds it, and in the test suite on macOS and Linux. `install.ps1` passes its test on Windows 10 in Windows PowerShell and PowerShell 7. **No release is published yet**, and the release workflow has never run on GitHub. |
 | Windows | Built and run on Windows 10: see [Windows](#windows) for exactly what was checked. |
-| Linux | Compiles (cross-compiled from macOS). **Not run** there yet, so `zone install` on Linux is untested. |
+| Linux | The whole test suite passes in a Debian container (arm64), Link over iroh and `install.sh` included. **Not run on a real Linux desktop** yet, so `zone install` (the systemd unit) is untested there. |
 
 ## Install
+
+<!-- mac-app -->
+Zone for Mac, a menu bar app that brings `zone` with it, is on its way.
+<!-- /mac-app -->
+
+Until then, one line installs the command line program. Nothing else is needed: no Rust, no admin rights.
+
+<!-- first-release -->
+*The first release is not published yet. Until it is, these lines stop with "no release may have
+been published yet", and [building from source](#from-source) is the way in.*
+<!-- /first-release -->
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.ps1 | iex
+```
+
+**Homebrew** (soon: the formula is written, the tap is not published yet)
+
+```sh
+brew install zaydiscold/zone/zone
+```
+
+The script downloads the latest [release](https://github.com/zaydiscold/zone-mcp/releases) for your
+computer (one program for both kinds of Mac, a static one for Linux on x86_64 and arm64, an `.exe`
+for 64-bit Windows), checks it against the release's `SHA256SUMS`, and puts `zone` in `~/.local/bin`
+(on Windows `%LOCALAPPDATA%\Zone\bin`, which it adds to your PATH). It changes nothing else. To read
+it first, open [install.sh](install.sh) or [install.ps1](install.ps1). To choose the folder or the
+version, set `ZONE_INSTALL_DIR` or `ZONE_VERSION` before running it.
+
+Then:
+
+```sh
+zone install     # start zone every time you log in, and register it with the AI clients it finds
+zone pair        # show the code to scan with Zone on your iPhone
+zone open        # see your transcriptions in the browser
+```
+
+`zone install` needs no admin rights: it writes a launchd user agent on macOS, a systemd user unit
+on Linux and a per-user Run entry on Windows (`--no-mcp` skips the AI clients). `zone doctor`
+checks the setup and says how to fix anything that is off. To run zone by hand instead: `zone serve`.
+
+### Updating
+
+```sh
+zone update            # is a newer zone out? If so, download it, check it and swap it in
+zone update --check    # only say
+```
+
+zone never looks for updates by itself. `zone update` and `zone doctor` ask GitHub once, when you
+run them, which release is the latest (`ZONE_NO_UPDATE_CHECK=1` turns even that off). An update is
+the install script run again: same download, same checksum, and a zone that starts at login is
+restarted so the new one is the one running. A copy that came from Homebrew, from `cargo install`
+or inside Zone for Mac is left alone, and `zone update` says how that copy is updated instead.
+
+If you download an archive from the releases page with a browser on a Mac, macOS will refuse to
+open the program, because it is not notarized by Apple. The install script does not have that
+problem. For a file you downloaded by hand: `xattr -d com.apple.quarantine ./zone`.
+
+### From source
 
 You need Rust 1.91 or newer.
 
@@ -73,20 +142,11 @@ cargo build --release
 cp target/release/zone ~/.local/bin/      # or anywhere on your PATH
 ```
 
-Then start it at login (no admin rights needed) and check it:
-
-```sh
-zone install     # a launchd user agent on macOS, a systemd user unit on Linux, a per-user Run entry on Windows,
-                 # then registers zone with the AI clients it finds (--no-mcp to skip that)
-zone doctor      # checks the setup and says how to fix anything that is off
-```
-
-To run it by hand instead: `zone serve`.
-
 ### Windows
 
-You need Rust with the MSVC toolchain (what `rustup` installs by default on Windows, together
-with the Visual Studio C++ build tools). In PowerShell:
+The one-line install above is the short way. To build it yourself you need Rust with the MSVC
+toolchain (what `rustup` installs by default on Windows, together with the Visual Studio C++ build
+tools). In PowerShell:
 
 ```powershell
 # in a checkout of this repository
@@ -103,7 +163,8 @@ zone doctor
 
 What was checked on a Windows 10 computer (Rust 1.97, MSVC), and what was not:
 
-- Checked: the build (`zone.exe` is about 7.7 MB), the whole test suite, `zone status`,
+- Checked: the build (`zone.exe` is about 7.7 MB), the whole test suite (which installs and
+  updates with `install.ps1` and puts a clip on the clipboard through a stand-in), `zone status`,
   `zone doctor`, `zone serve`, `zone pair`, `zone stats`, `zone search`, and reading Flash pictures
   with `zone dev flash-decode`.
 - Checked across two computers: a stand-in phone on a Mac paired with the Windows computer and sent
@@ -133,6 +194,32 @@ zone devices            # paired phones and when each last synced
 zone unpair "My iPhone" # forget one (its items stay)
 zone resync             # ask the phone to send everything again at its next sync
 ```
+
+## Send text from your phone
+
+Zone on the iPhone can send a piece of text to your computer on purpose: what is on the phone's
+clipboard, something shared from another app, or something you type. It is called a clip. On the
+computer, `zone clip` prints the newest one and `zone clip --copy` also puts it on the clipboard.
+Run `zone clipboard on` once and a clip lands on this computer's clipboard by itself, a moment
+after you send it, ready to paste. This needs the Zone version that has Computers (Beta), and a
+paired phone.
+
+```sh
+zone clip                # the newest clip: its text and nothing else, so it pipes (zone clip | less)
+zone clip --copy         # and put it on this computer's clipboard
+zone clip list           # recent clips: when, how it was sent, how long, the first line
+zone clipboard on        # from now on, put a clip on the clipboard as it arrives
+zone clipboard status    # is that on, and which clipboard tool zone uses
+```
+
+With `zone clipboard on`, only a clip that arrives over Link within two minutes of being sent is
+copied. An older one (the phone was offline, or it came by Flash) is kept and your clipboard is
+left alone, so nothing you sent yesterday replaces what you just copied. It is off until you turn
+it on. zone writes the clipboard with what the system has: `pbcopy` on macOS, `clip.exe` on
+Windows, and `wl-copy`, `xclip` or `xsel` on Linux (`zone clipboard status` says when none is
+there). A clip holds up to 256 kB of text, and is kept in the library like everything else: it
+shows in `zone open` with its own label, and agents can ask for it (the newest clip is "the thing
+I just sent you"). The exact output for programs is in [docs/clips-cli.md](docs/clips-cli.md).
 
 ## The three ways items arrive
 
@@ -218,8 +305,8 @@ and distance will cost some codes, so expect it to take longer.
 zone open
 ```
 
-opens a local page with everything grouped by day: filter by kind (dictations, notes, meetings) and
-by where it was spoken, search, pick a date range, copy any item.
+opens a local page with everything grouped by day: filter by kind (dictations, notes, meetings, and
+clips once you have sent one) and by where it was spoken, search, pick a date range, copy any item.
 
 From the terminal:
 
@@ -273,6 +360,12 @@ may be added, existing ones keep their names and meaning.
 | `zone doctor --json` | `healthy` and `checks`: a list of `check`, `result` (`ok`, `warn`, `fail`), `detail`, `fix`. Exits 1 when something is broken. |
 | `zone list --json`, `zone search --json` | `total` and `items`: `id`, `kind`, `source`, `created_at`, `updated_at`, `created_local`, `text`, `title`, `duration_s`, `words`, `engine`, `status`, `extra`, `rev`, `processed_at`, `carrier`, `device_id`, `received_at`. |
 | `zone show --json`, `zone stats --json`, `zone open --print` | A list of items in full, counts by day, kind or source, and the page's link. |
+| `zone clip --json` | `clip`: the newest clip (`id`, `source`, `created_at`, `created_local`, `received_at`, `age_s`, `carrier`, `device_id`, `length`, `bytes`, `lines`, `first_line`, `text`), or null when there is none. With `--copy` also `copied`, `tool`, `error`. |
+| `zone clip list --json` | `total` and `clips`: the same cards without `text`, newest first. |
+| `zone clipboard status --json` (and `on`, `off`) | `clipboard` (`on` or `off`), `enabled`, `available` (a clipboard tool was found), `tool`, `fix`, `max_age_s`, `daemon_running`. |
+| `zone update --check --json` | `current`, `latest`, `newer`, `checked` (false when GitHub could not be asked), `page`, `note`, `update_with` (the command that updates this copy). Installs nothing. |
+
+The clip commands are written out in full, with their exit codes, in [docs/clips-cli.md](docs/clips-cli.md).
 
 #### The feed, line by line
 
@@ -299,6 +392,7 @@ line, in this order:
 | `link_refused` | `device`, `device_id`, `reason` (`not_paired`, `bad_secret`, `version`, `busy`) |
 | `flash_received` | `device`, `device_id`, `items`, `new`, `changed`, `deleted`, `unchanged`, `rejected`, `paired`, `bytes`, `color` |
 | `flash_failed` | `reason` (a sentence), `bytes` |
+| `clip` | A clip arrived: `id`, `device`, `device_id`, `carrier` (`link` or `flash`), `source` (`clipboard`, `share`, `shortcut`, `typed`), `length` (characters), `bytes`, `copied` (it was put on the clipboard), `not_copied` (why not: `off`, `carrier`, `old`, `newer_clip`, `failed`, or null), `tool`. Never the text. |
 | `backup_import` | `trigger` (`watch`: zone saw the backup change, or the command: `import`, `backup-folder`), `items`, `new`, `changed`, `unchanged`, `notes`, `dictations`, `meetings`, `skipped` |
 | `resync_requested` | `device` (null for every phone), `phones` |
 
@@ -384,9 +478,9 @@ zone mcp status                                        # says what each client s
 
 | Flag | What the client's agents see |
 | --- | --- |
-| `--kinds <list>` | Only these kinds: `dictation`, `note`, `meeting` (comma separated), or `all`. |
-| `--exclude-sources <list>` | Not the dictations spoken in these places: `keyboard` (typed by voice in other apps), `app` (dictated inside Zone), `note` (the raw dictation behind a voice note). |
-| `--notes-only` | Short for `--kinds note`. |
+| `--kinds <list>` | Only these kinds: `dictation`, `note`, `meeting`, `clip` (comma separated), or `all`. |
+| `--exclude-sources <list>` | Not the dictations spoken in these places: `keyboard` (typed by voice in other apps), `app` (dictated inside Zone), `note` (the raw dictation behind a voice note). A clip's source works the same way: `clipboard`, `share`, `shortcut`, `typed`. |
+| `--notes-only` | Short for `--kinds note`: no dictations, no meetings, no clips. |
 | `--no-keyboard` | Short for `--exclude-sources keyboard`. |
 | `--read-only` | Everything it would otherwise see, but it cannot flag items as processed. |
 | `--read-write` | Undoes `--read-only` on a client that has it. |
@@ -401,6 +495,10 @@ already has a limited view keeps it until you name another (`--kinds all` is eve
 that is read-only stays read-only until you give `--read-write`, also when the install points it
 from another copy of zone to this one. `zone mcp install --all` without
 a view flag leaves every client's view as it is. A mistyped kind is an error, never "everything".
+
+Clips (text you sent from the phone on purpose) are a kind of their own, so a client limited to
+some kinds sees them only when `clip` is one of them: `--kinds note,meeting` and `--notes-only`
+leave clips out, and `--kinds clip` shows an agent what you send it and nothing you said.
 
 ### Staying registered
 
@@ -428,13 +526,16 @@ Deliberately few.
 | `sync_status()` | The computer's current local time, weekday and time zone (so an agent can resolve "Wednesday"), paired phones, last sync per carrier, counts. |
 | `mark_processed(ids, processed?)` | The only write. Sets or clears a flag so an agent can work through items once. It never changes an item's text. Hidden by `--read-only`. |
 
-The three kinds of item:
+The four kinds of item:
 
 - `dictation`: something dictated. Most have source `keyboard`: messages and text typed by voice in
   other apps. Source `app` was dictated inside Zone; source `note` is the raw dictation behind a
   voice note.
 - `note`: a voice note saved in Zone.
 - `meeting`: a meeting transcript, one `Speaker: words` line per turn, with a title.
+- `clip`: text sent to this computer on purpose from the phone (see [Send text from your
+  phone](#send-text-from-your-phone)), with source `clipboard`, `share`, `shortcut` or `typed`.
+  Exact text, not speech. The newest clip is "the thing I just sent you".
 
 ## Privacy
 
@@ -460,7 +561,10 @@ The three kinds of item:
   computer and are thrown away once read. What the phone shows is encrypted, so someone filming
   the screen gets nothing they can open.
 - **Logs never contain your words.** `zone.log` and the feed (`zone events`) record what happened,
-  with names and counts only.
+  with names and counts only. For a clip that is its length and how it was sent, never its text.
+- **Your clipboard is yours.** zone writes this computer's clipboard only after `zone clipboard on`
+  or `zone clip --copy`, and never reads it. What is on the phone's clipboard leaves the phone
+  only when you send it.
 
 One limit worth knowing: the page's key is kept in a cookie for `127.0.0.1`, and browsers do not
 separate cookies by port. Another program serving pages on `127.0.0.1` could be sent that cookie if
@@ -481,7 +585,9 @@ running.
 
 Other settings, all optional: `ZONE_PORT` (web page port, default 47813), `ZONE_NAME` (the name
 shown to the phone), `ZONE_RELAY_URL` (use your own iroh relay instead of the public ones; it is
-then included in the pairing link).
+then included in the pairing link), `ZONE_CLIPBOARD_COMMAND` (a command that gets a clip's text on
+its standard input, used instead of the system's clipboard tool), `ZONE_NO_UPDATE_CHECK=1` (never
+ask GitHub whether a newer zone is out).
 
 ## Uninstall
 
@@ -491,7 +597,7 @@ zone uninstall                    # stops zone and removes the login item
 ```
 
 Your library stays in the data folder. Delete that folder to remove it, then delete the `zone`
-program.
+program (`~/.local/bin/zone`, or the `Zone\bin` folder under `%LOCALAPPDATA%` on Windows).
 
 ## Development
 
@@ -544,6 +650,30 @@ zone dev flash-sweep --table                                     # the palette t
 [PROTOCOL.md](PROTOCOL.md#the-palette) are measured with. `zone dev flash-sweep` reads color
 pictures for each contrast span (`--spans 255,200,170,150,120`), code width (`--widths
 450,550,700`) and camera (`--cameras normal,harsh`), and prints how many codes were read in each.
+
+A clip can be sent without a phone too: `zone dev fake-phone --identity phone.json --addr
+127.0.0.1:PORT --clip "some text"` sends one as if it had just been sent (`--clip-age 600` makes it
+ten minutes old, `--clip-source share` says how it was sent). Tests set `ZONE_CLIPBOARD_COMMAND` to
+a command that writes a file, so no test touches the real clipboard.
+
+### Releases
+
+Every push runs the tests and the linter on macOS, Linux and Windows
+([ci.yml](.github/workflows/ci.yml)). Pushing a tag builds a release
+([release.yml](.github/workflows/release.yml)):
+
+```sh
+# set version in Cargo.toml (and Cargo.lock: cargo build does it), commit, then:
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The tag must match the version in `Cargo.toml`. The workflow builds a universal program for
+macOS, static programs for Linux on x86_64 and arm64, and `zone.exe` for Windows, runs
+`install.sh` against what it built, and attaches the archives, `SHA256SUMS` and a filled-in
+Homebrew formula to a draft release. Nothing is public until you publish the draft on GitHub.
+The install scripts and `zone update` find a release only once it is published and is the latest.
+The formula template is [packaging/homebrew/zone.rb](packaging/homebrew/zone.rb): its header says
+how to make the tap.
 
 iroh is pinned to the 1.4 line, the same one the phone's Swift binding (`iroh-ffi` 1.2.0) uses.
 Endpoint ids are written the way iroh 1.x prints them: 64 lowercase hexadecimal characters.
