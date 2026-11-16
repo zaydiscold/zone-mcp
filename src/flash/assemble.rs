@@ -32,7 +32,7 @@
 //! checks again each time, and after [`MAX_REMOVALS`] takings out, [`MAX_UNOPENED`] payloads
 //! that did not open, or too many uneven checks, the flash starts over.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use super::fountain::{Decoder, Reduced, Shape, fingerprint};
 
@@ -67,9 +67,17 @@ pub const RANGES_NAMED: usize = 6;
 /// number misread into another is almost never near any.
 pub const FOLLOWS_WITHIN: u64 = 256;
 
-/// Codes read between two readings of the same code, body for body, for the second to vouch
-/// for the first: then they are two showings of it (the phone shows each code once a loop),
-/// not one showing caught in two camera pictures, which could share a misreading.
+/// Different code numbers taken to be on the phone's screen now: the ones read most recently.
+/// A color picture holds three, and one caught while the screen changes holds the three going
+/// and the three coming. A code number not among them is one the phone moved on to show (a
+/// move, see `moves`).
+pub const IN_VIEW: usize = 8;
+
+/// Moves between two readings of the same code, body for body, for the second to vouch for the
+/// first: at least this many other codes were shown in between, so they are two showings of it
+/// (the phone shows each code once a loop), not one showing read again and again, which repeats
+/// a misreading as often as it is read. A phone that stalls on one picture, and the color
+/// schedule's opening and closing pictures (up for about half a second each), are read so.
 pub const CONFIRM_APART: u64 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,8 +91,8 @@ enum Known {
 struct Reading {
     index: u32,
     fingerprint: u64,
-    /// When it was read, counting every code read.
-    arrived: u64,
+    /// `moves` when it was first read.
+    seen_at: u64,
     /// The row it made, by slot.
     slot: Option<usize>,
     /// Read again, body for body, in another showing of the code. A misreading is random and
@@ -189,8 +197,13 @@ pub struct Assembler {
     /// The rows just became complete: a payload is ready to solve.
     ready: bool,
     removals: usize,
-    /// Codes read, every one, since reading last began.
-    arrivals: u64,
+    /// The clock of what the phone shows: readings of a code number not among the last
+    /// [`IN_VIEW`] different ones read, because the phone moved on to show it. A still screen
+    /// read again and again does not move it, and neither does a code read twice in one
+    /// picture. Never set back, so it also says how far into the flash the camera is.
+    moves: u64,
+    /// The code numbers read last, the most recent first, [`IN_VIEW`] at most.
+    in_view: VecDeque<u32>,
     /// Searching the thorough way (see [`Assembler::look_for_misreads`]).
     thorough: bool,
     /// Uneven checks, and payloads that did not open, since reading last began.
@@ -222,7 +235,8 @@ impl Assembler {
             unopened: false,
             ready: false,
             removals: 0,
-            arrivals: 0,
+            moves: 0,
+            in_view: VecDeque::with_capacity(IN_VIEW),
             thorough: false,
             uneven_seen: 0,
             unopened_seen: 0,
@@ -263,7 +277,7 @@ impl Assembler {
     /// Takes one reading: a frame of this flash, `body` of the flash's chunk size.
     pub fn take(&mut self, index: u32, body: &[u8]) -> Took {
         let print = fingerprint(body);
-        self.arrivals += 1;
+        self.look(index);
         match self.known.get(&(index, print)) {
             Some(Known::Kept(position)) => {
                 self.repeats += 1;
@@ -280,7 +294,7 @@ impl Assembler {
         }
         let position = self.readings.len();
         let kept = if self.tracking { body.to_vec() } else { Vec::new() };
-        self.readings.push(Some(Reading { index, fingerprint: print, arrived: self.arrivals, slot: None, confirmed: false, body: kept }));
+        self.readings.push(Some(Reading { index, fingerprint: print, seen_at: self.moves, slot: None, confirmed: false, body: kept }));
         self.known.insert((index, print), Known::Kept(position));
         *self.caught.entry(index).or_default() += 1;
         let useful = self.reduce(position, index, body);
@@ -291,11 +305,28 @@ impl Assembler {
         Took::New { useful }
     }
 
+    /// Notes the code number of a reading, and moves the clock when the phone has moved on to
+    /// show it (see `moves`).
+    fn look(&mut self, index: u32) {
+        match self.in_view.iter().position(|seen| *seen == index) {
+            Some(at) => {
+                self.in_view.remove(at);
+            }
+            None => {
+                self.moves += 1;
+                self.in_view.truncate(IN_VIEW - 1);
+            }
+        }
+        self.in_view.push_front(index);
+    }
+
     /// A reading read again, body for body. True when that confirms it now.
     fn confirm(&mut self, position: usize) -> bool {
-        let arrivals = self.arrivals;
+        let moves = self.moves;
         let Some(reading) = self.readings[position].as_mut() else { return false };
-        if reading.confirmed || arrivals - reading.arrived < CONFIRM_APART {
+        // More than CONFIRM_APART moves: this reading's own, and at least CONFIRM_APART other
+        // codes shown in between.
+        if reading.confirmed || moves - reading.seen_at <= CONFIRM_APART {
             return false;
         }
         reading.confirmed = true;
@@ -567,7 +598,6 @@ impl Assembler {
         self.decoder = Assembler::decoder_for(self.shape, self.tracking);
         self.readings.clear();
         self.known.retain(|_, known| *known == Known::SetAside);
-        self.arrivals = 0;
         self.caught.clear();
         self.slots.clear();
         self.cleared.clear();
@@ -960,6 +990,66 @@ mod tests {
         }
         assert_eq!(solved.as_deref(), Some(data.as_slice()), "{:?}", assembler.tally());
         assert!(thorough, "the thorough search was needed");
+    }
+
+    /// A camera reading a flash of 100 pieces round the phone's loop, losing one code in five
+    /// (the same ones each run), with a still picture the first time code number 3 is shown:
+    /// `picture` (frame 2, or frames 1 to 3 for a color picture's three) stays on the screen and
+    /// is read `times` times, frame 2 misread the same way each time. Returns whether the
+    /// payload came out right, after how many codes read, and the tally.
+    fn a_still_picture(picture: &[u32], times: usize) -> (bool, usize, Tally) {
+        let data = payload(30_000, 14);
+        let encoder = Encoder::new(0x8000_0013, &data, 300).unwrap();
+        assert_eq!(encoder.k(), 100);
+        let cycle = 3 * encoder.k() as u32 + 60;
+        let mut dice = 0x5eed_u64;
+        let mut roll = move |n: u64| {
+            dice = dice.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (dice >> 33) % n
+        };
+        let bad = misread(&encoder.frame(2), 11);
+        let codes = (0..cycle * 60).flat_map(|shown| {
+            let index = shown % cycle;
+            let still: Vec<Vec<u8>> = picture.iter().map(|i| if *i == 2 { bad.clone() } else { encoder.frame(*i) }).collect();
+            if shown == picture[0] {
+                (0..times).flat_map(|_| still.iter().cloned()).collect()
+            } else if (shown < cycle && picture.contains(&index)) || roll(100) < 20 {
+                // Shown in the still picture, or lost.
+                Vec::new()
+            } else {
+                vec![encoder.frame(index)]
+            }
+        });
+        let mut assembler = Assembler::new(parse(&encoder.frame(0)).unwrap().shape);
+        for (read, frame) in codes.enumerate() {
+            take(&mut assembler, &frame);
+            if let Some(payload) = assembler.take_payload() {
+                if payload == data {
+                    return (true, read + 1, assembler.tally());
+                }
+                assembler.did_not_open();
+            }
+        }
+        (false, 0, assembler.tally())
+    }
+
+    /// The phone stalls on one picture, or the color schedule holds its first picture up for
+    /// half a second, and the camera reads a misreading of it again and again. Those readings
+    /// are one showing, not two, so they do not vouch for the misread code, however many there
+    /// are. zone 0.1.1 as first built counted every reading toward "two showings": 17 readings
+    /// of one still code (7 pictures of a color one) vouched for the misread row, the right
+    /// reading of that code was then set aside as misread, then good checks after it, and the
+    /// flash was never finished: after 60 loops every row was in and it was still "checking".
+    #[test]
+    fn a_misreading_read_again_and_again_from_a_still_screen_vouches_for_nothing() {
+        for (picture, times) in [(&[2u32][..], 16), (&[2], 17), (&[2], 400), (&[1, 2, 3], 7), (&[1, 2, 3], 150)] {
+            let (solved, codes, tally) = a_still_picture(picture, times);
+            let context = format!("{picture:?} read {times} times: {codes} codes, {tally:?}");
+            assert!(solved, "{context}");
+            // About one pass of the 100 pieces, besides the still picture's readings.
+            assert!(codes < picture.len() * times + 200, "{context}");
+            assert_eq!((tally.set_aside, tally.restarts), (1, 0), "{context}");
+        }
     }
 
     /// Past the tracking limit a misread costs a fresh start, never a wrong payload.
