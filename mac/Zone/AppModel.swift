@@ -114,6 +114,10 @@ final class AppModel {
     @ObservationIgnored private var nextStartAllowed = Date.distantPast
     @ObservationIgnored private var quitting = false
     @ObservationIgnored private var canOpenFlash = false
+    /// Since when the login item has been loaded with no zone running, and when the app last
+    /// asked launchd to start it.
+    @ObservationIgnored private var loginItemIdleSince: Date?
+    @ObservationIgnored private var lastKickstart = Date.distantPast
     @ObservationIgnored private var pairingStarted = Date.distantPast
     @ObservationIgnored private var pairingKnown: [String: Double] = [:]
     @ObservationIgnored private var noticeToken = 0
@@ -165,14 +169,48 @@ final class AppModel {
         switch daemon {
         case .checking: return "Looking"
         case .starting: return "Starting"
-        case .waitingForLoginItem: return "Waiting for zone to start"
+        case .waitingForLoginItem: return loginItemStalled ? "zone is not starting" : "Starting"
         case let .problem(message): return message
         case .running:
             if isSyncing { return "Receiving" }
             guard let status else { return "Running" }
             if status.phones.isEmpty { return "Ready to pair" }
-            return status.daemon.relayConnected == false ? "Running, this network only" : "Running"
+            if status.daemon.relayConnected == false { return "This network only" }
+            return lastSyncLine
         }
+    }
+
+    /// When anything last arrived, by any route ("Synced 5 min ago").
+    var lastSyncLine: String {
+        guard let status else { return "Running" }
+        let ages = [status.lastSync.link?.age, status.lastSync.flash?.age, status.lastSync.backupFolder?.age].compactMap { $0 }
+        guard let newest = ages.min() else { return "Waiting for the first sync" }
+        return "Synced \(Formats.ago(newest))"
+    }
+
+    /// The longer story behind the headline, for its tooltip.
+    var statusDetail: String {
+        guard isRunning, let status else {
+            return loginItemStalled
+                ? "zone is not running, so your iPhone cannot reach this Mac."
+                : "zone is starting. Your iPhone reaches this Mac once it runs."
+        }
+        var lines: [String] = []
+        for phone in status.phones {
+            let items = "\(Formats.number(phone.itemsReceived)) \(phone.itemsReceived == 1 ? "item" : "items")"
+            if let age = phone.lastSyncAge {
+                var line = "\(phone.name): synced \(Formats.ago(age)), \(items)"
+                if let route = ActivityWords.route(phone.lastPath) { line += ", \(route)" }
+                lines.append(line)
+            } else {
+                lines.append("\(phone.name): paired, waiting for its first sync")
+            }
+        }
+        lines.append(status.daemon.relayConnected == false
+            ? "Reachable on this network only while zone reconnects to the relay."
+            : "Reachable from any network, end to end encrypted.")
+        lines.append("\(Formats.number(status.items.total)) items in your library, \(Formats.number(todayCount)) today.")
+        return lines.joined(separator: "\n")
     }
 
     // MARK: Starting up
@@ -339,17 +377,57 @@ final class AppModel {
             seen.loginItemPID = agent.pid
             seen.loginItemLoaded = agent.loaded
         }
-        switch DaemonPlanner.plan(seen) {
+        let plan = DaemonPlanner.plan(seen)
+        if plan != .waitForLoginItem { loginItemIdleSince = nil }
+        switch plan {
         case let .attach(owner):
             if let pid = seen.pid { ownerCache = (pid, owner) }
             daemon = .running(owner)
         case .waitForLoginItem:
             ownerCache = nil
             daemon = .waitingForLoginItem
+            await startLoginItemIfIdle()
         case .start:
             ownerCache = nil
             startOwnDaemon()
         }
+    }
+
+    /// The login item is loaded but no zone runs. launchd restarts a zone that crashed, ten
+    /// seconds later, but leaves one stopped that exited successfully (on 2026-11-16 a test
+    /// step's `pkill -f "zone serve"` stopped the real one, and it stayed stopped for five
+    /// hours). After a short look the app asks launchd to start it, and again every 20
+    /// seconds while it stays down.
+    private func startLoginItemIfIdle() async {
+        guard !env.isSandbox else { return }
+        let since = loginItemIdleSince ?? Date()
+        loginItemIdleSince = since
+        guard Date().timeIntervalSince(since) >= 3, Date().timeIntervalSince(lastKickstart) >= 20 else { return }
+        lastKickstart = Date()
+        let label = ZoneEnvironment.legacyLabel
+        await Task.detached { ProcessLookup.kickstartLaunchdAgent(label: label) }.value
+        Task {
+            try? await Task.sleep(for: .milliseconds(800))
+            await refresh()
+        }
+    }
+
+    /// The login item has been asked to start zone and still has not, for long enough that
+    /// the person should know (and be offered to let this app run zone instead).
+    var loginItemStalled: Bool {
+        guard daemon == .waitingForLoginItem, let since = loginItemIdleSince else { return false }
+        return now.timeIntervalSince(since) > 45
+    }
+
+    /// Waits a short while for zone to be running, for something asked for while it starts.
+    func waitUntilRunning(seconds: Double = 30) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !isRunning, Date() < deadline {
+            await refresh()
+            if isRunning { break }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return isRunning
     }
 
     private func startOwnDaemon() {
@@ -663,24 +741,29 @@ final class AppModel {
 
     func openHistory() {
         act("history") { [self] in
-            guard isRunning else { throw ZoneError.failed("Zone is not running yet.") }
-            try await client.openHistory()
+            // The popover has closed by now: a failure opens it again to say why.
+            guard await waitUntilRunning() else {
+                showPopover()
+                throw ZoneError.failed("zone did not start, so the history page cannot open.")
+            }
+            do {
+                try await client.openHistory()
+            } catch {
+                showPopover()
+                throw error
+            }
         }
     }
 
-    /// Flash in a Zone window.
+    /// Flash in a Zone window. It opens at once; while zone starts, the window says so.
     func openFlash() {
-        guard isRunning else {
-            say("Zone is not running yet.")
-            return
-        }
         showFlash()
     }
 
     /// The Flash page's address with its key, the way this zone gives it: in one step, or (an
     /// older zone) the history page first, which hands over the key, then Flash.
     func flashLink() async throws -> (url: URL, port: Int?, first: URL?) {
-        guard isRunning else { throw ZoneError.failed("Zone is not running yet.") }
+        guard await waitUntilRunning() else { throw ZoneError.failed("zone did not start. Flash needs it running on this Mac to read the codes.") }
         if canOpenFlash {
             let url = try await client.flashLink()
             return (url, url.port, nil)
@@ -693,7 +776,7 @@ final class AppModel {
     /// Flash in the web browser, as before the Zone window.
     func openFlashInBrowser() {
         act("flash") { [self] in
-            guard isRunning else { throw ZoneError.failed("Zone is not running yet.") }
+            guard await waitUntilRunning() else { throw ZoneError.failed("zone did not start, so Flash cannot open.") }
             if canOpenFlash {
                 try await client.openFlash()
                 return

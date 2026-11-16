@@ -133,6 +133,22 @@ public enum ProcessLookup {
         return (true, pid(inLaunchctlPrint: output.text))
     }
 
+    /// Asks launchd to start a loaded agent now. It does nothing to one that is running.
+    /// launchd restarts zone by itself after a crash, but not after a zone that exited
+    /// successfully (an older zone, stopped by a stray SIGTERM), and not before its ten second
+    /// pause: this is how the app gets it going again without the person.
+    @discardableResult
+    public static func kickstartLaunchdAgent(label: String) -> Bool {
+        let launchctl = URL(fileURLWithPath: "/bin/launchctl")
+        guard let output = try? ZoneProcessRunner.runAndWait(
+            binary: launchctl,
+            arguments: ["kickstart", "gui/\(getuid())/\(label)"],
+            environment: ["PATH": "/usr/bin:/bin"],
+            timeout: 5
+        ) else { return false }
+        return output.status == 0
+    }
+
     /// The program a launchd agent file starts.
     public static func program(inLaunchAgent file: URL) -> String? {
         guard let data = try? Data(contentsOf: file),

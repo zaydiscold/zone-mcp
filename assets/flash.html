@@ -93,6 +93,8 @@ code { font-family: var(--mono); font-size: 0.88em; padding: 1px 5px; border-rad
 
 /* ---------------------------------------------------------------- the bar */
 header.top { position: sticky; top: 0; z-index: 20; background: var(--paper); border-bottom: 1px solid var(--rule); }
+/* In Zone for Mac's Flash window, whose own bar already says zone and Flash. */
+.in-app header.top { display: none; }
 .bar { display: flex; align-items: center; gap: 22px; height: var(--bar); max-width: 1376px; margin: 0 auto; padding: 0 32px; }
 .mark { display: inline-flex; align-items: baseline; gap: 0.06em; font: 600 25px/1 var(--serif); letter-spacing: -0.01em; color: var(--ink); }
 .mark:hover { text-decoration: none; }
@@ -413,6 +415,7 @@ select {
   const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   // Inside Zone for Mac's Flash window, which shows its own bars for pairing and the camera.
   const inApp = /ZoneMac\//.test(navigator.userAgent);
+  if (inApp) document.documentElement.classList.add("in-app");
   const video = $("video");
   const grabCanvas = document.createElement("canvas");
   const grabContext = grabCanvas.getContext("2d", { willReadFrequently: true });

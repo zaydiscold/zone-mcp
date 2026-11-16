@@ -357,7 +357,14 @@ private struct FlashView: View {
                     .opacity(state.load == .shown ? 1 : 0)
                 switch state.load {
                 case .loading:
-                    ProgressView().controlSize(.small)
+                    VStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        if !model.isRunning {
+                            Text("Starting zone")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(Zone.muted(scheme))
+                        }
+                    }
                 case let .failed(reason):
                     VStack(spacing: 12) {
                         Text("Flash could not open here")
