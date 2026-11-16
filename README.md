@@ -272,11 +272,24 @@ The page guides you as it goes. It says when the camera is not allowed and how t
 suggests moving closer, turning the brightness up or tilting away a glare when it sees no code
 for a few seconds, says when a QR code in view is not a Zone flash, and says plainly what to do
 when a flash cannot be opened (usually: the phone is not paired, so run `zone pair` and scan the
-code first). Everything it shows comes from zone's own decoder, not from an animation.
+code first; zone says this only after more codes have confirmed that none was misread).
+Everything it shows comes from zone's own decoder, not from an animation.
 
 You do not have to catch every code. Any code helps, in any order, so if the camera misses some
 the phone just keeps going until the computer has enough. If you put the phone down early,
 nothing is stored and you can start again.
+
+The page keeps count from what the codes themselves carry: how many pieces the flash has, how
+many are still needed, how many different codes it caught, and which code numbers it missed
+("of codes 1 to 512, the camera missed number 70 and numbers 141 to 143"), so you can see that
+nothing slipped by unnoticed and that missing some does not matter. A code misread as another
+valid code (rare, but QR error correction cannot rule it out) is found by the other codes,
+which have to agree with it, set aside, and the flash finishes without it; the page says so
+instead of failing. When it is done, zone reads every item back from the library and compares
+it with what the phone said it sent, count, times to the last binary digit and text: the page
+says, for example, "1,764 items, all checked" and the dates they span. The phone shows how many
+items and pieces it is sending, and asks you to tap Done only when the page says Done with
+that count.
 
 The phone has to be paired with the computer first, because the codes are encrypted with a key
 both sides get at pairing. Pairing does not need a network either: scanning the code from
