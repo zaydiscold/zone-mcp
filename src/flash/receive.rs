@@ -611,7 +611,7 @@ pub fn flash_name(session: u32) -> String {
 }
 
 fn gave_up_words() -> String {
-    "zone read the codes of this flash round the phone's loop again and again, and they never came together into a library it could open, so it stopped. Nothing was stored. Codes may be being misread (glare on the phone's screen, a screen too dim, the phone too far from the camera or moving), or the flash may be for another computer. Choose Start over, then show the flash again with the phone steady and close to the camera.".to_string()
+    "zone read this flash's codes many times, but they never came together into a library it could open, so it stopped. Nothing was stored. Some codes may be misread: glare on the phone, a dim screen, or the phone too far away or moving. The flash may also be meant for another computer. Choose Start over, then show the flash again with the phone steady and close to the camera.".to_string()
 }
 
 fn not_paired_words() -> String {
