@@ -1111,6 +1111,33 @@ mod tests {
         assert_eq!((db.total_items().unwrap(), db.open_offers(110.0).unwrap(), db.devices().unwrap()[0].items_received), (1200, 0, 1200));
     }
 
+    /// SQLite may answer some errors (a full disk, an I/O error, no memory) by rolling the
+    /// whole transaction back by itself. Here a trigger does that as the first batch's clip goes
+    /// in the feed, whose errors are only logged. Nothing of that try may be kept. zone 0.1.1 as
+    /// first built went on outside the transaction: each later batch was kept on its own, and so
+    /// was the record of the flash, so the next try said "stored before" with the first 500
+    /// items missing.
+    #[test]
+    fn a_transaction_sqlite_rolled_back_by_itself_keeps_nothing() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.create_offer(SECRET, 100.0, 600.0).unwrap();
+        let mut items = synthetic_items(0, 1200);
+        items[100] = json!({ "id": "C11B0000-0000-4000-8000-000000000100", "kind": "clip", "source": "clipboard", "created_at": 105.0, "updated_at": 105.0, "text": "a link" });
+        db.execute_for_tests("CREATE TEMP TRIGGER undo BEFORE INSERT ON events WHEN new.event = 'clip' BEGIN SELECT RAISE(ROLLBACK, 'database or disk is full'); END;").unwrap();
+        let payload = sealed_with_check(SECRET, "PHONE-U", &items);
+        let shape = Shape { session: 0x8000_00ae, total_len: payload.len() as u32, k: payload.len().div_ceil(300) as u16, chunk: 300 };
+        let first = import(&mut db, &shape, &payload, 110.0);
+        assert!(matches!(&first, Outcome::NotStored(why) if why.contains("rolled")), "{first:?}");
+        assert_eq!((db.total_items().unwrap(), db.devices().unwrap().len(), db.open_offers(110.0).unwrap()), (0, 0, 1), "nothing of the try was kept");
+        assert!(db.stored_flashes().unwrap().is_empty());
+        // The library is usable again at once, outside a flash too.
+        db.meta_set("after", "yes").unwrap();
+        db.execute_for_tests("DROP TRIGGER undo;").unwrap();
+        let Outcome::Stored(stored) = import(&mut db, &shape, &payload, 120.0) else { panic!("not stored") };
+        assert_eq!((stored.inserted, stored.unchanged, stored.paired, stored.check.all_checked()), (1200, 0, true, true), "{stored:?}");
+        assert_eq!((db.total_items().unwrap(), db.stored_flashes().unwrap().len()), (1200, 1));
+    }
+
     /// A finished flash still on a phone's screen, and a stray code naming a flash that does
     /// not exist, do not take the page away from the flash being read.
     #[test]

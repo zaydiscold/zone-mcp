@@ -441,7 +441,12 @@ pub struct StatRow {
 
 pub struct Db {
     conn: Connection,
+    /// [`Db::atomically`] has a transaction open.
+    atomic: bool,
 }
+
+/// What a write inside [`Db::atomically`] says when SQLite has already ended the transaction.
+const ROLLED_BACK: &str = "SQLite rolled the transaction back by itself part way through, after an error";
 
 /// A flash this library stored (see the `flashes` table).
 #[derive(Clone, Debug, PartialEq)]
@@ -537,7 +542,7 @@ impl Db {
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
-        let db = Db { conn };
+        let db = Db { conn, atomic: false };
         if db.meta_get("database_id")?.is_none() {
             // INSERT OR IGNORE: two programs opening a brand new library at once agree on one id.
             db.conn.execute(
@@ -562,7 +567,7 @@ impl Db {
     }
 
     pub fn meta_set(&self, key: &str, value: &str) -> Result<()> {
-        self.conn.execute(
+        self.writer()?.execute(
             "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             params![key, value],
         )?;
@@ -570,7 +575,7 @@ impl Db {
     }
 
     pub fn meta_delete(&self, key: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
+        self.writer()?.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
         Ok(())
     }
 
@@ -594,20 +599,47 @@ impl Db {
 
     /// Starts a write. Writers take the library's write lock at once (IMMEDIATE), so that two
     /// programs never both read and then both wait to write.
+    ///
+    /// Inside [`Db::atomically`] it is a savepoint of that transaction. If SQLite has ended the
+    /// transaction by itself, it refuses: a transaction of its own would be kept whatever
+    /// became of the rest.
     fn write(&mut self) -> Result<Write<'_>> {
         if self.conn.is_autocommit() {
+            if self.atomic {
+                bail!(ROLLED_BACK);
+            }
             Ok(Write::Transaction(self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?))
         } else {
             Ok(Write::Savepoint(self.conn.savepoint()?))
         }
     }
 
+    /// The connection, for one statement that writes. Inside [`Db::atomically`], once SQLite
+    /// has ended the transaction by itself, a statement would be kept on its own whatever
+    /// became of the rest, so it is refused.
+    fn writer(&self) -> Result<&Connection> {
+        if self.atomic && self.conn.is_autocommit() {
+            bail!(ROLLED_BACK);
+        }
+        Ok(&self.conn)
+    }
+
     /// Runs `work` as one transaction: everything it writes is kept when it returns Ok, and
     /// none of it when it returns Err. The outer error is the library's own (it could not
-    /// begin or commit).
+    /// begin or commit, or SQLite rolled the transaction back by itself).
+    ///
+    /// SQLite answers a few errors (a full disk, an I/O error, no memory) by rolling the whole
+    /// transaction back. An error that `work` only logs (the feed's, see `events::record`) can
+    /// be one of them. From then on every write inside `work` is refused (see [`Db::write`]),
+    /// and the try is a failure even if `work` returns Ok.
     pub fn atomically<T, E>(&mut self, work: impl FnOnce(&mut Db) -> std::result::Result<T, E>) -> Result<std::result::Result<T, E>> {
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        self.atomic = true;
         let result = work(self);
+        self.atomic = false;
+        if self.conn.is_autocommit() {
+            bail!(ROLLED_BACK);
+        }
         let ending = if result.is_ok() { "COMMIT" } else { "ROLLBACK" };
         if let Err(error) = self.conn.execute_batch(ending) {
             if !self.conn.is_autocommit() {
@@ -927,7 +959,7 @@ impl Db {
         let expires = now + ttl_seconds;
         self.delete_expired_offers(now)?;
         // The flash key is derived now, while the secret is in hand (see flash.rs).
-        self.conn.execute(
+        self.writer()?.execute(
             "INSERT INTO pairing_offers (secret_hash, created_at, expires_at, flash_key) VALUES (?1, ?2, ?3, ?4)",
             params![hash, now, expires, crate::flash::flash_key(secret_hex)],
         )?;
@@ -938,7 +970,7 @@ impl Db {
     /// offer is kept for a month, because it is how a phone that sends its secret a second
     /// time (its first welcome was lost, or it paired by Flash and is now online) is known.
     pub fn delete_expired_offers(&self, now: f64) -> Result<usize> {
-        Ok(self.conn.execute(
+        Ok(self.writer()?.execute(
             "DELETE FROM pairing_offers WHERE (used_at IS NULL AND expires_at <= ?1) OR (used_at IS NOT NULL AND used_at < ?2)",
             params![now, now - USED_OFFER_KEPT_SECONDS],
         )?)
@@ -1088,7 +1120,7 @@ impl Db {
 
     /// Notes what a phone said about itself in a flash.
     pub fn touch_device(&self, endpoint_id: &str, phone: &PhoneInfo, now: f64) -> Result<()> {
-        self.conn.execute(
+        self.writer()?.execute(
             "UPDATE devices SET phone_id = coalesce(?2, phone_id), name = coalesce(?3, name), app = coalesce(?4, app), \
              last_seen = ?5 WHERE endpoint_id = ?1",
             params![endpoint_id, phone.id, phone.name, phone.app, now],
@@ -1098,7 +1130,7 @@ impl Db {
 
     /// Notes that a paired phone delivered a batch. `items` is how many of them were new or changed.
     pub fn record_delivery(&self, endpoint_id: &str, items: usize, path: Option<&str>, now: f64) -> Result<()> {
-        self.conn.execute(
+        self.writer()?.execute(
             "UPDATE devices SET last_seen = ?2, last_sync = ?2, items_received = items_received + ?3, \
              last_path = coalesce(?4, last_path), resend_all = 0 WHERE endpoint_id = ?1",
             params![endpoint_id, now, items as i64, path],
@@ -1108,7 +1140,7 @@ impl Db {
 
     /// Notes a flash as stored. A flash already noted keeps its first note.
     pub fn record_flash(&self, flash: &StoredFlash) -> Result<()> {
-        self.conn.execute(
+        self.writer()?.execute(
             "INSERT OR IGNORE INTO flashes (session, total_len, k, chunk, digest, device_id, phone_name, items, stored_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
@@ -1149,7 +1181,7 @@ impl Db {
     }
 
     pub fn record_path(&self, endpoint_id: &str, path: &str, now: f64) -> Result<()> {
-        self.conn.execute(
+        self.writer()?.execute(
             "UPDATE devices SET last_seen = ?2, last_path = ?3 WHERE endpoint_id = ?1",
             params![endpoint_id, now, path],
         )?;
@@ -1220,14 +1252,14 @@ impl Db {
 
     /// Forgets a paired phone. Its items stay in the library.
     pub fn remove_device(&self, endpoint_id: &str) -> Result<bool> {
-        Ok(self.conn.execute("DELETE FROM devices WHERE endpoint_id = ?1", params![endpoint_id])? == 1)
+        Ok(self.writer()?.execute("DELETE FROM devices WHERE endpoint_id = ?1", params![endpoint_id])? == 1)
     }
 
     /// Asks a phone (or every phone) to send its whole library again at its next sync.
     pub fn request_resend(&self, endpoint_id: Option<&str>) -> Result<usize> {
         Ok(match endpoint_id {
-            Some(id) => self.conn.execute("UPDATE devices SET resend_all = 1 WHERE endpoint_id = ?1", params![id])?,
-            None => self.conn.execute("UPDATE devices SET resend_all = 1", [])?,
+            Some(id) => self.writer()?.execute("UPDATE devices SET resend_all = 1 WHERE endpoint_id = ?1", params![id])?,
+            None => self.writer()?.execute("UPDATE devices SET resend_all = 1", [])?,
         })
     }
 
@@ -1267,9 +1299,9 @@ impl Db {
     /// Appends one event to the feed and drops the ones beyond the newest [`EVENTS_KEPT`].
     /// `data` is a JSON object of names and counts. Returns the event's number.
     pub fn add_event(&self, at: f64, event: &str, data: &str) -> Result<i64> {
-        self.conn.execute("INSERT INTO events (at, event, data) VALUES (?1, ?2, ?3)", params![at, event, data])?;
+        self.writer()?.execute("INSERT INTO events (at, event, data) VALUES (?1, ?2, ?3)", params![at, event, data])?;
         let seq = self.conn.last_insert_rowid();
-        self.conn.execute("DELETE FROM events WHERE seq <= ?1", params![seq - EVENTS_KEPT])?;
+        self.writer()?.execute("DELETE FROM events WHERE seq <= ?1", params![seq - EVENTS_KEPT])?;
         Ok(seq)
     }
 
@@ -1646,6 +1678,34 @@ fn substring_snippet(text: &str, needle: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// After SQLite rolls the transaction of [`Db::atomically`] back by itself (here a trigger
+    /// does), every later write in it is refused, and the whole is a failure even when the work
+    /// shrugs off every error and returns Ok. Nothing of it is kept, and the library is usable
+    /// at once afterwards.
+    #[test]
+    fn a_transaction_sqlite_ended_by_itself_is_a_failure() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.execute_for_tests("CREATE TEMP TRIGGER undo BEFORE INSERT ON events WHEN new.event = 'boom' BEGIN SELECT RAISE(ROLLBACK, 'disk I/O error'); END;").unwrap();
+        let outcome = db.atomically(|db| -> std::result::Result<(), String> {
+            db.meta_set("before", "1").unwrap();
+            assert!(db.add_event(1.0, "boom", "{}").is_err());
+            // A transaction of its own, a batch, and single statements: all refused.
+            let refused = [
+                db.apply_items(&[item("A", 2.0, "after")], &Delivery { carrier: Carrier::Link, device_id: None, received_at: 3.0 }).err(),
+                db.meta_set("after", "1").err(),
+                db.add_event(4.0, "fine", "{}").err(),
+            ];
+            assert!(refused.iter().all(|e| e.as_ref().is_some_and(|e| e.to_string().contains("rolled the transaction back"))), "{refused:?}");
+            Ok(())
+        });
+        assert!(outcome.is_err_and(|e| e.to_string().contains("rolled the transaction back")));
+        assert_eq!((db.meta_get("before").unwrap(), db.meta_get("after").unwrap(), db.total_items().unwrap()), (None, None, 0));
+        assert!(db.events(None, None, 10).unwrap().is_empty());
+        db.meta_set("later", "1").unwrap();
+        assert_eq!(db.atomically(|db| db.meta_set("inside", "1")).unwrap().ok(), Some(()));
+        assert_eq!(db.meta_get("inside").unwrap().as_deref(), Some("1"));
+    }
 
     fn item(id: &str, updated_at: f64, text: &str) -> Item {
         Item {
