@@ -1,0 +1,242 @@
+# Builds zone for every system when a version tag (v0.2.0) is pushed, and attaches the
+# archives and their checksums to a DRAFT release. Nothing is public until a person opens the
+# draft on GitHub and publishes it. Nothing here needs a secret: the token GitHub gives every
+# run is enough.
+#
+# The archives are the ones install.sh, install.ps1 and `zone update` download:
+#   zone-<version>-macos-universal.tar.gz   (arm64 and x86_64 in one program)
+#   zone-<version>-linux-x86_64.tar.gz      (static, runs on any distribution)
+#   zone-<version>-linux-aarch64.tar.gz
+#   zone-<version>-windows-x86_64.zip
+#   SHA256SUMS
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-universal
+            os: macos-15
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+            targets: x86_64-unknown-linux-musl
+          - platform: linux-aarch64
+            os: ubuntu-24.04-arm
+            targets: aarch64-unknown-linux-musl
+          - platform: windows-x86_64
+            os: windows-2025
+            targets: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The tag must say what Cargo.toml says: the scripts find the archives by the tag, and
+      # `zone --version` and `zone update` go by the version built in.
+      - name: Check the tag against Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::The tag is $tag, and Cargo.toml says version $manifest. Change one to match the other."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.targets }}
+          rustc --version
+
+      - name: Install the musl C compiler
+        if: startsWith(matrix.platform, 'linux-')
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Build
+        shell: bash
+        env:
+          # Windows: the C runtime is built in, so zone.exe needs nothing installed beside it.
+          RUSTFLAGS: ${{ matrix.platform == 'windows-x86_64' && '-C target-feature=+crt-static' || '' }}
+          # Linux: the C parts (SQLite, the ciphers) are compiled for musl too.
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          for target in ${{ matrix.targets }}; do
+            cargo build --release --locked --target "$target"
+          done
+
+      - name: Package (macOS)
+        if: matrix.platform == 'macos-universal'
+        shell: bash
+        run: |
+          mkdir -p stage dist
+          lipo -create -output stage/zone \
+            target/aarch64-apple-darwin/release/zone \
+            target/x86_64-apple-darwin/release/zone
+          # An ad hoc signature over both halves: Apple silicon runs nothing unsigned.
+          codesign --force --sign - stage/zone
+          lipo -info stage/zone
+          codesign --verify --verbose stage/zone
+          stage/zone --version
+          cp LICENSE stage/
+          tar -C stage -czf "dist/zone-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.gz" zone LICENSE
+
+      - name: Package (Linux)
+        if: startsWith(matrix.platform, 'linux-')
+        shell: bash
+        run: |
+          mkdir -p stage dist
+          cp "target/${{ matrix.targets }}/release/zone" stage/zone
+          stage/zone --version
+          # Static: it must not ask for any shared library.
+          if ldd stage/zone 2>&1 | grep -q '=>'; then
+            echo "::error::zone is not a static program"
+            ldd stage/zone
+            exit 1
+          fi
+          cp LICENSE stage/
+          tar -C stage -czf "dist/zone-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.gz" zone LICENSE
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path stage, dist -Force | Out-Null
+          Copy-Item "target/${{ matrix.targets }}/release/zone.exe" stage/zone.exe
+          & stage/zone.exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Copy-Item LICENSE stage/LICENSE.txt
+          Compress-Archive -Path stage/zone.exe, stage/LICENSE.txt -DestinationPath "dist/zone-${{ steps.version.outputs.version }}-${{ matrix.platform }}.zip"
+
+      - name: The built program says the tagged version
+        shell: bash
+        run: |
+          said="$(stage/zone --version)"
+          if [ "$said" != "zone ${{ steps.version.outputs.version }}" ]; then
+            echo "::error::Built \"$said\", expected \"zone ${{ steps.version.outputs.version }}\""
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zone-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # The install script, run for real against the archives just built, before anything is
+  # attached to a release.
+  try-install:
+    name: Try install.sh (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: zone-*
+          path: served/download/${{ github.ref_name }}
+          merge-multiple: true
+
+      - name: Install from a local copy of the release
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ( cd "served/download/$GITHUB_REF_NAME" && (sha256sum zone-* 2>/dev/null || shasum -a 256 zone-*) > SHA256SUMS && cat SHA256SUMS )
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory served >/dev/null 2>&1 &
+          curl --silent --show-error --fail --retry 10 --retry-connrefused --retry-delay 1 --output /dev/null "http://127.0.0.1:8765/download/$GITHUB_REF_NAME/SHA256SUMS"
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          ZONE_INSTALL_BASE_URL="http://127.0.0.1:8765" ZONE_VERSION="$version" sh install.sh
+          test "$("$HOME/.local/bin/zone" --version)" = "zone $version"
+          # A second run is an update, and leaves the same program.
+          ZONE_INSTALL_BASE_URL="http://127.0.0.1:8765" ZONE_VERSION="$version" sh install.sh
+          "$HOME/.local/bin/zone" status
+
+  release:
+    name: Draft release
+    needs: [build, try-install]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: zone-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write the checksums
+        run: |
+          cd dist
+          ls -l
+          set -- zone-*
+          test "$#" -eq 4
+          sha256sum zone-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # The formula with this release's version and checksums filled in, ready to be copied
+      # into a tap. It is attached to the release beside the archives.
+      - name: Fill in the Homebrew formula
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sum() { awk -v file="zone-$version-$1" '$2 == file { print $1 }' dist/SHA256SUMS; }
+          sed \
+            -e "s/^  version \".*\"/  version \"$version\"/" \
+            -e "s/sha256 \"[0-9a-f]*\" # macos-universal/sha256 \"$(sum macos-universal.tar.gz)\" # macos-universal/" \
+            -e "s/sha256 \"[0-9a-f]*\" # linux-x86_64/sha256 \"$(sum linux-x86_64.tar.gz)\" # linux-x86_64/" \
+            -e "s/sha256 \"[0-9a-f]*\" # linux-aarch64/sha256 \"$(sum linux-aarch64.tar.gz)\" # linux-aarch64/" \
+            packaging/homebrew/zone.rb > dist/zone.rb
+          ruby -c dist/zone.rb
+          if grep -q '"0\{64\}"' dist/zone.rb; then
+            echo "::error::A checksum in the formula was not filled in"
+            exit 1
+          fi
+          cat dist/zone.rb
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "zone $version" \
+            --generate-notes \
+            dist/zone-* dist/SHA256SUMS dist/zone.rb
