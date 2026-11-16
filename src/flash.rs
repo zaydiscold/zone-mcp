@@ -2,7 +2,10 @@
 //! reads them. No network is involved (PROTOCOL.md, "Carrier 2: Flash").
 //!
 //! - [`fountain`]: the frames and the code that rebuilds the payload from any of them.
+//! - [`assemble`]: one flash put together from what the camera reads, with misread codes
+//!   found and set aside.
 //! - [`seal`]: what is inside: ChaCha20-Poly1305 around raw DEFLATE around JSON.
+//! - [`check`]: the phone's summary of the items, and the computer's check of them.
 //! - [`qr`]: reading QR codes out of camera pictures, and drawing them.
 //! - [`color`]: color pictures, which carry up to three frames, one per channel.
 //! - [`receive`]: the daemon's side: frames in, items in the library out.
@@ -16,6 +19,8 @@
 //!
 //! The key opens flashes. It cannot be turned back into the pairing secret.
 
+pub mod assemble;
+pub mod check;
 pub mod color;
 pub mod dev;
 pub mod fountain;

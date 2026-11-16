@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
+use super::assemble::{Assembler, Trouble};
 use super::fountain::{self, Decoder, Encoder, Shape};
 use super::receive::{self, Outcome};
 use super::{color, qr, seal};
@@ -164,7 +165,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
     let mut without_code = 0usize;
     let mut not_flash = 0usize;
     let mut color_pictures = 0usize;
-    let mut sessions: HashMap<Shape, Decoder> = HashMap::new();
+    let mut sessions: HashMap<Shape, Assembler> = HashMap::new();
     for read in read_all(&files, true) {
         let Ok(read) = read else {
             unreadable += 1;
@@ -177,7 +178,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
         for raw in read.codes {
             match fountain::parse(&raw) {
                 Ok(frame) => {
-                    sessions.entry(frame.shape).or_insert_with(|| Decoder::new(frame.shape)).add(frame.index, frame.body);
+                    sessions.entry(frame.shape).or_insert_with(|| Assembler::new(frame.shape)).take(frame.index, frame.body);
                 }
                 Err(_) => not_flash += 1,
             }
@@ -193,20 +194,30 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
         "sessions": sessions.len(),
     });
     // The flash with the most frames is the one meant. Others are strays.
-    let Some((shape, decoder)) = sessions.iter().max_by_key(|(_, d)| d.frames()) else {
+    let Some((shape, assembler)) = sessions.iter().max_by_key(|(_, a)| a.tally().caught) else {
         report["complete"] = json!(false);
         report["error"] = json!("no picture held a flash frame");
         return Ok(report);
     };
+    let tally = assembler.tally();
     report["session"] = json!(format!("{:08x}", shape.session));
-    report["frames"] = json!(decoder.frames());
-    report["k"] = json!(decoder.k());
-    report["rows"] = json!(decoder.rank());
+    report["frames"] = json!(tally.caught);
+    report["k"] = json!(assembler.k());
+    report["rows"] = json!(assembler.rank());
     report["chunk"] = json!(shape.chunk);
     report["sealed_bytes"] = json!(shape.total_len);
-    let Some(payload) = decoder.solve() else {
+    report["codes"] = json!({
+        "caught": tally.caught,
+        "shown": tally.shown,
+        "missed": tally.missed,
+        "repeats": tally.repeats,
+        "set_aside": tally.set_aside,
+        "restarts": tally.restarts,
+    });
+    report["misread_suspected"] = json!(assembler.trouble() == Some(Trouble::Misread));
+    let Some(payload) = assembler.payload() else {
         report["complete"] = json!(false);
-        report["error"] = json!(format!("{} of {} pieces: more frames are needed", decoder.rank(), decoder.k()));
+        report["error"] = json!(format!("{} of {} pieces: more frames are needed", assembler.rank(), assembler.k()));
         return Ok(report);
     };
     report["complete"] = json!(true);
@@ -218,6 +229,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
             report["phone"] = json!({ "id": flash.phone.id, "name": flash.phone.name, "app": flash.phone.app });
             report["items"] = json!(flash.items.len());
             report["rejected"] = json!(flash.rejected);
+            report["check"] = flash.check.to_json();
             let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
             let mut deletions = 0usize;
             for item in &flash.items {
@@ -259,8 +271,9 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
                         report["deletions"] = json!(stored.deletions);
                         report["imported"] =
                             json!({ "new": stored.inserted, "changed": stored.replaced, "unchanged": stored.unchanged, "paired": stored.paired });
+                        report["check"] = stored.check.to_json();
                     }
-                    Outcome::Failed(reason) => bail!("{reason}"),
+                    Outcome::Failed(reason) | Outcome::NotOpened(reason) | Outcome::NotStored(reason) => bail!("{reason}"),
                 }
             } else {
                 let keys = db.flash_keys(now)?;
@@ -271,6 +284,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
                 report["phone"] = json!({ "id": flash.phone.id, "name": flash.phone.name, "app": flash.phone.app });
                 report["items"] = json!(flash.items.len());
                 report["rejected"] = json!(flash.rejected);
+                report["check"] = flash.check.to_json();
             }
         }
     }

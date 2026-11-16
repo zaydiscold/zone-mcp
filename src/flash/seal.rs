@@ -23,6 +23,8 @@ pub struct Flash {
     pub items: Vec<Item>,
     /// Items without an id, kind or time: they cannot be stored.
     pub rejected: usize,
+    /// The items checked against the phone's own summary of them, when it sent one.
+    pub check: super::check::Check,
 }
 
 fn cipher(key: &[u8; 32]) -> ChaCha20Poly1305 {
@@ -87,15 +89,17 @@ pub fn parse(json: &[u8]) -> Result<Flash> {
     let phone_value = value.get("phone").cloned().unwrap_or(Value::Null);
     let text = |key: &str| phone_value.get(key).and_then(Value::as_str).map(|s| s.chars().take(200).collect::<String>());
     let phone = PhoneInfo { id: text("id"), name: text("name"), app: text("app") };
+    let entries = value.get("items").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let mut items = Vec::new();
     let mut rejected = 0;
-    for entry in value.get("items").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default() {
+    for entry in entries {
         match Item::from_json(entry) {
             Ok(item) => items.push(item),
             Err(_) => rejected += 1,
         }
     }
-    Ok(Flash { phone, items, rejected })
+    let check = super::check::examine(&value, entries);
+    Ok(Flash { phone, items, rejected, check })
 }
 
 /// The flash key as bytes, from the 64 hex characters it is stored as.

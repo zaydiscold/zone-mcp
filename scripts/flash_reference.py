@@ -5,7 +5,7 @@ Frames are XORs of chunks chosen by a splitmix64 stream, so the receiver can reb
 payload from any k (plus a few) distinct frames, in any order, by solving over GF(2).
 Run it to print the test vector both implementations must match.
 """
-import hashlib, struct, sys
+import hashlib, json, struct, sys
 
 MASK = (1 << 64) - 1
 MAGIC = b"ZF1"
@@ -83,6 +83,49 @@ def decode(frames):
     return data[:total]
 
 
+def check_digest(items):
+    """The digest of a flash's item list, for its "check" summary (PROTOCOL.md).
+
+    For each entry in order, six lines each ended by a line feed: id, kind ("-" when absent or
+    not a string), "1" or "0" for deleted, created_at and updated_at as the 16 hex digits of
+    their IEEE 754 binary64 bits with -0 read as 0 ("-" when absent or null), and the hex
+    SHA-256 of the text's UTF-8 ("-" when absent or null). SHA-256 of all of it, in hex.
+    """
+    def label(value):
+        return value if isinstance(value, str) else "-"
+
+    def bits(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return "-"
+        return struct.pack(">d", float(value) + 0.0).hex()
+
+    out = hashlib.sha256()
+    for entry in items:
+        text = entry.get("text")
+        lines = [
+            label(entry.get("id")),
+            label(entry.get("kind")),
+            "1" if entry.get("deleted") is True else "0",
+            bits(entry.get("created_at")),
+            bits(entry.get("updated_at")),
+            hashlib.sha256(text.encode("utf-8")).hexdigest() if isinstance(text, str) else "-",
+        ]
+        for line in lines:
+            out.update(line.encode("utf-8") + b"\n")
+    return out.hexdigest()
+
+
+# The check vector: JSON text as a phone writes it. Parsed with a correctly rounding parser.
+CHECK_VECTOR = (
+    r'[{"created_at":1794445200.25,"duration_s":4.2,"engine":"fluidMini","extra":{},'
+    r'"id":"9F1C2E6A-0000-4000-8000-000000000001","kind":"dictation","rev":"5b1f0c9a2d3e4f60",'
+    r'"source":"keyboard","status":"finished","text":"the words","title":null,"updated_at":1794445203.5},'
+    r'{"created_at":1804773829.0427866,"id":"9F1C2E6A-0000-4000-8000-000000000002","kind":"note",'
+    r'"text":"caf\u00e9 \ud83d\ude00 \u05e9\u05dc\u05d5\u05dd a\u0000b","updated_at":1804773829.0427866},'
+    r'{"deleted":true,"id":"9F1C2E6A-0000-4000-8000-000000000003","kind":"dictation","updated_at":1794445300}]'
+)
+
+
 if __name__ == "__main__":
     session = 0x01020304
     payload = bytes((i * 7 + 3) & 0xFF for i in range(1280))
@@ -102,4 +145,5 @@ if __name__ == "__main__":
     bigframes = [frame(0xA1B2C3D4, big, c, i) for i in range(kb, 2 * kb + 20)]
     assert decode(bigframes) == big
     print("big: k =", kb, "decoded from", len(bigframes), "coded frames only")
+    print("check digest of the vector:", check_digest(json.loads(CHECK_VECTOR)))
     print("ok")

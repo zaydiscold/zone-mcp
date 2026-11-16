@@ -115,13 +115,13 @@ impl SplitMix {
     }
 }
 
-fn words_for(k: usize) -> usize {
+pub(super) fn words_for(k: usize) -> usize {
     k.div_ceil(64)
 }
 
 /// Which chunks frame `index` XORs together, as a bit mask: chunk `n` is bit `n % 64` of
 /// word `n / 64`.
-fn chunk_mask(session: u32, index: u32, k: usize, mask: &mut Vec<u64>) {
+pub(super) fn chunk_mask(session: u32, index: u32, k: usize, mask: &mut Vec<u64>) {
     let words = words_for(k);
     mask.clear();
     mask.resize(words, 0);
@@ -233,11 +233,31 @@ pub enum Added {
     Redundant,
 }
 
+/// What one frame did, with what it says about the frames before it ([`Decoder::reduce`]).
+///
+/// A frame that brings no new row is a check: its chunks are already a sum of held rows, so
+/// its body must equal the same sum of their bodies. When every frame is what the phone sent
+/// the difference (the residual) is zero. When it is not, one of the frames involved was
+/// misread: this frame, or one of the frames that the rows it was checked against came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reduced {
+    /// A new row. `slot` numbers the rows in the order they were made, from 0.
+    Useful { slot: usize },
+    /// A check that came out even. `support` is which rows (by slot) it was checked against.
+    Agreed { support: Vec<u64> },
+    /// A check that did not.
+    Disagreed { support: Vec<u64> },
+}
+
 struct Row {
     /// The chunks this row mentions. The highest one is the row's pivot. Words above the
     /// pivot's are not stored.
     mask: Vec<u64>,
     body: Vec<u8>,
+    /// Which frames this row is the sum of, by slot (bit `s` is the frame that made row `s`).
+    /// A row is only ever the sum of its own frame and rows made before it, so no bit above
+    /// its own slot is set and no word above it is stored. Empty unless the decoder tracks.
+    made_of: Vec<u64>,
 }
 
 /// Rebuilds the payload from frames by elimination over GF(2), one frame at a time.
@@ -250,6 +270,9 @@ pub struct Decoder {
     rank: usize,
     seen: HashSet<u32>,
     scratch: Vec<u64>,
+    /// Whether each row keeps which frames it was made of, so that a check that does not come
+    /// out even can say which frames to suspect.
+    tracking: bool,
 }
 
 impl Decoder {
@@ -263,7 +286,14 @@ impl Decoder {
             rank: 0,
             seen: HashSet::new(),
             scratch: Vec::new(),
+            tracking: false,
         }
+    }
+
+    /// A decoder whose rows remember which frames they were made of. It costs about as much
+    /// again as the chunk masks: `k * k / 16` bytes at most.
+    pub fn tracking(shape: Shape) -> Decoder {
+        Decoder { tracking: true, ..Decoder::new(shape) }
     }
 
     #[cfg(test)]
@@ -280,7 +310,8 @@ impl Decoder {
         self.k
     }
 
-    /// Different frame indexes seen.
+    /// Different frame indexes seen by [`Decoder::add`].
+    #[cfg(test)]
     pub fn frames(&self) -> usize {
         self.seen.len()
     }
@@ -290,7 +321,7 @@ impl Decoder {
     }
 
     /// Takes one frame of this flash. `body` must be `chunk` bytes (which `parse` ensures for
-    /// a frame of this shape).
+    /// a frame of this shape). A frame index seen before is a duplicate, whatever its body.
     pub fn add(&mut self, index: u32, body: &[u8]) -> Added {
         if body.len() != self.chunk || !self.seen.insert(index) {
             return Added::Duplicate;
@@ -298,17 +329,30 @@ impl Decoder {
         if self.is_complete() {
             return Added::Redundant;
         }
+        match self.reduce(index, body) {
+            Reduced::Useful { .. } => Added::Useful,
+            Reduced::Agreed { .. } | Reduced::Disagreed { .. } => Added::Redundant,
+        }
+    }
+
+    /// Reduces one frame against the rows held: a new row, or a check of the rows (see
+    /// [`Reduced`]). Nothing is deduplicated here; the caller decides what counts as the same
+    /// frame. Works after the payload is complete too, when every frame is a check.
+    pub fn reduce(&mut self, index: u32, body: &[u8]) -> Reduced {
+        assert_eq!(body.len(), self.chunk, "a frame of another shape");
         let mut mask = std::mem::take(&mut self.scratch);
         chunk_mask(self.shape.session, index, self.k, &mut mask);
         let mut body = body.to_vec();
+        let mut made_of = if self.tracking { vec![0u64; self.rank / 64 + 1] } else { Vec::new() };
         // Words at and above `top` are zero. It only ever moves down.
         let mut top = mask.len();
-        let added = loop {
+        let reduced = loop {
             while top > 0 && mask[top - 1] == 0 {
                 top -= 1;
             }
             if top == 0 {
-                break Added::Redundant;
+                let even = body.iter().all(|b| *b == 0);
+                break if even { Reduced::Agreed { support: made_of } } else { Reduced::Disagreed { support: made_of } };
             }
             let pivot = (top - 1) * 64 + 63 - mask[top - 1].leading_zeros() as usize;
             match &self.rows[pivot] {
@@ -317,16 +361,24 @@ impl Decoder {
                         *m ^= r;
                     }
                     xor_into(&mut body, &row.body);
+                    for (m, r) in made_of.iter_mut().zip(&row.made_of) {
+                        *m ^= r;
+                    }
                 }
                 None => {
-                    self.rows[pivot] = Some(Row { mask: mask[..top].to_vec(), body });
+                    let slot = self.rank;
+                    if self.tracking {
+                        made_of.resize(slot / 64 + 1, 0);
+                        made_of[slot / 64] |= 1 << (slot % 64);
+                    }
+                    self.rows[pivot] = Some(Row { mask: mask[..top].to_vec(), body, made_of });
                     self.rank += 1;
-                    break Added::Useful;
+                    break Reduced::Useful { slot };
                 }
             }
         };
         self.scratch = mask;
-        added
+        reduced
     }
 
     /// Which chunks the decoder holds a row for, and which of those it can already rebuild,

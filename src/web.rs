@@ -375,6 +375,13 @@ fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) -> (bool, b
         Step::Ignored => return (false, false),
         Step::AlreadyDone => return (true, false),
         Step::Progress { useful } => return (true, useful),
+        Step::GaveUp { reason, bytes } => {
+            warn!("flash: every code of a flash of {bytes} bytes agrees and no key opens it: {reason}");
+            if let Ok(db) = state.db.lock() {
+                receive::record_events(&db, &Outcome::Failed(reason), bytes, receiver.color_pictures > 0);
+            }
+            return (true, false);
+        }
         Step::Complete { shape, payload } => (shape, payload),
     };
     let outcome = match state.db.lock() {
@@ -383,19 +390,22 @@ fn flash_take(state: &WebState, receiver: &mut Receiver, raw: &[u8]) -> (bool, b
             receive::record_events(&db, &outcome, payload.len(), receiver.color_pictures > 0);
             outcome
         }
-        Err(_) => Outcome::Failed("the library is unavailable".to_string()),
+        Err(_) => Outcome::NotStored("The library is unavailable just now. Trying again.".to_string()),
     };
     match &outcome {
         Outcome::Stored(stored) => info!(
-            "flash: {} sent {} items, {} new or changed{}",
+            "flash: {} sent {} items, {} new or changed{}{}",
             stored.phone_name.as_deref().unwrap_or("a phone"),
             stored.items,
             stored.inserted + stored.replaced,
-            if stored.paired { ", and is now paired" } else { "" }
+            if stored.paired { ", and is now paired" } else { "" },
+            if stored.check.all_checked() { String::new() } else { format!(". The check found a problem: {}", stored.check.problems.join(" ")) }
         ),
         Outcome::Failed(reason) => warn!("flash: a complete flash of {} bytes was not stored: {reason}", payload.len()),
+        Outcome::NotOpened(_) => info!("flash: a complete flash of {} bytes did not open; reading more codes to check it", payload.len()),
+        Outcome::NotStored(reason) => warn!("flash: a flash of {} bytes opened but was not stored yet: {reason}", payload.len()),
     }
-    receiver.finish(shape, outcome);
+    receiver.finish(shape, &payload, outcome);
     (true, true)
 }
 
@@ -782,6 +792,12 @@ mod tests {
         // The mosaic is drawn from the decoder's own bit sets, and the page reads what each
         // picture held, so nothing it shows is made up.
         for needle in ["status.blocks.held", "status.blocks.solved", "last.frames", "status.setup", "requestVideoFrameCallback"] {
+            assert!(FLASH_PAGE.contains(needle), "{needle}");
+        }
+        // The tally comes from what the codes carry, and the check from the library: the page
+        // shows both as the daemon reports them (status.codes, status.needed, status.trouble,
+        // result.check).
+        for needle in ["status.codes", "status.needed", "codes.missed_ranges", "codes.set_aside", "lastStatus.trouble", "r.check", "check.declared"] {
             assert!(FLASH_PAGE.contains(needle), "{needle}");
         }
         // The states it explains, the guide, and the basics for keyboards and screen readers.
