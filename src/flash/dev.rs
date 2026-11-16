@@ -178,7 +178,7 @@ pub fn decode(options: &DecodeOptions) -> Result<Value> {
         for raw in read.codes {
             match fountain::parse(&raw) {
                 Ok(frame) => {
-                    sessions.entry(frame.shape).or_insert_with(|| Assembler::new(frame.shape)).take(frame.index, frame.body);
+                    sessions.entry(frame.shape).or_insert_with(|| Assembler::new(frame.shape)).take(frame.index, frame.body, &|| false);
                 }
                 Err(_) => not_flash += 1,
             }

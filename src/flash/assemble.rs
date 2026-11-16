@@ -30,7 +30,8 @@
 //! Every step is bounded: taking a misread reading out of the rows costs one pass over them,
 //! a reading looks for misreads at most [`ROUNDS`] times and checks at most [`RECHECK`] old
 //! checks again each time, and after [`MAX_REMOVALS`] takings out, [`MAX_UNOPENED`] payloads
-//! that did not open, or too many uneven checks, the flash starts over.
+//! that did not open, or too many uneven checks, the flash starts over. Making the rows again
+//! from every reading, the one long step, stops part way when asked to.
 //!
 //! And the flash as a whole is bounded. A whole loop of the phone's codes that does not move it
 //! forward is helped along a step further each time ([`Assembler::unstick`]), and after
@@ -88,6 +89,9 @@ pub const CONFIRM_APART: u64 = 16;
 /// Loops of the phone's codes, counted in moves (one loop is `3k + 60`), after which a flash
 /// that has not come together is given up, whatever it is doing.
 pub const GIVE_UP_LOOPS: u64 = 12;
+
+/// Readings made into rows again between two askings of whether to stop.
+const STOP_EVERY: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Known {
@@ -149,7 +153,7 @@ pub enum Took {
     SetAside,
     /// A new reading. `useful` when it brought a new row.
     New { useful: bool },
-    /// Not taken: the flash was given up.
+    /// Not taken: the flash was given up, or it was asked to stop (see [`Assembler::take`]).
     Ignored,
 }
 
@@ -242,6 +246,9 @@ pub struct Assembler {
     stalls: usize,
     /// The flash did not come together, and was given up.
     gave_up: bool,
+    /// Making the rows again was stopped part way, so the rows are not yet what the readings
+    /// make. The next reading makes them again first.
+    interrupted: bool,
     /// Searching the thorough way (see [`Assembler::look_for_misreads`]).
     thorough: bool,
     /// Uneven checks, and payloads that did not open, since reading last began.
@@ -282,6 +289,7 @@ impl Assembler {
             progress_at: 0,
             stalls: 0,
             gave_up: false,
+            interrupted: false,
             thorough: false,
             uneven_seen: 0,
             unopened_seen: 0,
@@ -337,8 +345,13 @@ impl Assembler {
     }
 
     /// Takes one reading: a frame of this flash, `body` of the flash's chunk size.
-    pub fn take(&mut self, index: u32, body: &[u8]) -> Took {
-        if self.gave_up {
+    ///
+    /// `stop` says to stop at once (the page started over, or zone is closing). Making the rows
+    /// again from every reading kept is the one step here that can take long, a second or more
+    /// for a flash of thousands of pieces, and it asks `stop` as it goes. Stopped part way, it
+    /// is done again from the start at the next reading.
+    pub fn take(&mut self, index: u32, body: &[u8], stop: &dyn Fn() -> bool) -> Took {
+        if self.gave_up || (self.interrupted && !self.rebuild(stop)) {
             return Took::Ignored;
         }
         let print = fingerprint(body);
@@ -348,8 +361,8 @@ impl Assembler {
             return Took::Ignored;
         }
         if self.moves - self.progress_at >= self.in_loop() {
-            self.unstick();
-            if self.gave_up {
+            self.unstick(stop);
+            if self.gave_up || self.interrupted {
                 return Took::Ignored;
             }
         }
@@ -357,7 +370,7 @@ impl Assembler {
             Some(Known::Kept(position)) => {
                 self.repeats += 1;
                 if self.confirm(*position) && !self.conflicts.is_empty() {
-                    self.look_for_misreads(false);
+                    self.look_for_misreads(false, stop);
                 }
                 return Took::Repeat;
             }
@@ -379,7 +392,7 @@ impl Assembler {
         let useful = check == Check::Row;
         // A new row changes no check, so only a check can move the search for a misread code.
         if !useful {
-            self.look_for_misreads(true);
+            self.look_for_misreads(true, stop);
         }
         Took::New { useful }
     }
@@ -421,7 +434,7 @@ impl Assembler {
     /// 4. It gives up.
     ///
     /// A flash too large to track has nothing to check again, and starts over at the first step.
-    fn unstick(&mut self) {
+    fn unstick(&mut self, stop: &dyn Fn() -> bool) {
         self.stalls += 1;
         self.progress_at = self.moves;
         match self.stalls {
@@ -430,8 +443,9 @@ impl Assembler {
                     reading.confirmed = false;
                 }
                 self.take_back_doubtful();
-                self.rebuild();
-                self.look_for_misreads(false);
+                if self.rebuild(stop) {
+                    self.look_for_misreads(false, stop);
+                }
             }
             1 | 2 => self.start_over(false),
             3 => self.start_over(true),
@@ -519,7 +533,9 @@ impl Assembler {
     ///
     /// `after_check` says the newest reading was a check: only checks are evidence, so only
     /// they count toward the patience with suspects that stop narrowing.
-    fn look_for_misreads(&mut self, mut after_check: bool) {
+    ///
+    /// `stop` is for making the rows again (see [`Assembler::take`]): stopped, it returns.
+    fn look_for_misreads(&mut self, mut after_check: bool, stop: &dyn Fn() -> bool) {
         if !self.tracking {
             if self.uneven {
                 self.start_over(false);
@@ -528,6 +544,9 @@ impl Assembler {
         }
         // Each round sets aside at least one reading, or returns.
         for _ in 0..ROUNDS {
+            if self.interrupted {
+                return;
+            }
             if self.conflicts.is_empty() {
                 self.patience = 0;
                 self.suspects = usize::MAX;
@@ -547,10 +566,10 @@ impl Assembler {
                 // pass over every reading each time). A fresh start goes back to the quick way.
                 self.thorough = true;
                 self.removals = 0;
-                self.rebuild();
+                self.rebuild(stop);
                 continue;
             }
-            if !self.narrow(after_check) {
+            if !self.narrow(after_check, stop) {
                 return;
             }
             after_check = false;
@@ -558,7 +577,7 @@ impl Assembler {
     }
 
     /// One round of [`Assembler::look_for_misreads`]. True when it set something aside.
-    fn narrow(&mut self, after_check: bool) -> bool {
+    fn narrow(&mut self, after_check: bool, stop: &dyn Fn() -> bool) -> bool {
         let words = self.slots.len().div_ceil(64).max(1);
         let open = |conflict: &Conflict, cleared: &[u64]| -> Vec<u64> {
             (0..words).map(|w| conflict.support.get(w).copied().unwrap_or(0) & !cleared.get(w).copied().unwrap_or(0)).collect()
@@ -643,7 +662,7 @@ impl Assembler {
             // Only checks were misread. The rows stand; their uneven checks go.
             self.conflicts.retain(|c| !checks.contains(&c.reading));
         } else if self.thorough {
-            self.rebuild();
+            self.rebuild(stop);
         } else {
             self.take_out(&slots);
         }
@@ -712,9 +731,15 @@ impl Assembler {
     }
 
     /// Makes the rows again from every reading still kept, in the order they arrived: the
-    /// thorough way, once the quick one is not getting anywhere.
-    fn rebuild(&mut self) {
-        self.removals += 1;
+    /// thorough way, once the quick one is not getting anywhere. It costs what the whole flash
+    /// did so far, so it asks `stop` every [`STOP_EVERY`] readings, and when told to stop it
+    /// leaves the rows half made (`interrupted`) and returns false.
+    fn rebuild(&mut self, stop: &dyn Fn() -> bool) -> bool {
+        // A rebuild stopped part way and done again is still one.
+        if !self.interrupted {
+            self.removals += 1;
+        }
+        self.interrupted = false;
         self.fresh_decoder();
         self.slots.clear();
         self.cleared.clear();
@@ -725,11 +750,17 @@ impl Assembler {
         self.suspects = usize::MAX;
         self.patience = 0;
         for position in 0..self.readings.len() {
+            if position % STOP_EVERY == 0 && stop() {
+                self.interrupted = true;
+                self.ready = false;
+                return false;
+            }
             if let Some(reading) = self.readings[position].as_mut() {
                 reading.slot = None;
             }
             self.reduce_again(position);
         }
+        true
     }
 
     /// Drops every reading and begins again, keeping only the readings surely misread (or none,
@@ -745,6 +776,7 @@ impl Assembler {
         self.doubtful.clear();
         self.known.retain(|_, known| !forget_all && *known == Known::SetAside { sure: true });
         self.progress_at = self.moves;
+        self.interrupted = false;
         self.caught.clear();
         self.slots.clear();
         self.cleared.clear();
@@ -852,7 +884,7 @@ mod tests {
 
     fn take(assembler: &mut Assembler, frame: &[u8]) -> Took {
         let parsed = parse(frame).unwrap();
-        assembler.take(parsed.index, parsed.body)
+        assembler.take(parsed.index, parsed.body, &|| false)
     }
 
     /// A frame with one byte of its body changed: a code misread as another valid code.
@@ -1206,14 +1238,17 @@ mod tests {
         codes: u64,
         cycle: u64,
         tally: Tally,
-        /// Readings not taken.
+        /// Bodies added into others by the reading that did the most, and readings not taken.
+        most_ops: u64,
         ignored: usize,
+        /// Bodies added by the readings not taken.
+        ignored_ops: u64,
     }
 
     /// The camera catches only the plain codes on the first two passes, and code 4 (frame 3)
     /// both times with the same misreading. Then it reads everything, round the loop, at most
     /// [`GIVE_UP_LOOPS`] times.
-    fn read_in_two_showings() -> Got {
+    fn read_in_two_showings(stop: &dyn Fn() -> bool) -> Got {
         let data = payload(30_000, 15);
         let encoder = Encoder::new(0x8000_0014, &data, 300).unwrap();
         let k = encoder.k() as u32;
@@ -1222,13 +1257,18 @@ mod tests {
         let bad = misread(&encoder.frame(3), 21);
         let passes = (0..2).flat_map(|_| 0..k).map(|index| (true, if index == 3 { bad.clone() } else { encoder.frame(index) }));
         let loops = (0..GIVE_UP_LOOPS as u32 * cycle).map(|n| (false, encoder.frame(n % cycle)));
-        let mut got = Got { solved: false, codes: 0, cycle: u64::from(cycle), tally: Tally::default(), ignored: 0 };
+        let mut got = Got { solved: false, codes: 0, cycle: u64::from(cycle), tally: Tally::default(), most_ops: 0, ignored: 0, ignored_ops: 0 };
         for (early, frame) in passes.chain(loops) {
             got.codes += u64::from(!early);
             let parsed = parse(&frame).unwrap();
-            if assembler.take(parsed.index, parsed.body) == Took::Ignored {
+            let ops = assembler.body_ops();
+            let took = assembler.take(parsed.index, parsed.body, stop);
+            let spent = assembler.body_ops() - ops;
+            if took == Took::Ignored {
                 got.ignored += 1;
+                got.ignored_ops += spent;
             }
+            got.most_ops = got.most_ops.max(spent);
             if let Some(payload) = assembler.take_payload() {
                 if payload == data {
                     got.solved = true;
@@ -1251,11 +1291,73 @@ mod tests {
     /// vouching for anybody, and the misread row is found.
     #[test]
     fn a_misreading_read_in_two_showings_is_got_past() {
-        let got = read_in_two_showings();
+        let got = read_in_two_showings(&|| false);
         assert!(got.solved, "{:?}", got.tally);
         // Helped along once, without starting over: within the loop after the one it got stuck.
         assert_eq!((got.tally.stalls, got.tally.restarts, got.ignored), (1, 0, 0), "{:?}", got.tally);
         assert!(got.codes <= 2 * got.cycle, "{} codes", got.codes);
+    }
+
+    /// Start over asks the flash thread to stop, and making the rows again from every reading,
+    /// the one long step, stops then, at the start or part way: the reading that was being taken
+    /// is not, and costs a few bodies added at most. The rows are made again at the next
+    /// reading, and the flash comes out the same. zone 0.1.1 as first built did not ask while
+    /// making the rows again, and one code could make them again up to eight times, each costing
+    /// what the whole flash had so far: about five seconds at 16,384 pieces.
+    #[test]
+    fn making_the_rows_again_stops_when_asked() {
+        let whole = read_in_two_showings(&|| false);
+        for stop_on in [1, 3] {
+            let asked = std::cell::Cell::new(0);
+            let got = read_in_two_showings(&|| {
+                asked.set(asked.get() + 1);
+                asked.get() == stop_on
+            });
+            assert!(got.solved, "stopped at asking {stop_on}: {:?}", got.tally);
+            assert_eq!(got.ignored, 1, "stopped at asking {stop_on}");
+            assert!(asked.get() > stop_on, "made again after stopping");
+            // The same, but for the one reading not taken.
+            assert_eq!((got.codes, got.tally.stalls, got.tally.set_aside), (whole.codes + 1, whole.tally.stalls, whole.tally.set_aside));
+            // Stopped, it had made a few rows at most of what the rows made again cost in all.
+            assert!(got.ignored_ops * 8 < whole.most_ops, "{} bodies before stopping, against {}", got.ignored_ops, whole.most_ops);
+        }
+        // Stopped a few times, at the start of making the rows again and part way, in a search
+        // that makes them again many times. (In zone a stop is for good: the flash is dropped.)
+        let data = payload(37_200, 13);
+        let encoder = Encoder::new(0x8000_0012, &data, 300).unwrap();
+        let cycle = 3 * encoder.k() as u32 + 60;
+        let mut assembler = Assembler::new(parse(&encoder.frame(0)).unwrap().shape);
+        let (asked, stopped) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+        let stop = || {
+            asked.set(asked.get() + 1);
+            let now = [2, 9, 30, 60].contains(&asked.get());
+            stopped.set(stopped.get() + usize::from(now));
+            now
+        };
+        let mut dice = 0x5eed_u64;
+        let mut roll = move |n: u64| {
+            dice = dice.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (dice >> 33) % n
+        };
+        let mut solved = None;
+        for n in 0..cycle * 8 {
+            if roll(100) < 30 {
+                continue;
+            }
+            let frame = encoder.frame(n % cycle);
+            let frame = if roll(1000) < 80 { misread(&frame, roll(300) as usize) } else { frame };
+            let parsed = parse(&frame).unwrap();
+            assembler.take(parsed.index, parsed.body, &stop);
+            if let Some(payload) = assembler.take_payload() {
+                if payload == data {
+                    solved = Some(payload);
+                    break;
+                }
+                assembler.did_not_open();
+            }
+        }
+        assert_eq!(solved.as_deref(), Some(data.as_slice()), "{:?}", assembler.tally());
+        assert_eq!(stopped.get(), 4, "asked {} times", asked.get());
     }
 
     /// A flash whose codes can never come together ends, given up, within [`GIVE_UP_LOOPS`]
@@ -1390,7 +1492,7 @@ pub(crate) mod simulate {
             run.codes += 1;
             let frame = parse(&frame).unwrap();
             let (ops, at) = (assembler.body_ops(), Instant::now());
-            assembler.take(frame.index, frame.body);
+            assembler.take(frame.index, frame.body, &|| false);
             let payload = assembler.take_payload();
             run.longest = run.longest.max(at.elapsed());
             run.most_body_ops = run.most_body_ops.max(assembler.body_ops() - ops);

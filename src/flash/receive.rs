@@ -385,7 +385,7 @@ impl Receiver {
     /// before this returns: see [`Receiver::take`] for doing that separately.
     #[cfg(test)]
     pub fn add(&mut self, raw: &[u8]) -> Step {
-        match self.take(raw) {
+        match self.take(raw, &|| false) {
             Step::Ready { shape } => match self.solve(shape, &|| false) {
                 Some(payload) => Step::Complete { shape, payload },
                 None => Step::Progress { useful: true },
@@ -395,8 +395,9 @@ impl Receiver {
     }
 
     /// Takes the bytes of one QR code. A frame that completes the rows of a flash gives
-    /// [`Step::Ready`]: the payload is then rebuilt with [`Receiver::solve`].
-    pub fn take(&mut self, raw: &[u8]) -> Step {
+    /// [`Step::Ready`]: the payload is then rebuilt with [`Receiver::solve`]. `stop` says to
+    /// stop a long step at once (see [`Assembler::take`]).
+    pub fn take(&mut self, raw: &[u8], stop: &dyn Fn() -> bool) -> Step {
         let frame = match fountain::parse(raw) {
             Ok(frame) => frame,
             Err(_) => return Step::Ignored,
@@ -456,7 +457,7 @@ impl Receiver {
             return Step::AlreadyDone;
         };
         let set_aside = assembler.set_aside_count();
-        let took = assembler.take(frame.index, frame.body);
+        let took = assembler.take(frame.index, frame.body, stop);
         let useful = took == Took::New { useful: true };
         if useful {
             self.frames_useful += 1;

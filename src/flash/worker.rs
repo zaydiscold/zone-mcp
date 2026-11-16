@@ -16,7 +16,8 @@
 //! arrive meanwhile wait their turn, at most [`MAX_WAITING`] of them: past that the oldest
 //! waiting one is dropped, which costs nothing, as the phone shows its codes again and again.
 //!
-//! Starting over cancels a flash being put together at once.
+//! Starting over cancels at once a flash being put together, and the search for a misread code
+//! when it is making a flash's rows again from every reading.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,6 +53,13 @@ struct Inner {
     /// For tests: while closed, the thread waits just before putting a flash together.
     #[cfg(test)]
     gate: (Mutex<bool>, Condvar),
+    /// For tests: while held (the first), the thread waits the next time it asks whether to
+    /// stop a long step of taking a code in, and says it got there (the second).
+    #[cfg(test)]
+    hold: (Mutex<(bool, bool)>, Condvar),
+    /// For tests: how many times the thread asked whether to stop a long step.
+    #[cfg(test)]
+    asked: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Default)]
@@ -104,6 +112,10 @@ impl FlashWorker {
             cancel: AtomicBool::new(false),
             #[cfg(test)]
             gate: (Mutex::new(false), Condvar::new()),
+            #[cfg(test)]
+            hold: (Mutex::new((false, false)), Condvar::new()),
+            #[cfg(test)]
+            asked: std::sync::atomic::AtomicUsize::new(0),
         });
         let thread = inner.clone();
         if let Err(error) = std::thread::Builder::new().name("zone-flash".into()).spawn(move || run(&thread, &db, receiver)) {
@@ -270,11 +282,30 @@ fn run(inner: &Inner, db: &Mutex<Db>, mut receiver: Receiver) {
     }
 }
 
+/// Whether to stop a long step of taking a code in, making a flash's rows again (see
+/// `Assembler::take`): the page started over, or zone is closing.
+fn stopping(inner: &Inner) -> bool {
+    #[cfg(test)]
+    {
+        inner.asked.fetch_add(1, Ordering::Relaxed);
+        let (held, released) = &inner.hold;
+        let mut held = held.lock().unwrap();
+        if held.0 {
+            held.1 = true;
+            released.notify_all();
+            while held.0 {
+                held = released.wait(held).unwrap();
+            }
+        }
+    }
+    inner.cancel.load(Ordering::Relaxed)
+}
+
 /// Takes the bytes of one frame. The frame that completes a flash puts it together and stores
 /// it. Returns whether it was a flash frame, and whether it brought a new row.
 fn take(inner: &Inner, db: &Mutex<Db>, receiver: &mut Receiver, raw: &[u8]) -> (bool, bool) {
     let color = receiver.color_pictures > 0;
-    let (shape, payload) = match receiver.take(raw) {
+    let (shape, payload) = match receiver.take(raw, &|| stopping(inner)) {
         Step::Ignored => return (false, false),
         Step::AlreadyDone => return (true, false),
         Step::Progress { useful } => return (true, useful),
@@ -346,6 +377,18 @@ mod tests {
             let (lock, opened) = &self.inner.gate;
             *lock.lock().unwrap() = closed;
             opened.notify_all();
+        }
+
+        /// Holds the thread the next time it asks whether to stop a long step, or lets it go.
+        fn hold(&self, held: bool) {
+            let (lock, released) = &self.inner.hold;
+            lock.lock().unwrap().0 = held;
+            released.notify_all();
+        }
+
+        /// True once the thread is held there.
+        fn is_held(&self) -> bool {
+            self.inner.hold.0.lock().unwrap().1
         }
     }
 
@@ -440,6 +483,56 @@ mod tests {
         }
         let done = until(&worker, |s| s["state"] == "done");
         assert_eq!(done["result"]["new"], 40, "{done}");
+    }
+
+    /// Start over reaches into the one long step of taking a code in, making a flash's rows
+    /// again from every reading: the thread stops it at once, the page hears back, and nothing
+    /// is stored. (Here the rows are made again because the flash got stuck: code 4 was misread
+    /// the same way in two showings, see `Assembler::unstick`.) zone 0.1.1 as first built only
+    /// looked between codes, and one code could make the rows again up to eight times, each
+    /// costing what the whole flash had so far: about five seconds at 16,384 pieces.
+    #[test]
+    fn starting_over_stops_making_the_rows_again() {
+        let db = library();
+        let worker = Arc::new(FlashWorker::start_waiting(db.clone(), Duration::from_millis(200)));
+        let encoder = flash(400, 0x8000_0f04);
+        let k = encoder.k() as u32;
+        assert!(k > 2 * crate::flash::assemble::CONFIRM_APART as u32, "k = {k}");
+        let mut bad = encoder.frame(3);
+        bad[fountain::HEADER_LEN + 21] ^= 0x5a;
+        worker.hold(true);
+        // The plain codes twice, code 4 misread both times; then round the loop, read right.
+        let passes = (0..2).flat_map(|_| 0..k).map(|index| if index == 3 { bad.clone() } else { encoder.frame(index) });
+        let loops = (0..12 * (3 * k + 60)).map(|n| encoder.frame(n % (3 * k + 60)));
+        for frame in passes.chain(loops) {
+            let status = worker.frame(frame);
+            assert_ne!(status["state"], "done", "{status}");
+            if worker.is_held() {
+                break;
+            }
+        }
+        assert!(worker.is_held(), "the rows were made again");
+        let asked = worker.inner.asked.load(Ordering::Relaxed);
+        let resetting = std::thread::spawn({
+            let worker = worker.clone();
+            move || worker.reset()
+        });
+        until(&worker, |_| worker.inner.cancel.load(Ordering::Relaxed));
+        let let_go = Instant::now();
+        worker.hold(false);
+        assert_eq!(resetting.join().unwrap()["state"], "waiting");
+        assert!(let_go.elapsed() < Duration::from_secs(5), "{:?}", let_go.elapsed());
+        // Told to stop at the first asking, it asked no more: the rows were left half made.
+        assert_eq!(worker.inner.asked.load(Ordering::Relaxed), asked);
+        assert_eq!(db.lock().unwrap().total_items().unwrap(), 0);
+        // Shown again, read right, it is stored as if for the first time.
+        for index in 0..3 * k {
+            if worker.frame(encoder.frame(index))["state"] == "done" {
+                break;
+            }
+        }
+        let done = until(&worker, |s| s["state"] == "done");
+        assert_eq!(done["result"]["new"], 400, "{done}");
     }
 
     /// A flash stored before zone restarted is known to the next zone at once: its frames,
