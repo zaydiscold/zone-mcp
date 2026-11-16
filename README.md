@@ -271,8 +271,10 @@ from each picture.
 The page guides you as it goes. It says when the camera is not allowed and how to allow it,
 suggests moving closer, turning the brightness up or tilting away a glare when it sees no code
 for a few seconds, says when a QR code in view is not a Zone flash, and says plainly what to do
-when a flash cannot be opened (usually: the phone is not paired, so run `zone pair` and scan the
-code first; zone says this only after more codes have confirmed that none was misread).
+when a flash cannot be opened (usually: the phone is not paired, so choose Pair a phone in your
+library and scan the code first; zone says this only after more codes have confirmed that none
+was misread). While zone puts a large flash together it says so, instead of taking the quiet for
+the phone going out of sight.
 Everything it shows comes from zone's own decoder, not from an animation.
 
 You do not have to catch every code. Any code helps, in any order, so if the camera misses some
@@ -289,7 +291,14 @@ instead of failing. When it is done, zone reads every item back from the library
 it with what the phone said it sent, count, times to the last binary digit and text: the page
 says, for example, "1,764 items, all checked" and the dates they span. The phone shows how many
 items and pieces it is sending, and asks you to tap Done only when the page says Done with
-that count.
+that count. Each flash has a name, such as `8f3a 21c4`: the phone shows it under its codes and
+in its Done question, and the page shows it too, so you can tell they mean the same flash. One
+flash carries up to 4,096 pieces; a larger library goes as several, one after another.
+
+A flash is stored once. If the phone is still showing a flash this computer has stored (you
+started over on the page, or zone restarted), the page says it was stored before, and when,
+and stores nothing: storing it again would put back older versions of anything sent over Link
+since.
 
 The phone has to be paired with the computer first, because the codes are encrypted with a key
 both sides get at pairing. Pairing does not need a network either: scanning the code from
