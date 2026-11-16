@@ -4,7 +4,7 @@ A menu bar app that is the whole install of [zone](../README.md) on a Mac. Downl
 open it, scan one code with your iPhone. No terminal.
 
 <p align="center">
-  <img src="../docs/media/mac-popover.png" width="372" alt="The Zone menu bar window: a paired iPhone, today's count, what just arrived, and the latest dictations">
+  <img src="../docs/media/mac-popover.png" width="372" alt="The Zone menu bar window: synced just now, a clip with a Copy button, the latest dictations, and four buttons">
 </p>
 
 It carries the `zone` program inside it and runs it for you. Everything zone does (receive
@@ -25,29 +25,30 @@ dot: zone is not running. An exclamation mark: something needs you.
   <img src="../docs/media/mac-menubar.png" width="600" alt="The menu bar icon's four faces on a dark and a light menu bar: running, receiving, not running, needs you">
 </p>
 
-**Click it.**
+**Click it.** The window keeps to what you open it for.
 
-- Each paired phone: when it last synced, how many items it has sent, and whether the last
-  sync went directly or through the relay.
-- Whether this Mac can be reached from other networks.
-- How many things you said today, how many are in the library, and how they split into
-  dictations, notes and meetings.
-- What just happened: "3 dictations from Demo iPhone, just now".
-- The latest items. Click one to copy it. **Hide text** covers the words, for when you are
-  sharing your screen (it stays on until you turn it off, here and in the floating window).
+- One line at the top: "Synced 2 min ago", "Receiving" while something arrives, "This
+  network only" while zone reconnects to the relay. Point at it for the rest: each phone,
+  how its last sync travelled, and how many items the library holds.
 - The newest clip, for a quarter of an hour after it arrives (see Clips below).
-- Agents: every AI app on this Mac with a switch, and under each connected one a line
-  that says what it may read. Click the line to choose: everything, notes and meetings
-  only, or all but keyboard dictations (what you typed by voice into other apps).
-- Pair, History, Flash, and More: ask the phone to resend everything, choose a
-  backup folder, start at login, the `zone` command, who runs zone, updates, the setup guide.
-- When macOS has to allow something (below), one line at the top says what, with an
-  **Allow** button. When zone keeps stopping, **Start again** and **Show the log**.
+- The latest four items. Click one to copy it. The eye beside them (**Hide text**) covers
+  the words, for when you are sharing your screen (it stays on until you turn it off, here
+  and in the floating window). The window icon beside it opens the floating window.
+- History, Flash, Agents and More. Agents: every AI app on this Mac with a switch, and under
+  each connected one a line that says what it may read. Click the line to choose:
+  everything, notes and meetings only, or all but keyboard dictations (what you typed by
+  voice into other apps). More: each paired phone (when it last synced, how many items,
+  direct or through the relay, and a menu to ask it to send everything again or forget it),
+  pairing another iPhone, the backup folder, clips on the clipboard, start at login, the
+  `zone` command, who runs zone, updates, the setup guide, and Quit.
+- Only when something needs you, a line at the top says what: no iPhone paired yet
+  (**Pair**), something macOS has to allow (**Allow**, see below), or zone that keeps
+  stopping (**Start again**, **Show the log**).
 
 <p align="center">
-  <img src="../docs/media/mac-popover.gif" width="372" alt="Three items arrive: the window says Receiving, the counts go up and the new items appear">
+  <img src="../docs/media/mac-popover-more.png" width="372" alt="The More page: the paired iPhone, pairing another, the backup folder, clips on the clipboard, this Mac and updates">
   &nbsp;
-  <img src="../docs/media/mac-popover-hidden.png" width="372" alt="The same window with Hide text on: the words are covered">
+  <img src="../docs/media/mac-popover-hidden.png" width="372" alt="The main window with Hide text on: the words are covered">
 </p>
 <p align="center">
   <img src="../docs/media/mac-agents-choose.png" width="372" alt="The Agents page: five AI apps with switches, and the three choices of what one may read">
@@ -57,21 +58,20 @@ dot: zone is not running. An exclamation mark: something needs you.
 was on the phone's clipboard, something shared from another app, or something typed. When
 one arrives the Z pulses the way it does for anything arriving, and the clip leads the
 window: which phone, when, one line of it, and a Copy button. Clips also sit in the latest
-items with their own label, and the floating window has a filter for them. Hide text covers
+items with their own label (the one in the card is not listed twice), and the floating
+window has a filter for them. Hide text covers
 a clip like everything else.
 
 <p align="center">
   <img src="../docs/media/mac-clip.gif" width="372" alt="A clip arrives: the window says Receiving and the clip appears at the top with a Copy button">
-  &nbsp;
-  <img src="../docs/media/mac-clip-setting.png" width="372" alt="The More page with the switch: Copy to this Mac's clipboard when a clip arrives">
 </p>
 
-More > "Copy to this Mac's clipboard when a clip arrives" is `zone clipboard on`: with it
+More > "Put clips on the clipboard" is `zone clipboard on`: with it
 on, a clip that was sent in the last two minutes is ready to paste here by the time you
 look up. It is off until you turn it on (the setup guide asks once), and nothing else ever
 touches your clipboard. The app shows no notification and asks for no permission.
 
-**The floating window.** "Keep these in a floating window" opens a small window that stays
+**The floating window.** The window icon beside the latest items opens a small window that stays
 above your other windows and shows what you said as it arrives, with a search over the
 whole library and filters for dictations, notes and meetings. Clicking a row copies it
 without taking the keyboard away from the app you are working in.
@@ -171,11 +171,23 @@ The app owns the background service.
   - the app's own copy, left running because the app was force quit: adopted, and stopped
     when you quit as usual;
   - started at login by `zone install` (the launchd agent `wtf.zayd.zone.link`): left
-    alone. The app shows a note with two choices, "Let this app run zone" (runs
-    `zone uninstall`, which removes that login item, then starts its own) or "Keep it this
-    way" (it is not asked again; the choice stays under More > Who runs zone);
-  - started some other way, most likely `zone serve` in a terminal: the same note, and
-    taking over stops that process.
+    alone, and it keeps running when you quit the app. More > Who runs zone says so, with
+    **Take over** (runs `zone uninstall`, which removes that login item, then starts the
+    app's own);
+  - started some other way, most likely `zone serve` in a terminal: the same, and taking
+    over stops that process.
+- **When the login item is loaded but its zone is not running**, the app waits three
+  seconds (launchd may be starting it), then asks launchd to start it
+  (`launchctl kickstart`), and again every 20 seconds while it stays down. Only after 45
+  seconds does the window say zone is not starting, with **Run zone in this app**. This is
+  for a zone that stopped "successfully": launchd restarts the login item only when zone
+  exits with an error. Since 0.1.2 zone itself reports a stop by a stray signal as one
+  (exit 143 for SIGTERM, 129 for SIGHUP), so launchd brings it back by itself ten seconds
+  later; the app covers older versions and the ten seconds. (On 2026-11-16 a test step's
+  `pkill -f "zone serve"`, meant for its own copy, stopped the real one, and with 0.1.1 it
+  stayed stopped for five hours.)
+- **History and Flash wait for zone.** Clicked while zone is starting, History opens once it
+  runs, and the Flash window opens at once and says "Starting zone" until it can load.
 - **The app's own copy of zone** lives at `~/Library/Application Support/Zone/bin/zone`. On
   every launch the app makes sure it is the same program as the one inside the app, and
   replaces it when the app was updated. It is never written into while it runs: the new file
@@ -204,7 +216,8 @@ The app owns the background service.
   `/opt/homebrew/bin` and `/usr/local/bin` (the last one asks for your password when it has
   to). If another `zone` is already on your PATH, the app says where and leaves it alone
   unless you choose to replace it.
-- **What just happened** comes from `zone events --json --follow` (and if that follower ever
+- **What just happened** (what makes the header say "Receiving", fills the floating window's
+  last arrival, and names a new pairing) comes from `zone events --json --follow` (and if that follower ever
   ends, it is started again with `--after` the last event seen, so nothing is missed or
   shown twice). When the app is attached to an older zone that does not write events down,
   it reads `zone.log` instead. Both sit behind one small protocol, `ActivitySource`, and

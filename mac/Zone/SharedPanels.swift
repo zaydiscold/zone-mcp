@@ -515,9 +515,32 @@ struct ItemRow: View {
 /// The eye that hides what was said, for sharing a screen.
 struct HideTextButton: View {
     let model: AppModel
+    /// Only the eye, for the corner of a block.
+    var compact = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        if compact {
+            Button {
+                model.state.hideText.toggle()
+            } label: {
+                HoverRow(radius: 6) { _ in
+                    Image(systemName: model.state.hideText ? "eye.slash" : "eye")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(model.state.hideText ? Zone.accentText(scheme) : Zone.muted(scheme))
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+            .help(model.state.hideText ? "Show what you said" : "Hide what you said, for when you share your screen")
+            .accessibilityLabel(model.state.hideText ? "Show text" : "Hide text")
+        } else {
+            full
+        }
+    }
+
+    private var full: some View {
         Button {
             model.state.hideText.toggle()
         } label: {

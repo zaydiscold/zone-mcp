@@ -56,6 +56,9 @@ private struct HeightKey: PreferenceKey {
 
 // MARK: Main page
 
+/// The menu: how syncing stands in one line, a clip that just arrived, the latest things
+/// said, and four buttons. Everything else (each phone, pairing another, the backup folder,
+/// who runs zone, quitting) is under More, and the history page has the rest of the library.
 private struct MainPage: View {
     let model: AppModel
     let navigation: PopoverNavigation
@@ -65,9 +68,9 @@ private struct MainPage: View {
         VStack(spacing: 0) {
             header
             Hairline()
-            VStack(alignment: .leading, spacing: 14) {
-                if let banner = takeoverBanner {
-                    banner
+            VStack(alignment: .leading, spacing: 12) {
+                if model.loginItemStalled {
+                    stalledBanner
                 }
                 if case let .problem(message) = model.daemon {
                     problemBanner(message)
@@ -75,24 +78,33 @@ private struct MainPage: View {
                 if let issue = model.permissionIssue {
                     permissionBanner(issue.text, issue.permission)
                 }
-                phones
+                if model.status?.phones.isEmpty == true {
+                    noPhone
+                }
                 if let clip = model.leadingClip {
                     ClipCard(model: model, clip: clip)
                         .transition(.opacity.combined(with: .offset(y: -6)))
                 }
-                figures
-                activity
                 recent
             }
             .animation(Zone.settle, value: model.leadingClip?.id)
             .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+            if let notice = model.notice {
+                Text(notice)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Zone.ink(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 10)
+                    .transition(.opacity)
+            }
             Hairline()
             actions
-            Hairline()
-            footer
         }
+        .animation(Zone.motion, value: model.notice)
     }
 
     // MARK: Header
@@ -101,14 +113,14 @@ private struct MainPage: View {
         HStack(alignment: .center, spacing: 10) {
             Wordmark(size: 24)
             Spacer()
-            HStack(spacing: 2) {
+            HStack(spacing: 7) {
                 stateLight
                 Text(model.headline)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .foregroundStyle(isProblem ? Zone.alarm : Zone.ink(scheme))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
             }
+            .help(model.statusDetail)
         }
         .padding(.leading, 16)
         .padding(.trailing, 14)
@@ -127,62 +139,52 @@ private struct MainPage: View {
 
     private var isProblem: Bool {
         if case .problem = model.daemon { return true }
-        return false
+        return model.loginItemStalled
     }
 
     @ViewBuilder
     private var stateLight: some View {
         switch model.daemon {
         case .running:
-            StatusDot(color: Zone.accentGraphic(scheme), pulses: model.isSyncing, size: 8)
+            if model.status?.daemon.relayConnected == false {
+                StatusDot(color: Zone.muted(scheme), size: 8)
+            } else {
+                StatusDot(color: Zone.accentGraphic(scheme), pulses: model.isSyncing, size: 8)
+            }
         case .checking, .starting, .waitingForLoginItem:
-            StatusDot(color: Zone.muted(scheme), hollow: true, size: 8)
+            StatusDot(color: model.loginItemStalled ? Zone.alarm : Zone.muted(scheme), hollow: !model.loginItemStalled, size: 8)
         case .problem:
             StatusDot(color: Zone.alarm, size: 8)
         }
     }
 
-    // MARK: Someone else runs zone
-
-    private var takeoverBanner: AnyView? {
-        let waiting = model.daemon == .waitingForLoginItem
-        guard waiting || ((model.owner == .loginItem || model.owner == .other) && !model.state.declinedTakeover) else { return nil }
-        let text: String
-        if waiting {
-            text = "zone is set to start at login from the command line, and has not started yet. This app is waiting for it."
-        } else if model.owner == .loginItem {
-            text = "zone was already set to start at login from the command line. This app is using that one."
-        } else {
-            text = "A zone started somewhere else (a terminal, most likely) is running. This app is using that one."
-        }
-        return AnyView(
-            VStack(alignment: .leading, spacing: 8) {
-                Text(text)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Zone.ink(scheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Button(model.working.contains("takeover") ? "Taking over" : "Let this app run zone") {
-                        Task { await model.takeOver() }
-                    }
-                    .buttonStyle(ZonePillButtonStyle(filled: true))
-                    .disabled(model.working.contains("takeover"))
-                    if !waiting {
-                        Button("Keep it this way") {
-                            model.state.declinedTakeover = true
-                        }
-                        .buttonStyle(ZonePillButtonStyle())
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(Zone.accentGraphic(scheme).opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Zone.accentGraphic(scheme).opacity(0.35), lineWidth: 1))
-        )
-    }
-
     // MARK: Something needs the person
+
+    /// The login item was asked to start zone and has not, for most of a minute.
+    private var stalledBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("zone's login item is not starting it, so your iPhone cannot reach this Mac. This app can run zone instead.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Zone.ink(scheme))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button(model.working.contains("takeover") ? "Starting" : "Run zone in this app") {
+                    Task { await model.takeOver() }
+                }
+                .buttonStyle(ZonePillButtonStyle(filled: true))
+                .disabled(model.working.contains("takeover"))
+                Button("Show the log") {
+                    model.closePopover()
+                    model.showLog()
+                }
+                .buttonStyle(ZonePillButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Zone.alarm.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Zone.alarm.opacity(0.4), lineWidth: 1))
+    }
 
     /// zone would not start: try again, or see why, without a terminal.
     private func problemBanner(_ message: String) -> some View {
@@ -240,142 +242,50 @@ private struct MainPage: View {
         }
     }
 
-    // MARK: Phones
-
-    private var phones: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            let phones = model.status?.phones ?? []
-            if phones.isEmpty {
-                HStack(spacing: 10) {
-                    Image(systemName: "iphone.slash")
-                        .font(.system(size: 17))
-                        .foregroundStyle(Zone.muted(scheme))
-                        .frame(width: 26)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("No iPhone paired yet")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Zone.ink(scheme))
-                        Text("Scan one code and your dictations start arriving.")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(Zone.muted(scheme))
-                    }
-                    Spacer(minLength: 4)
-                    Button("Pair") {
-                        navigation.page = .pair
-                    }
-                    .buttonStyle(ZonePillButtonStyle(filled: true))
-                }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 10)
-            } else {
-                ForEach(Array(phones.enumerated()), id: \.element.id) { index, phone in
-                    PhoneRow(model: model, phone: phone)
-                    if index < phones.count - 1 {
-                        Hairline().padding(.leading, 46)
-                    }
-                }
-            }
-            Hairline()
-            HStack(spacing: 6) {
-                Image(systemName: reachSymbol)
-                    .font(.system(size: 10, weight: .medium))
-                Text(reachText)
-                    .font(.system(size: 11))
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(Zone.muted(scheme))
-            .padding(.vertical, 7)
-            .padding(.horizontal, 12)
-        }
-        .zoneCard(padding: 0)
-    }
-
-    private var reachSymbol: String {
-        guard model.isRunning else { return "moon.zzz" }
-        return model.status?.daemon.relayConnected == true ? "globe" : "wifi"
-    }
-
-    private var reachText: String {
-        guard model.isRunning else { return "Not receiving while zone is not running" }
-        if model.status?.daemon.relayConnected == true {
-            return "Reachable from any network, end to end encrypted"
-        }
-        return "Reachable on this network. Connecting to the relay"
-    }
-
-    // MARK: Numbers
-
-    private var figures: some View {
-        HStack(alignment: .top, spacing: 0) {
-            figure(model.todayCount, "today")
-            divider
-            figure(model.status?.items.total ?? 0, "in your library")
-            divider
-            VStack(alignment: .leading, spacing: 3) {
-                kindLine("waveform", "dictation")
-                kindLine("note.text", "note")
-                kindLine("person.2", "meeting")
-                if (model.status?.items.byKind["clip"] ?? 0) > 0 {
-                    kindLine("doc.on.clipboard", "clip")
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 14)
-        }
-    }
-
-    private var divider: some View {
-        Rectangle().fill(Zone.rule(scheme)).frame(width: 1, height: 40).padding(.top, 2)
-    }
-
-    private func figure(_ value: Int, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            CountingNumber(value: value, size: 27)
-            Text(label)
-                .font(.system(size: 11))
+    /// Before the first pairing, pairing is the one thing to do.
+    private var noPhone: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "iphone")
+                .font(.system(size: 17))
                 .foregroundStyle(Zone.muted(scheme))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-    }
-
-    private func kindLine(_ symbol: String, _ kind: String) -> some View {
-        let count = model.status?.items.byKind[kind] ?? 0
-        return HStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.system(size: 9.5, weight: .medium))
-                .frame(width: 13)
-            Text("\(Formats.number(count)) \(count == 1 ? kind : kind + "s")")
-                .font(.system(size: 11).monospacedDigit())
-        }
-        .foregroundStyle(Zone.muted(scheme))
-    }
-
-    // MARK: Activity
-
-    @ViewBuilder
-    private var activity: some View {
-        let news = Array(model.feed.news.prefix(3))
-        if !news.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Eyebrow("What just happened").padding(.leading, 8)
-                ForEach(news) { event in
-                    ActivityRow(event: event, now: model.now)
-                }
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("No iPhone paired yet")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Zone.ink(scheme))
+                Text("Scan one code and your dictations start arriving.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Zone.muted(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 4)
+            Button("Pair") {
+                navigation.page = .pair
+            }
+            .buttonStyle(ZonePillButtonStyle(filled: true))
         }
+        .padding(10)
+        .zoneCard(padding: 0)
     }
 
     // MARK: Recent items
 
     private var recent: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        // The clip in the card above is not listed again.
+        let items = model.recent.filter { $0.id != model.leadingClip?.id }.prefix(4)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 2) {
                 Eyebrow("Latest").padding(.leading, 8)
                 Spacer()
-                HideTextButton(model: model)
+                HideTextButton(model: model, compact: true)
+                if !items.isEmpty {
+                    IconButton(symbol: "macwindow.on.rectangle", help: "Keep the latest in a floating window") {
+                        model.closePopover()
+                        model.showFloating()
+                    }
+                }
             }
-            if model.recent.isEmpty {
+            if items.isEmpty {
                 Text(model.status == nil ? "Reading your library" : "Nothing here yet. What you say into Zone on your iPhone shows up here.")
                     .font(.system(size: 12))
                     .foregroundStyle(Zone.muted(scheme))
@@ -383,22 +293,9 @@ private struct MainPage: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 8)
             } else {
-                ForEach(model.recent.prefix(4)) { item in
+                ForEach(items) { item in
                     ItemRow(model: model, item: item)
                 }
-                Button {
-                    model.closePopover()
-                    model.showFloating()
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Keep these in a floating window")
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                }
-                .buttonStyle(ZoneLinkButtonStyle(size: 11.5))
-                .padding(.leading, 8)
-                .padding(.top, 2)
             }
         }
     }
@@ -407,154 +304,128 @@ private struct MainPage: View {
 
     private var actions: some View {
         HStack(spacing: 0) {
-            ActionButton(symbol: "qrcode", title: "Pair") { navigation.page = .pair }
             ActionButton(symbol: "clock.arrow.circlepath", title: "History", working: model.working.contains("history")) {
                 model.openHistory()
                 model.closePopover()
             }
-            ActionButton(symbol: "bolt", title: "Flash", working: model.working.contains("flash")) {
-                model.openFlash()
+            ActionButton(symbol: "bolt", title: "Flash") {
                 model.closePopover()
+                model.openFlash()
             }
-            ActionButton(symbol: "sparkles", title: "Agents", badge: agentBadge) { navigation.page = .agents }
+            ActionButton(symbol: "sparkles", title: "Agents") { navigation.page = .agents }
             ActionButton(symbol: "ellipsis", title: "More") { navigation.page = .settings }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
     }
+}
 
-    private var agentBadge: String? {
-        let on = model.agents.filter(\.isOn).count
-        return on > 0 ? "\(on)" : nil
-    }
+/// A small round button with only a symbol, for the corner of a block.
+private struct IconButton: View {
+    let symbol: String
+    let help: String
+    let action: () -> Void
+    @Environment(\.colorScheme) private var scheme
 
-    private var footer: some View {
-        HStack(spacing: 8) {
-            if let notice = model.notice {
-                Text(notice)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Zone.ink(scheme))
-                    .lineLimit(2)
-                    .transition(.opacity)
-            } else {
-                Text(lastSyncLine)
-                    .font(.system(size: 11).monospacedDigit())
+    var body: some View {
+        Button(action: action) {
+            HoverRow(radius: 6) { _ in
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Zone.muted(scheme))
-                    .lineLimit(1)
+                    .frame(width: 24, height: 22)
+                    .contentShape(Rectangle())
             }
-            Spacer(minLength: 8)
-            Button("Quit") {
-                NSApp.terminate(nil)
-            }
-            .buttonStyle(ZoneLinkButtonStyle(size: 11.5))
-            .help("Quit Zone. Syncing stops until you open it again.")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .animation(Zone.motion, value: model.notice)
-    }
-
-    private var lastSyncLine: String {
-        guard let status = model.status else { return " " }
-        let ages = [status.lastSync.link?.age, status.lastSync.flash?.age, status.lastSync.backupFolder?.age].compactMap { $0 }
-        guard let newest = ages.min() else { return "Nothing has synced yet" }
-        return "Last sync \(Formats.ago(newest))"
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 
+/// One paired phone, under More: how its syncing stands, and what can be done about it.
 private struct PhoneRow: View {
     let model: AppModel
     let phone: StatusReport.Phone
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "iphone")
-                .font(.system(size: 18))
-                .foregroundStyle(Zone.ink(scheme))
-                .frame(width: 26)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(phone.name)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Zone.ink(scheme))
-                    .lineLimit(1)
-                Text(detail)
-                    .font(.system(size: 11.5).monospacedDigit())
+        HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "iphone")
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Zone.muted(scheme))
-                    .lineLimit(1)
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(phone.name)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(Zone.ink(scheme))
+                        .lineLimit(1)
+                    Text(detail)
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(Zone.muted(scheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Spacer(minLength: 4)
-            if let route = ActivityWords.route(phone.lastPath) {
-                Text(route)
-                    .font(.system(size: 10.5, weight: .medium))
+            Spacer(minLength: 6)
+            Menu {
+                Button("Ask \(phone.name) to send everything again") { model.resendEverything() }
+                Divider()
+                Button("Forget \(phone.name)") { model.forget(phone) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13))
                     .foregroundStyle(Zone.muted(scheme))
-                    .padding(.horizontal, 7)
-                    .frame(height: 19)
-                    .overlay(Capsule().strokeBorder(Zone.rule(scheme), lineWidth: 1))
-                    .help("How the last sync travelled")
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Send everything again, or forget this phone")
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
         .padding(.horizontal, 10)
-        .contextMenu {
-            Button("Ask \(phone.name) to send everything again") { model.resendEverything() }
-            Button("Forget \(phone.name)") { model.forget(phone) }
-        }
     }
 
     private var detail: String {
         let items = "\(Formats.number(phone.itemsReceived)) \(phone.itemsReceived == 1 ? "item" : "items")"
         guard let age = phone.lastSyncAge else { return "Paired, waiting for its first sync" }
-        return "Synced \(Formats.ago(age)) · \(items)"
+        var line = "Synced \(Formats.ago(age)), \(items)"
+        if let route = ActivityWords.route(phone.lastPath) { line += ", \(route)" }
+        return line
     }
 }
 
-private struct ActivityRow: View {
-    let event: ActivityEvent
-    let now: Date
+private struct ActionButton: View {
+    let symbol: String
+    let title: String
+    var working = false
+    let action: () -> Void
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(event.broughtItems ? Zone.accentGraphic(scheme) : Zone.muted(scheme))
-                .frame(width: 18)
-            Text(ActivityWords.headline(event))
-                .font(.system(size: 12.5, weight: event.broughtItems ? .medium : .regular))
+        Button(action: action) {
+            HoverRow(radius: 9) { _ in
+                VStack(spacing: 4) {
+                    Group {
+                        if working {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: symbol)
+                                .font(.system(size: 15, weight: .regular))
+                        }
+                    }
+                    .frame(width: 30, height: 22)
+                    Text(title)
+                        .font(.system(size: 11, weight: .medium))
+                }
                 .foregroundStyle(Zone.ink(scheme))
-                .lineLimit(1)
-            Spacer(minLength: 6)
-            Text(trailing)
-                .font(.system(size: 11).monospacedDigit())
-                .foregroundStyle(Zone.muted(scheme))
-                .lineLimit(1)
-                .layoutPriority(1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
+            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
-    }
-
-    private var trailing: String {
-        Formats.ago(event.date, now: now)
-    }
-
-    private var symbol: String {
-        switch event.kind {
-        case .linkSession: return event.broughtItems ? "arrow.down" : "checkmark"
-        case .flashReceived: return "bolt.fill"
-        case .backupImport: return "folder"
-        case .paired: return "link"
-        case .unpaired: return "link.badge.plus"
-        case .daemonStarted: return "power"
-        case .daemonStopped: return "moon.zzz"
-        case .relayConnected: return "globe"
-        case .relayLost: return "wifi.exclamationmark"
-        case .linkRefused, .flashFailed: return "exclamationmark.triangle"
-        case .resyncRequested: return "arrow.triangle.2.circlepath"
-        case .clip: return "doc.on.clipboard"
-        case .pairOffered, .unknown: return "circle"
-        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
 
@@ -608,52 +479,6 @@ private struct ClipCard: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Zone.accentGraphic(scheme).opacity(0.35), lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Clip. \(clip.title(phone: model.phoneName(for: clip), now: model.now))")
-    }
-}
-
-private struct ActionButton: View {
-    let symbol: String
-    let title: String
-    var badge: String?
-    var working = false
-    let action: () -> Void
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        Button(action: action) {
-            HoverRow(radius: 9) { _ in
-                VStack(spacing: 4) {
-                    ZStack(alignment: .topTrailing) {
-                        Group {
-                            if working {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Image(systemName: symbol)
-                                    .font(.system(size: 15, weight: .regular))
-                            }
-                        }
-                        .frame(width: 30, height: 22)
-                        if let badge {
-                            Text(badge)
-                                .font(.system(size: 9, weight: .bold).monospacedDigit())
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 4)
-                                .frame(minWidth: 14, minHeight: 14)
-                                .background(Zone.accentGraphic(scheme), in: Capsule())
-                                .offset(x: 7, y: -4)
-                        }
-                    }
-                    Text(title)
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundStyle(Zone.ink(scheme))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 7)
-                .contentShape(Rectangle())
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
     }
 }
 
@@ -714,7 +539,7 @@ private struct PairPage: View {
                 .padding(.vertical, 20)
             Hairline()
             HStack {
-                Text("Pairing comes with Zone's next iPhone update.")
+                Text("On the iPhone: Zone, Settings, Computers.")
                     .font(.system(size: 11))
                     .foregroundStyle(Zone.muted(scheme))
                 Spacer()
@@ -755,13 +580,17 @@ private struct SettingsPage: View {
         VStack(spacing: 0) {
             PageHeader(title: "More", navigation: navigation)
             VStack(alignment: .leading, spacing: 14) {
-                section("Sync") {
-                    row("arrow.triangle.2.circlepath", "Ask the phone to resend everything", "For when something looks missing. It happens at the phone's next sync.") {
-                        Button(model.working.contains("resync") ? "Asking" : "Ask") { model.resendEverything() }
-                            .buttonStyle(ZonePillButtonStyle())
-                            .disabled(model.working.contains("resync"))
+                section("iPhone") {
+                    ForEach(model.status?.phones ?? [], id: \.id) { phone in
+                        PhoneRow(model: model, phone: phone)
+                        Hairline().padding(.leading, 38)
                     }
-                    Hairline().padding(.leading, 38)
+                    row("qrcode", (model.status?.phones.isEmpty ?? true) ? "Pair an iPhone" : "Pair another iPhone", "Zone on the iPhone: Settings, Computers.") {
+                        Button("Pair") { navigation.page = .pair }
+                            .buttonStyle(ZonePillButtonStyle())
+                    }
+                }
+                section("Sync") {
                     row("folder", "Backup folder", backupLine) {
                         HStack(spacing: 6) {
                             if model.backupFolderBlocked {
@@ -781,11 +610,10 @@ private struct SettingsPage: View {
                                 .disabled(model.working.contains("backup"))
                         }
                     }
-                }
-                if model.hasClips {
-                    section("Clips") {
+                    if model.hasClips {
+                        Hairline().padding(.leading, 38)
                         Toggle(isOn: Binding(get: { model.clipboardCopyOn }, set: { model.setClipboardCopy($0) })) {
-                            label("doc.on.clipboard", "Copy to this Mac's clipboard when a clip arrives", clipboardLine)
+                            label("doc.on.clipboard", "Put clips on the clipboard", clipboardLine)
                         }
                         .toggleStyle(ZoneToggleStyle())
                         .disabled(model.clipboardCopy?.available == false || model.working.contains("clipboard"))
@@ -842,7 +670,7 @@ private struct SettingsPage: View {
                         .disabled(model.checkingUpdate)
                     }
                     Hairline().padding(.leading, 38)
-                    row("hand.wave", "Setup guide", "Pairing, agents and the rest, step by step.") {
+                    row("hand.wave", "Setup guide", "") {
                         Button("Open") {
                             model.closePopover()
                             model.showWelcome()
@@ -889,7 +717,7 @@ private struct SettingsPage: View {
 
     private var backupLine: String {
         guard let folder = model.status?.backupFolder else {
-            return "Not set. Zone on the iPhone can keep a backup in iCloud Drive: choose that folder and it is read whenever it changes."
+            return "Not set. Choose Zone's backup folder in iCloud Drive."
         }
         let path = Formats.tilde(folder, home: model.env.home.path)
         switch model.status?.backupState?.state {
@@ -905,7 +733,7 @@ private struct SettingsPage: View {
         if let setting = model.clipboardCopy, !setting.available {
             return setting.fix ?? "This Mac has no tool that can write the clipboard."
         }
-        return "A clip is text you send from Zone on your iPhone. With this on, it is ready to paste here a moment later."
+        return "Text you send from the iPhone, ready to paste here."
     }
 
     private var ownerLine: String {
@@ -927,7 +755,7 @@ private struct SettingsPage: View {
         case let .newer(version, _): return "\(version) is out."
         case .upToDate: return "You have the latest."
         case let .unknown(why): return why
-        case nil: return "Opens the releases page when there is something newer."
+        case nil: return ""
         }
     }
 
@@ -986,10 +814,12 @@ private struct SettingsPage: View {
                 Text(title)
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(Zone.ink(scheme))
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Zone.muted(scheme))
-                    .fixedSize(horizontal: false, vertical: true)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Zone.muted(scheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }

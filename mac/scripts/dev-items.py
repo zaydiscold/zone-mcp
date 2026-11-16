@@ -89,9 +89,14 @@ def items(count, seed):
     """Items said over the last few minutes, oldest first."""
     rng = random.Random(seed)
     now = time.time()
+    recent = []
     for index in range(count):
         is_note = rng.random() < 0.2
-        text = rng.choice(NOTES if is_note else DICTATIONS)
+        pool = NOTES if is_note else DICTATIONS
+        # No line twice among the last few, so a short batch never reads as a stutter.
+        fresh = [line for line in pool if line not in recent] or pool
+        text = rng.choice(fresh)
+        recent = (recent + [text])[-4:]
         created = now - (count - index) * 7
         print(json.dumps({
             "id": new_id(rng),
