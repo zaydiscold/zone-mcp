@@ -531,11 +531,12 @@ fn a_large_flash_through_loss_and_misreads() {
 }
 
 /// How far misreads can go: `cargo test --release stress_misread_rates -- --ignored --nocapture`.
-/// Measured on 2026-11-16 (248 pieces, 30% of codes lost): every run stored the right library
-/// at 0.5, 2 and 4 percent of codes misread, after 1.0 to 3.8 times as many codes as pieces;
-/// at 8 percent two runs in four did within eight passes. A 1,161 piece flash at 4 percent
-/// (about 46 misread rows at once) did not finish. None stored anything wrong. QR error
-/// correction lets far fewer misreads through than any of these.
+/// Measured on 2026-11-16 (248 pieces, 30% of codes lost, twelve runs each): every run stored
+/// the right library at 0.5, 2 and 4 percent of codes misread, after 1.0 to 4.5 times as many
+/// codes as pieces; at 8 percent eleven runs in twelve did within eight passes, after 4.6 to
+/// 7.1 times (zone 0.1.0: twelve, 1.0 to 3.6 times, and seven in twelve, 3.9 to 12.6 times).
+/// None stored anything wrong. QR error correction lets far fewer misreads through than any of
+/// these.
 #[test]
 #[ignore]
 fn stress_misread_rates() {
@@ -546,7 +547,7 @@ fn stress_misread_rates() {
         let sealed = crate::flash::seal::seal(&key, &crate::flash::seal::flash_json(&crate::db::PhoneInfo { id: Some("S".into()), name: None, app: None }, &items)).unwrap();
         let encoder = Encoder::new(0x8123_0001, &sealed, chunk).unwrap();
         let cycle = 3 * encoder.k() as u32 + 60;
-        for seed in 0..4u64 {
+        for seed in 0..12u64 {
             let mut dice = Dice(seed + 7);
             let damage = Damage { passes: 8.0, drop: 30.0, misread: rate, ..Damage::default() };
             let mut db = library(&secret);
