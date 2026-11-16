@@ -39,8 +39,8 @@ pub const CONFIRMATIONS: usize = 16;
 const SET_ASIDE_AT_MOST: usize = 8;
 /// Readings to wait, while a few suspects stop narrowing, before setting them all aside.
 const PATIENCE: usize = 24;
-/// Uneven checks kept before giving up on finding the culprits and starting over, beyond
-/// four for every chunk.
+/// Uneven checks kept before giving up on finding the culprits and starting over: this many,
+/// plus four for every chunk up to 2048 more. Each new check looks at all of them.
 const MAX_CONFLICTS: usize = 256;
 /// Rebuilds before starting over from nothing.
 const MAX_REBUILDS: usize = 32;
@@ -214,7 +214,10 @@ impl Assembler {
         self.known.insert((index, print), Known::Kept);
         *self.caught.entry(index).or_default() += 1;
         let useful = self.reduce(position, index, body);
-        self.look_for_misreads(!useful);
+        // A new row changes no check, so only a check can move the search for a misread code.
+        if !useful {
+            self.look_for_misreads(true);
+        }
         Took::New { useful }
     }
 
@@ -267,7 +270,7 @@ impl Assembler {
             self.suspects = usize::MAX;
             return;
         }
-        if self.conflicts.len() > MAX_CONFLICTS + 4 * self.k() || self.rebuilds >= MAX_REBUILDS {
+        if self.conflicts.len() > MAX_CONFLICTS + (4 * self.k()).min(2048) || self.rebuilds >= MAX_REBUILDS {
             self.start_over();
             return;
         }

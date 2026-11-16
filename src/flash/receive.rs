@@ -491,7 +491,7 @@ impl Receiver {
 }
 
 fn not_paired_words() -> String {
-    "Every code agrees, but the flash is not from a phone paired with this computer: it is sealed with a key this computer does not have. Run `zone pair`, scan the code with the phone, then flash again.".to_string()
+    "Every code agrees, but the flash is not from a phone paired with this computer: it is sealed with a key this computer does not have. Choose Pair a phone in your library (or run `zone pair`), scan the code with the phone, then flash again.".to_string()
 }
 
 /// Why a complete payload was not stored.
@@ -530,7 +530,7 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored, Problem>
     let keys = db.flash_keys(now).map_err(Problem::Storage)?;
     if keys.is_empty() {
         return Err(Problem::Final(anyhow::anyhow!(
-            "No phone is paired with this computer, so the flash cannot be opened. Run `zone pair`, scan the code with the phone, then flash again."
+            "No phone is paired with this computer, so the flash cannot be opened. Choose Pair a phone in your library (or run `zone pair`), scan the code with the phone, then flash again."
         )));
     }
     let Some((packed, owner)) = keys.iter().find_map(|k| seal::unseal(&k.key, sealed).map(|packed| (packed, &k.owner))) else {
@@ -544,7 +544,7 @@ fn import_inner(db: &mut Db, sealed: &[u8], now: f64) -> Result<Stored, Problem>
         }
         FlashKeyOwner::Offer(hash) => match db.pair_by_flash(hash, &flash.phone, now).map_err(Problem::Storage)? {
             Some(device) => (device, true, Some(crate::db::offer_id_of_hash(hash))),
-            None => return Err(Problem::Final(anyhow::anyhow!("The pairing code this flash was made with ran out. Run `zone pair` again."))),
+            None => return Err(Problem::Final(anyhow::anyhow!("The pairing code this flash was made with ran out. Choose Pair a phone in your library (or run `zone pair`) for a new one, scan it with the phone, then flash again."))),
         },
     };
     let delivery = Delivery { carrier: Carrier::Flash, device_id: flash.phone.id.as_deref(), received_at: now };

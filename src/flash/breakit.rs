@@ -503,7 +503,7 @@ fn a_large_flash_through_loss_and_misreads() {
 
 /// How far misreads can go: `cargo test --release stress_misread_rates -- --ignored --nocapture`.
 /// Measured on 2026-11-16 (248 pieces, 30% of codes lost): every run stored the right library
-/// at 0.5, 2 and 4 percent of codes misread, after 1.0 to 3.7 times as many codes as pieces;
+/// at 0.5, 2 and 4 percent of codes misread, after 1.0 to 3.8 times as many codes as pieces;
 /// at 8 percent two runs in four did within eight passes. A 1,161 piece flash at 4 percent
 /// (about 46 misread rows at once) did not finish. None stored anything wrong. QR error
 /// correction lets far fewer misreads through than any of these.
