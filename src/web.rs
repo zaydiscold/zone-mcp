@@ -443,7 +443,7 @@ fn page(nonce: &str, state: &WebState) -> Reply {
         Ok(db) => Look::of(&db),
         Err(_) => Look::default(),
     };
-    html(StatusCode::OK, PAGE.replace("__NONCE__", nonce).replace("__THEME__", look.theme).replace("__ACCENT__", &look.accent))
+    html(StatusCode::OK, PAGE.replace("__NONCE__", nonce).replace("__THEME__", look.theme).replace("__ACCENT__", &look.accent).replace("__VERSION__", env!("CARGO_PKG_VERSION")))
 }
 
 fn locked(nonce: &str) -> Reply {
@@ -1714,7 +1714,7 @@ mod tests {
         // The look: the computer's until chosen, with the iPhone's accent once it is known.
         let page_with = |theme: &str, accent: &str| {
             let page = body(route(&with_cookie(head(Method::GET, "/"), &state), &state, "n"));
-            assert!(page.contains(&format!("<html lang=\"en\" data-theme=\"{theme}\" data-accent=\"{accent}\">")), "wanted {theme} {accent}");
+            assert!(page.contains(&format!("<html lang=\"en\" data-theme=\"{theme}\" data-accent=\"{accent}\" ")), "wanted {theme} {accent}");
             assert!(!page.contains("__THEME__") && !page.contains("__ACCENT__"));
         };
         let look = get_json(&state, "/api/settings")["look"].clone();
@@ -1764,6 +1764,18 @@ mod tests {
         assert_eq!((latest["words"].as_str(), latest["newer"].as_bool()), (Some("Up to date"), Some(false)));
         assert!(update_view(&Check::Unknown("no answer".into()), Origin::Script)["words"].as_str().unwrap().starts_with("Could not check"));
         assert_eq!(update_view(&Check::Off, Origin::Script)["checked"], false);
+    }
+
+    #[test]
+    fn the_page_knows_which_zone_served_it() {
+        // An open page compares this with the version in every status answer, and loads the
+        // new page when zone was replaced under it.
+        let state = state();
+        let page = body(route(&with_cookie(head(Method::GET, "/"), &state), &state, "n"));
+        assert!(page.contains(&format!("data-zone=\"{}\"", env!("CARGO_PKG_VERSION"))) && !page.contains("__VERSION__"));
+        assert!(PAGE.contains("reloadIfReplaced(next.computer && next.computer.version)"));
+        let status = get_json(&state, "/api/status");
+        assert_eq!(status["computer"]["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

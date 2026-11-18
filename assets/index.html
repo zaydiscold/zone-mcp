@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="__THEME__" data-accent="__ACCENT__">
+<html lang="en" data-theme="__THEME__" data-accent="__ACCENT__" data-zone="__VERSION__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1350,11 +1350,25 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     if (root.dataset.accent !== look.accent_shown) root.dataset.accent = look.accent_shown;
   }
 
+  // This page came from one version of zone. When zone is updated while the page is open, the
+  // zone that answers is another version, and the page it serves is the one that goes with it:
+  // load that one. Not in the middle of typing or with a dialog open (then at the next look),
+  // and once per version, so nothing can make it load over and over.
+  const SERVED_BY = document.documentElement.dataset.zone || "";
+  function reloadIfReplaced(version) {
+    if (!SERVED_BY || !version || version === SERVED_BY) return false;
+    if (document.querySelector("dialog[open]") || document.querySelector(".prow input") || document.activeElement === $("q")) return false;
+    try { if (sessionStorage.getItem("zone.reloadedFor") === version) return false; sessionStorage.setItem("zone.reloadedFor", version); } catch (_) { return false; }
+    location.reload();
+    return true;
+  }
+
   // The page learns of changes by asking for the status every few seconds: new items from a
   // phone, an agent marking something, a setting changed in another window.
   async function refreshStatus(quiet) {
     let next;
     try { next = await api("/api/status"); } catch (_) { return; }
+    if (reloadIfReplaced(next.computer && next.computer.version)) return;
     const grew = S.status && next.items.total > S.status.items.total;
     const first = S.status === null;
     S.status = next;
