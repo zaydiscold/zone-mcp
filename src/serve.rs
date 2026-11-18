@@ -76,6 +76,7 @@ pub async fn run(options: Options) -> Result<std::process::ExitCode> {
     let Some(lock) = daemon_info::acquire(&dir)? else {
         bail!("zone is already running for {} (see `zone status`).", dir.display());
     };
+    let mut stops = StopSignals::listen();
     crate::log::init(&paths::log_file(&dir), !options.quiet);
 
     let db = Db::open_default()?;
@@ -154,7 +155,7 @@ pub async fn run(options: Options) -> Result<std::process::ExitCode> {
     });
 
     let stop = tokio::select! {
-        stop = wait_for_stop() => stop,
+        stop = stops.wait() => stop,
         _ = program_replaced(program.clone()) => Stop::Replaced,
     };
     match stop {
@@ -246,22 +247,51 @@ fn env_port() -> Option<u16> {
     std::env::var("ZONE_PORT").ok()?.trim().parse().ok()
 }
 
-async fn wait_for_stop() -> Stop {
+/// The signals that stop zone, listened for from before zone says it is running: a signal
+/// that arrives in zone's first moments is then a stop like any other (clean up, and the exit
+/// status that says which signal), not the end of a program that was not listening yet.
+struct StopSignals {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate = signal(SignalKind::terminate()).ok();
-        let mut hangup = signal(SignalKind::hangup()).ok();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => Stop::Interrupt,
-            _ = async { match terminate.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending().await } } => Stop::Signal(libc::SIGTERM),
-            _ = async { match hangup.as_mut() { Some(s) => { s.recv().await; } None => std::future::pending().await } } => Stop::Signal(libc::SIGHUP),
+    interrupt: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    terminate: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    hangup: Option<tokio::signal::unix::Signal>,
+}
+
+impl StopSignals {
+    fn listen() -> StopSignals {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            StopSignals { interrupt: signal(SignalKind::interrupt()).ok(), terminate: signal(SignalKind::terminate()).ok(), hangup: signal(SignalKind::hangup()).ok() }
         }
+        #[cfg(not(unix))]
+        StopSignals {}
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        Stop::Interrupt
+
+    async fn wait(&mut self) -> Stop {
+        #[cfg(unix)]
+        {
+            async fn got(signal: &mut Option<tokio::signal::unix::Signal>) {
+                match signal.as_mut() {
+                    Some(signal) => {
+                        signal.recv().await;
+                    }
+                    None => std::future::pending().await,
+                }
+            }
+            tokio::select! {
+                _ = got(&mut self.interrupt) => Stop::Interrupt,
+                _ = got(&mut self.terminate) => Stop::Signal(libc::SIGTERM),
+                _ = got(&mut self.hangup) => Stop::Signal(libc::SIGHUP),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            Stop::Interrupt
+        }
     }
 }
 
