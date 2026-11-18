@@ -141,6 +141,9 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     // How Zone looks on the phone, when it says (PROTOCOL.md, `hello`).
     ("devices", "appearance", "TEXT"),
     ("devices", "accent", "TEXT"),
+    // Added after zone 0.1.3. The note a recording was removed with: removing a voice note
+    // takes the recording behind it along, and putting the note back brings it back.
+    ("removed", "with_note", "TEXT"),
 ];
 
 /// How long a removed item can be put back. After this its words are erased.
@@ -1459,19 +1462,34 @@ impl Db {
     /// reader (agents, the command line, exports, an older zone) already leaves out.
     /// Returns the ids that were removed.
     pub fn remove_items(&mut self, ids: &[String], now: f64) -> Result<Vec<String>> {
+        const KEEP: &str = "INSERT OR REPLACE INTO removed (id, removed_at, item_updated_at, kind, source, created_at, text, title, \
+             duration_s, engine, status, extra, rev, words, with_note) \
+             SELECT id, ?2, updated_at, kind, source, created_at, text, title, duration_s, engine, status, extra, rev, words, ?3 \
+             FROM items WHERE id = ?1 AND deleted = 0";
+        const DROP: &str = "UPDATE items SET deleted = 1, text = '', title = NULL, extra = '{}', words = 0 WHERE id = ?1";
         let tx = self.write()?;
         let mut done = Vec::new();
         for id in ids {
             let id = id.trim().to_ascii_uppercase();
-            let kept = tx.execute(
-                "INSERT OR REPLACE INTO removed (id, removed_at, item_updated_at, kind, source, created_at, text, title, duration_s, \
-                 engine, status, extra, rev, words) \
-                 SELECT id, ?2, updated_at, kind, source, created_at, text, title, duration_s, engine, status, extra, rev, words \
-                 FROM items WHERE id = ?1 AND deleted = 0",
-                params![id, now],
-            )?;
-            if kept == 1 {
-                tx.execute("UPDATE items SET deleted = 1, text = '', title = NULL, extra = '{}', words = 0 WHERE id = ?1", params![id])?;
+            // The recordings this note alone keeps folded away. They hold the same words, so
+            // they go with it: otherwise removing a note would bring its words back into
+            // view as a dictation, for the page, for agents and in exports.
+            let behind: Vec<String> = {
+                let mut statement = tx.prepare_cached(&format!(
+                    "SELECT i.id FROM items i JOIN items note ON note.id = ?1 AND note.kind = 'note' AND note.deleted = 0 \
+                     WHERE i.deleted = 0 AND i.kind = 'dictation' AND i.source = 'note' AND {RECORDING_OF_NOTE} \
+                     AND NOT EXISTS (SELECT 1 FROM items n WHERE n.kind = 'note' AND n.deleted = 0 AND n.id <> ?1 AND {})",
+                    RECORDING_OF_NOTE.replace("note.", "n.")
+                ))?;
+                statement.query_map(params![id], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            if tx.execute(KEEP, params![id, now, None::<String>])? == 1 {
+                tx.execute(DROP, params![id])?;
+                for recording in behind {
+                    if tx.execute(KEEP, params![recording, now, id])? == 1 {
+                        tx.execute(DROP, params![recording])?;
+                    }
+                }
                 done.push(id);
             }
         }
@@ -1486,15 +1504,9 @@ impl Db {
         let mut done = Vec::new();
         for id in ids {
             let id = id.trim().to_ascii_uppercase();
-            let restored = tx.execute(
-                "UPDATE items SET deleted = 0, kind = r.kind, source = r.source, created_at = r.created_at, text = r.text, \
-                 title = r.title, duration_s = r.duration_s, engine = r.engine, status = r.status, extra = r.extra, rev = r.rev, \
-                 words = r.words, updated_at = r.item_updated_at \
-                 FROM removed r WHERE items.id = ?1 AND r.id = ?1 AND r.erased_at IS NULL AND items.deleted = 1",
-                params![id],
-            )?;
-            if restored == 1 {
+            if tx.execute(PUT_BACK, params![id])? == 1 {
                 tx.execute("DELETE FROM removed WHERE id = ?1", params![id])?;
+                put_back_recordings_of(&tx, &id)?;
                 done.push(id);
             }
         }
@@ -1506,7 +1518,7 @@ impl Db {
     pub fn removed_items(&self) -> Result<Vec<RemovedRow>> {
         let mut statement = self.conn.prepare(
             "SELECT id, removed_at, kind, source, created_at, text, title, words FROM removed WHERE erased_at IS NULL \
-             ORDER BY removed_at DESC, id",
+             AND with_note IS NULL ORDER BY removed_at DESC, id",
         )?;
         let rows = statement
             .query_map([], |row| {
@@ -1525,9 +1537,10 @@ impl Db {
         Ok(rows)
     }
 
-    /// How many removed items can still be put back.
+    /// How many removed items can still be put back. A recording that went with its note
+    /// is not counted beside it.
     pub fn removed_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT count(*) FROM removed WHERE erased_at IS NULL", [], |row| row.get(0))?)
+        Ok(self.conn.query_row("SELECT count(*) FROM removed WHERE erased_at IS NULL AND with_note IS NULL", [], |row| row.get(0))?)
     }
 
     /// True when the person removed this item from this computer (whether or not its words
@@ -1713,6 +1726,14 @@ fn apply_one(tx: &Connection, item: &Item, delivery: &Delivery<'_>, applied: &mu
         }
         tx.execute("DELETE FROM removed WHERE id = ?1", params![item.id])?;
         comes_back = !item.deleted;
+        if comes_back {
+            // A note that is back has its recording behind it again.
+            put_back_recordings_of(tx, &item.id)?;
+        } else {
+            // The note is gone for good. Its recording stays removed, and is now listed by
+            // itself among the removed, where it can be put back.
+            tx.execute("UPDATE removed SET with_note = NULL WHERE with_note = ?1", params![item.id])?;
+        }
     }
 
     let decision = if comes_back {
@@ -1807,6 +1828,25 @@ fn apply_one(tx: &Connection, item: &Item, delivery: &Delivery<'_>, applied: &mu
     Ok(())
 }
 
+/// Puts a removed item back as it was, when its words are still kept.
+const PUT_BACK: &str = "UPDATE items SET deleted = 0, kind = r.kind, source = r.source, created_at = r.created_at, text = r.text, \
+     title = r.title, duration_s = r.duration_s, engine = r.engine, status = r.status, extra = r.extra, rev = r.rev, \
+     words = r.words, updated_at = r.item_updated_at \
+     FROM removed r WHERE items.id = ?1 AND r.id = ?1 AND r.erased_at IS NULL AND items.deleted = 1";
+
+/// Brings back the recordings that were removed along with a note (see [`Db::remove_items`]).
+fn put_back_recordings_of(tx: &Connection, note_id: &str) -> Result<()> {
+    let behind: Vec<String> = {
+        let mut statement = tx.prepare_cached("SELECT id FROM removed WHERE with_note = ?1")?;
+        statement.query_map(params![note_id], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for recording in behind {
+        tx.execute(PUT_BACK, params![recording])?;
+        tx.execute("DELETE FROM removed WHERE id = ?1", params![recording])?;
+    }
+    Ok(())
+}
+
 struct StoredContent {
     updated_at: f64,
     deleted: bool,
@@ -1891,6 +1931,9 @@ fn filter_sql(filter: &Filter) -> (String, Vec<Sql>) {
 /// looked for from just before the recording began until two minutes after it ended.
 const FOLDED_RECORDING: &str = "(i.kind = 'dictation' AND i.source = 'note' AND EXISTS (SELECT 1 FROM items n WHERE n.kind = 'note' \
      AND n.deleted = 0 AND n.created_at >= i.created_at - 5 AND n.created_at <= i.created_at + coalesce(i.duration_s, 0) + 120))";
+
+/// The same window as [`FOLDED_RECORDING`], between a recording `i` and one note `note`.
+const RECORDING_OF_NOTE: &str = "note.created_at >= i.created_at - 5 AND note.created_at <= i.created_at + coalesce(i.duration_s, 0) + 120";
 
 /// Adds the columns of [`ADDED_COLUMNS`] that a library does not have yet.
 fn add_missing_columns(conn: &Connection) -> Result<()> {
@@ -2691,6 +2734,63 @@ mod tests {
         assert_eq!(ids(&db, &Filter { unprocessed_only: true, ..Default::default() }), ["R1", "R2"]);
         assert_eq!(db.count_processed(&Filter::default()).unwrap(), 2);
         assert_eq!(db.count_processed(&Filter { kinds: vec!["note".into()], ..Default::default() }).unwrap(), 1);
+    }
+
+    #[test]
+    fn removing_a_note_takes_the_recording_behind_it_along() {
+        let mut db = Db::open_in_memory().unwrap();
+        let recording = |id: &str, created_at: f64| Item { source: Some("note".into()), created_at, duration_s: Some(20.0), ..item(id, created_at, "pick up the saffron") };
+        let note = |id: &str, created_at: f64| Item { kind: "note".into(), source: None, created_at, duration_s: None, ..item(id, created_at, "pick up the saffron") };
+        // N1 has its recording R1. R2 is a recording by itself. N3 and N4 were both saved
+        // within R3's window, so either keeps it folded.
+        db.apply_items(&[recording("R1", 1000.0), note("N1", 1021.0), recording("R2", 5000.0), recording("R3", 8000.0), note("N3", 8021.0), note("N4", 8050.0)], &link(1.0)).unwrap();
+        let folded = Filter { fold_note_recordings: true, ..Default::default() };
+        let ids = |db: &Db, filter: &Filter| -> Vec<String> { db.list(filter, Order::Oldest, 10, None).unwrap().into_iter().map(|row| row.id).collect() };
+        assert_eq!(ids(&db, &folded), ["N1", "R2", "N3", "N4"]);
+
+        assert_eq!(db.remove_items(&["N1".to_string()], 100.0).unwrap(), ["N1"]);
+        // The words are gone for every reader, folding or not, and from search.
+        assert_eq!(ids(&db, &folded), ["R2", "N3", "N4"]);
+        assert_eq!(ids(&db, &Filter::default()), ["R2", "R3", "N3", "N4"]);
+        assert_eq!(db.search("saffron", &Filter::default(), None, 10).unwrap().total, 4);
+        // One thing was removed, as far as the person is told.
+        assert_eq!(db.removed_count().unwrap(), 1);
+        assert_eq!(db.removed_items().unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["N1"]);
+        assert!(db.is_removed("R1"));
+        // The phone sending the recording again does not bring it back.
+        db.apply_items(&[recording("R1", 1000.0)], &link(2.0)).unwrap();
+        assert_eq!(ids(&db, &Filter::default()), ["R2", "R3", "N3", "N4"]);
+
+        // Put back, both return, and the recording is folded behind its note as before.
+        assert_eq!(db.restore_items(&["N1".to_string()]).unwrap(), ["N1"]);
+        assert_eq!(ids(&db, &Filter::default()), ["R1", "N1", "R2", "R3", "N3", "N4"]);
+        assert_eq!(ids(&db, &folded), ["N1", "R2", "N3", "N4"]);
+        assert_eq!((db.removed_count().unwrap(), db.is_removed("R1")), (0, false));
+
+        // A recording another note still stands for stays. It goes with the last of them.
+        db.remove_items(&["N3".to_string()], 200.0).unwrap();
+        assert_eq!(ids(&db, &Filter::default()), ["R1", "N1", "R2", "R3", "N4"]);
+        db.remove_items(&["N4".to_string()], 300.0).unwrap();
+        assert_eq!(ids(&db, &Filter::default()), ["R1", "N1", "R2"]);
+        // Its words are erased with the note's, thirty days on.
+        assert_eq!(db.erase_old_removed(300.0 + REMOVED_KEPT_SECONDS).unwrap(), 3);
+        // The phone edits a removed note: it is back, with its recording folded behind it.
+        db.remove_items(&["N1".to_string()], 350.0).unwrap();
+        db.apply_items(&[Item { updated_at: 2000.0, ..note("N1", 1021.0) }], &link(3.0)).unwrap();
+        assert_eq!(ids(&db, &Filter::default()), ["R1", "N1", "R2"]);
+        assert_eq!(ids(&db, &folded), ["N1", "R2"]);
+        // The phone deletes a removed note: the recording stays away, and is listed by itself
+        // among the removed.
+        db.remove_items(&["N1".to_string()], 360.0).unwrap();
+        db.apply_items(&[deletion("N1", 3000.0)], &link(4.0)).unwrap();
+        assert_eq!(ids(&db, &Filter::default()), ["R2"]);
+        assert_eq!(db.removed_items().unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["R1"]);
+        assert_eq!(db.restore_items(&["R1".to_string()]).unwrap(), ["R1"]);
+        db.remove_items(&["R1".to_string()], 370.0).unwrap();
+        // A recording by itself is removed and put back like anything else.
+        db.remove_items(&["R2".to_string()], 400.0).unwrap();
+        assert_eq!(db.removed_items().unwrap().len(), 2);
+        assert_eq!(db.restore_items(&["R2".to_string()]).unwrap(), ["R2"]);
     }
 
     #[test]
