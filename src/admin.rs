@@ -207,7 +207,7 @@ pub fn status(as_json: bool) -> Result<()> {
                 Some(t) => format!("last sync {} ({})", clock.short(t), human_ago(now - t)),
                 None => "never synced".to_string(),
             };
-            println!("  {}  {synced}, {} items received", device.name.as_deref().unwrap_or("iPhone"), device.items_received);
+            println!("  {}  {synced}, {} items received", device.label(), device.items_received);
         }
     }
     println!();
@@ -270,7 +270,7 @@ pub fn devices(as_json: bool) -> Result<()> {
             .iter()
             .map(|d| {
                 json!({
-                    "name": d.name, "phone_id": d.phone_id, "endpoint_id": d.endpoint_id, "app": d.app,
+                    "name": d.name, "nickname": d.nickname, "phone_id": d.phone_id, "endpoint_id": d.endpoint_id, "app": d.app,
                     "paired_at": d.paired_at, "last_seen": d.last_seen, "last_sync": d.last_sync,
                     "items_received": d.items_received, "last_path": d.last_path,
                 })
@@ -284,7 +284,11 @@ pub fn devices(as_json: bool) -> Result<()> {
         return Ok(());
     }
     for device in &devices {
-        println!("{}", device.name.as_deref().unwrap_or("iPhone"));
+        // The name given on the page, when there is one, with the phone's own beside it.
+        match (&device.nickname, &device.name) {
+            (Some(nickname), Some(name)) => println!("{nickname} (calls itself {name})"),
+            _ => println!("{}", device.label()),
+        }
         println!("  id         {}", device.endpoint_id);
         if let Some(app) = &device.app {
             println!("  app        Zone {app}");
@@ -310,7 +314,7 @@ pub fn unpair(spec: &str) -> Result<()> {
     events::record(&db, "unpaired", json!({ "device": device.name, "device_id": device.endpoint_id }));
     println!(
         "Unpaired {}. It can no longer sync to this computer. The items it already sent stay in the library.",
-        device.name.as_deref().unwrap_or("the phone")
+        device.label()
     );
     Ok(())
 }

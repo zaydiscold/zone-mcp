@@ -675,7 +675,8 @@ pub fn sync_status(db: &mut Db, scope: &Scope) -> Result<Value> {
         .iter()
         .map(|d| {
             json!({
-                "name": d.name,
+                // What the person calls it on this computer, else what it calls itself.
+                "name": d.label(),
                 "app": d.app,
                 "endpoint_id": d.endpoint_id,
                 "paired": clock.full(d.paired_at),

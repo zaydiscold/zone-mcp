@@ -55,6 +55,14 @@ Merge rule on the computer:
 - From the phone itself (Link and Flash), the phone is the source of truth: an incoming item always replaces the stored row, and an incoming live item brings back a row that was deleted (the person restored it on the phone).
 - From a backup folder (which can be stale): insert when the id is new; otherwise replace only when the incoming `updated_at` is greater than or equal to the stored one, and never bring back a deleted row.
 
+One thing on the computer comes before that rule. The person can remove an item from the computer on the local page (the phone is not told, and agents cannot do it). The computer remembers the item's `updated_at` at that moment, and from then on, for every carrier:
+
+- the same item again, or an older version of it, changes nothing: it stays removed (and is acknowledged like any other item, so the phone does not keep sending it);
+- a version whose `updated_at` is greater than the remembered one takes its place and the item is back: the person edited it on the phone;
+- a deletion from the phone (or from a backup at least as new) makes it an ordinary deleted item.
+
+A removed item is kept as a deleted row without its text, so every reader leaves it out, and what it held is kept beside it for 30 days so the person can put it back. After that the text is erased and only the id and the remembered `updated_at` stay.
+
 ## Clips
 
 A clip is a piece of text the person chose to send from the phone to the computer: what was on the phone's clipboard, something shared from another app, or something typed. It is an ordinary item with `kind` `clip`, so every carrier moves it and every reader can list it.
@@ -99,6 +107,11 @@ Every object has `t`. Phone speaks first.
 
 1. Phone: `{"t":"hello","v":1,"phone":{"id":"<install UUID>","name":"My iPhone","app":"1.0.3 (2026111401)"},"pair":"<secret hex>"}`
    - `pair` is present only on the first connection after scanning a pairing link.
+   - `phone.appearance` and `phone.accent` are optional (newer Zone builds for iPhone may send them; a receiver must not require them, and zone 0.1.2 and earlier ignore them). They say how Zone looks on the phone, so the computer's page can match it:
+     - `appearance`: `"dark"` or `"light"`, the appearance Zone is drawn in on the phone at the time of the hello. When the app's own setting is Match iPhone, send what that comes to now (the system's current appearance), never `"system"`.
+     - `accent`: the raw value of the accent chosen in Settings, Appearance: `"violet"`, `"ice"`, `"ember"`, `"mint"` or `"rose"`.
+     - The computer stores each per phone when present and keeps the last value when a later hello leaves it out. A value it does not know is ignored. A flash's `phone` object may carry the same two fields.
+     - The phone should start a session (an empty one is fine: hello, welcome, bye) when either changes, so the computer learns of it.
 2. Computer, one of:
    - `{"t":"welcome","v":1,"computer":{"id":"<database UUID>","name":"studio","os":"macos","version":"0.1.1"},"items":1629,"resend_all":false}`
    - `{"t":"refused","reason":"not_paired"}` then close. Reasons: `not_paired`, `bad_secret`, `version`, `busy`.

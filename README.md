@@ -328,8 +328,42 @@ and distance will cost some codes, so expect it to take longer.
 zone open
 ```
 
-opens a local page with everything grouped by day: filter by kind (dictations, notes, meetings, and
-clips once you have sent one) and by where it was spoken, search, pick a date range, copy any item.
+opens a local page you can work from. Home shows three things side by side: your **notes** as a
+list to tick off, your **meetings**, and what you said lately, under a strip of numbers for today
+and the week. Every kind has its own color, icon and label, so a note never looks like a dictation.
+
+- **Notes** are a to-do list. Tick one and it is Done; show Open, Done or All, newest or oldest
+  first. Done is the same flag an AI agent sets with `mark_processed`, so an agent that works
+  through your notes and you ticking them off always agree.
+- **Meetings** open to the transcript by speaker, with the time each turn began.
+- **History** is everything by day, with search, kinds, where a dictation was spoken, done or not,
+  and a calendar. A voice note is listed once: the recording behind it is folded into the note
+  (a line says how many are folded, with a way to show them).
+- **Statistics**: items, words and time spoken today, this week and over the last 30 days, by kind,
+  by hour of the day and day of the week.
+- **Phones**: the chip in the bar lists the paired phones by name. Pick one to see only what came
+  from it, rename it (every iPhone calls itself "iPhone"), unpair it, or pair another.
+- **Export** any item, selection or view as Markdown, plain text, CSV or JSON, to the clipboard or
+  a file. Notes alone become a checklist (`- [ ]` open, `- [x]` done), one meeting a transcript
+  under a header, anything else a document by day, grouped by kind.
+- **Remove** takes an item off this computer only (see below). Nothing on the page can delete
+  anything on your iPhone.
+- **Settings**: light, dark, this computer's setting or your iPhone's, the accent color (Zone for
+  iPhone's five), the clipboard switch, the backup folder, which AI apps are connected and what
+  they may see, what you removed, the version and whether a newer one is out, and where the data is.
+
+Press `?` on the page for the keys: `/` search, `g n` notes, `g m` meetings, `j` and `k` to move,
+`x` done, `c` copy, `e` export. Every view and filter has its own address
+([docs/page-routes.md](docs/page-routes.md)), so `http://127.0.0.1:47813/#/notes` opens the notes.
+
+### Removing something from this computer
+
+Remove hides an item here: on the page, from agents, from the command line and from exports. It
+does not touch the phone, and agents cannot do it. A removed item stays away when the phone syncs
+again and when a backup is read again. It comes back only if you edit it on the phone (a newer
+version is taken as you wanting it), and if you delete it on the phone it is simply deleted. For
+30 days you can put it back from Settings, Removed; after that its words are erased from this
+computer and only a marker remains, so that it still does not return.
 
 From the terminal:
 
@@ -341,8 +375,14 @@ zone search lease renewal --kind dictation --since 30d
 zone show 9F1C2E6A            # an id, or the beginning of one
 zone stats --by day --since 7d
 zone export --format md --since 2026-11-01 -o november.md
+zone export --format md --kind note --unprocessed    # open notes, as a checklist
+zone export --format csv --kind dictation --phone "Work phone"
 zone export --format jsonl > library.jsonl
 ```
+
+`zone export` writes `jsonl`, `json`, `csv`, `md` or `txt`, `--order oldest` or `newest`, in the
+same layouts as the page's Export. `--done` and `--unprocessed` pick items by the done flag,
+`--phone` by the phone they came from, and `--id` names single items.
 
 Times can be RFC 3339 (`2026-11-11T12:00:00-08:00`), a date (`2026-11-11`), a date and time
 (`"2026-11-11 12:00"`, in the computer's time zone, or the one given with `--tz`), an age (`2h`,
@@ -572,13 +612,17 @@ The four kinds of item:
   accepts only the phones it has paired with, by their keys.
 - **The web page is local.** It listens on 127.0.0.1 only, needs a random key that `zone open`
   passes to your browser, refuses requests under any other host name, and loads nothing from the
-  internet.
+  internet. Everything it can change (done, remove, a phone's name, unpairing, its settings) is a
+  POST that needs that key and is refused when it comes from any other site. Opening its Settings
+  lets zone itself ask GitHub whether a newer zone is out, at most twice a day, as `zone update
+  --check` does (`ZONE_NO_UPDATE_CHECK=1` turns that off).
 - **Agents read what you let them, and what they read leaves your computer.** An MCP client that
   has zone registered can read the whole library unless you narrow it: `zone mcp install <client>
   --notes-only`, `--kinds note,meeting` or `--no-keyboard` (see [Choosing what an agent can
   see](#choosing-what-an-agent-can-see)). Whatever an agent does read is sent to the company that
   runs its model, as part of the conversation, under that company's terms, not zone's. The one
-  thing an agent can change is the processed flag. The limit is on what zone hands to an agent: it
+  thing an agent can change is the processed flag (Done on the page). An item you removed on the
+  page is not shown to any agent. The limit is on what zone hands to an agent: it
   does not stop another program running as you from opening the library file itself.
 - **Flash stays in the room.** The camera pictures go from the browser to zone on the same
   computer and are thrown away once read. What the phone shows is encrypted, so someone filming

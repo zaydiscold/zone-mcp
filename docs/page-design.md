@@ -1,6 +1,6 @@
 # The pages' design
 
-zone serves three pages: the history page (`assets/index.html`), Flash (`assets/flash.html`)
+zone serves three pages: the library page (`assets/index.html`), Flash (`assets/flash.html`)
 and the locked page (`assets/locked.html`). They are meant to look made by the same hands as
 the iPhone app and Zone for Mac (`mac/Zone/Theme.swift`). These are the decisions, so a change
 can keep them.
@@ -8,12 +8,26 @@ can keep them.
 ## Color
 
 The Mac theme's values, unchanged: paper `#2A2A2A` / `#F1E9D2`, cards `#333333` / `#F7F2E4`,
-ink `#F1E9D2` / `#333333`, muted `#C9C1AB` / `#555555`, rules of ink at 16 / 18%. The pages
-follow `prefers-color-scheme`; both faces are designed, neither is a filter of the other.
+ink `#F1E9D2` / `#333333`, muted `#C9C1AB` / `#555555`, rules of ink at 16 / 18%. Both faces
+are designed, neither is a filter of the other. Flash and the locked page follow
+`prefers-color-scheme`. The library page follows what Settings says: this computer's setting
+(`data-theme="auto"`), Light, Dark, or the iPhone's, once a phone has said how Zone looks on
+it (PROTOCOL.md, `hello`). The server writes `data-theme` and `data-accent` into the page before
+it is sent, so it never flashes the wrong face.
 
-Purple is used sparingly, as in the apps: the wordmark's dot, the wave, the state light,
-search marks, the calendar's dots, focus rings, and the tiles of the Flash picture. The main
-action is an ink capsule (cream on charcoal, charcoal on cream), never purple.
+The accent is used sparingly, as in the apps: the wordmark's dot, the state light, search
+marks, the calendar's dots, focus rings, and the tiles of the Flash picture. The main action
+is an ink capsule (cream on charcoal, charcoal on cream), never the accent. On the library page
+the accent is one of the iPhone app's five (`AccentChoice`: violet, ice, ember, mint, rose),
+with the app's own three tones for each: the bright one on dark paper, the deeper graphic tone
+as shapes on cream, the text tone as text on cream. Until one is chosen in Settings it is the
+iPhone's, when the phone says, else violet.
+
+Each kind has one quiet hue of its own, so a list can be read at a glance: notes amber
+(`#E3B65C` / `#8A5D00`), meetings teal (`#6CC5B0` / `#17695B`), clips blue (`#7FB2F0` /
+`#2A5EA8`), dictations ink (they are most of the library, so they are the ground the others
+stand out from). The hue is in the stripe at the row's left edge, the icon and the kind's
+label, and in the panel's top rule. These do not change with the accent.
 
 Two values were added for small text, measured against the paper: "quiet" text is ink at 62%
 in dark (`#A5A092`, 5.5:1) and `#686660` in light (4.7:1), and purple as small text in dark is
@@ -39,12 +53,35 @@ case, 12 to 13 px, medium weight, quiet.
 
 ## Layout
 
-The history page is a dated document, not a stack of cards: a serif heading per day with a 1 pt
-rule, the time in the margin, the words, one quiet line of facts, Copy on hover or focus. Filters
-live in a rail: kinds and sources as lists with serif counts, quick ranges, and a month calendar
-with a dot on days that have items (it replaces the browser's date fields; pick a day, or two for
-a range; arrows and Page Up/Down move through it). The title names what is shown. In a narrow
-window the title comes first, then the filters, which scroll sideways.
+The library page is a tool to work from, not a document to read. An earlier version was one
+dated document for everything (a serif heading per day, the time in the margin, one quiet line
+of facts): every item looked the same whatever it was, notes and meetings were a filter away,
+and nothing could be acted on. What it is now:
+
+- A bar with the views as tabs (Home, Notes with its open count, Meetings, History, Stats,
+  Settings), search, the phone chip, Flash, and the keys.
+- Home fills one laptop screen without scrolling the page: a strip of figures (today, the last
+  7 days, time spoken, the busiest hour, a bar per day for 30 days), then three panels that
+  scroll by themselves. Notes, the widest, is the list of things to do. Meetings is beside it.
+  "Lately" (the latest clip and recent dictations) is the narrowest and plainly secondary. Below
+  1180 px Lately moves under the other two, below 720 px everything is one column.
+- One row for an item everywhere: the kind's stripe and icon (a round checkbox for a note), the
+  words, one quiet line of facts (kind, where it was spoken, when, how long, which phone when
+  there are several), and its actions on hover, focus or the keyboard's cursor: done, copy,
+  export, remove, select. A meeting's row has its title in the serif and its speakers as chips.
+- Notes show their whole text, cut only after ten lines with a way to show the rest. Done notes
+  are struck through and stay where they were until the view is opened again, so a tick can be
+  undone where it was made.
+- History keeps the dated document (a serif heading per day with a rule) and the rail: kinds
+  with their icons and counts, where a dictation was spoken (with what each name means), done or
+  not, quick ranges, and the month calendar with a dot on days that have items. The title names
+  what is shown.
+- A meeting opens as a page: title, facts, actions, then the turns, the speaker and the time in
+  the margin, each speaker in a hue of their own.
+- Statistics and Settings are flat cards with serif figures.
+- Source names are plain words: Keyboard (spoken into another app with the Zone keyboard), In
+  Zone (dictated inside the Zone app), Note recording (the recording behind a voice note). The
+  meaning is in each label's tooltip and listed under "What these mean" in History.
 
 Flash puts the words on the left (headline, the iPhone's own three steps as a timeline, the
 pairing note) and the instrument on the right: the camera and the library as flat cards joined
@@ -60,16 +97,19 @@ No gradients on surfaces, no blur, no glow.
 One duration for state changes (0.2 s) and Zone's settle curve (`cubic-bezier(0.22, 1, 0.36, 1)`,
 0.45 s) for things arriving, as in `Theme.swift`.
 
-- The bar's wave is Zone for Mac's `FlowingWave`, ported: a still hairline until something
-  arrives (new items on the history page, codes on Flash), then awake.
-- New items land in purple and settle to ink (the Words prototype's idea).
+- Flash's bar has Zone for Mac's `FlowingWave`, ported: a still hairline until codes arrive,
+  then awake. The library page had it too and no longer does: a line that meant nothing most of
+  the time was read as a fault. There the state light beside the phone's name does the job. It
+  is filled when a phone is paired, hollow when none is, and pulses twice when something arrives
+  from a phone. Its tooltip says so.
+- New items land in the accent and settle to ink (the Words prototype's idea).
 - On Flash each tile lands in purple, grows into place and settles to its own tone. Complete, the
   tiles draw a voice as the iPhone draws one: bars mirrored about a middle line, purple on quieter
   ink. The last pieces resolve in order and a pass of ink runs across. Before the first code the
   picture to come is held faintly; a flash that will not open leaves the tiles quiet, ringed in
   the alarm color.
-- Reduce Motion holds everything still: one frame of the wave, tiles in place, no ring or chevron
-  movement.
+- Reduce Motion holds everything still: one frame of the wave, tiles in place, no ring, pulse
+  or chevron movement.
 
 ## Rules the pages keep
 
@@ -77,3 +117,13 @@ Nothing is loaded from anywhere but zone itself (the policy is `default-src 'non
 the tests in `src/web.rs` check it). No inline `style=` attributes and no inline handlers. No em
 dashes. Every control is reachable by keyboard with a visible focus ring, and the states that
 change are announced (`aria-live`).
+
+The library page adds three of its own:
+
+- Agents can never edit or delete the person's words, and neither can the page delete anything
+  on the phone. Remove hides an item on this computer and says so where it is offered ("Removed
+  from this computer. Still on your iPhone."), with Undo and thirty days to put it back.
+- Every view and filter is in the address (docs/page-routes.md), so anything on screen can be
+  linked to and the browser's Back works.
+- Nothing decorative that does not inform. If a thing moves or is colored, it means something
+  a tooltip can say in a sentence.
