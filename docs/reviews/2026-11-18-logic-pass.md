@@ -67,6 +67,7 @@ docs/updating.md.
 | P19 | With one phone chosen in the bar, the number on the Notes tab still counts every phone's open notes, while the heading beside it counts the chosen phone's. | Two phones, choose one, open Notes. | low | left: the tab's number comes from the status every view shares. Worth doing with the redesign. |
 | P20 | An item whose time is in the future (a phone with a wrong clock) is listed under a day that has not come, which the calendar cannot pick. One dated at zero makes "First item: December 31, 1969". | A fake phone sending such items. | low | left: nothing is lost or miscounted (today, the week and the chart leave future days out). |
 | P21 | `zone import` and a backup folder say "1 already in the library" for an item that is in fact removed from this computer and was left out. | Remove a note, import a backup that holds it. | low | left: wording. |
+| P22 | In the phones menu each phone's count included the recordings behind notes, so the phones added up to more than "All phones" (113 and 15 beside 117), and choosing a phone listed fewer items than its line said. After a phone was unpaired, the menu offered "No phone on record, 0 items", and that phone's items could be reached only under Everything. | Two phones, one with voice notes; then `zone unpair` one of them. | medium | fixed in b39dfc1: the counts fold as the lists do (102 and 15 beside 117), and "No phone on record" holds what no paired phone sent, with its true count. |
 
 Checked and sound, by experiment:
 
