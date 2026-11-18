@@ -441,8 +441,8 @@ pub const ACCENTS: [&str; 5] = ["violet", "ice", "ember", "mint", "rose"];
 pub enum FromPhone {
     /// Items delivered by the phone with this install id.
     Id(String),
-    /// Items no phone is recorded for: read from a backup folder, or sent by a phone that
-    /// gave no id.
+    /// Items no paired phone is recorded for: read from a backup folder, sent by a phone
+    /// that gave no id, or sent by a phone that has been unpaired since.
     Unknown,
 }
 
@@ -1445,11 +1445,12 @@ impl Db {
         Ok(self.writer()?.execute("UPDATE devices SET nickname = ?2 WHERE endpoint_id = ?1", params![endpoint_id, name])? == 1)
     }
 
-    /// `(phone install id, items)` for items that are not deleted. The id is None for items
+    /// `(phone install id, items)` for the items a filter selects. The id is None for items
     /// no phone is recorded for.
-    pub fn counts_by_phone(&self) -> Result<Vec<(Option<String>, i64)>> {
-        let mut statement = self.conn.prepare("SELECT device_id, count(*) FROM items WHERE deleted = 0 GROUP BY device_id")?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    pub fn counts_by_phone_filtered(&self, filter: &Filter) -> Result<Vec<(Option<String>, i64)>> {
+        let (clause, args) = filter_sql(filter);
+        let mut statement = self.conn.prepare(&format!("SELECT i.device_id, count(*) FROM items i WHERE {clause} GROUP BY i.device_id"))?;
+        let rows = statement.query_map(params_from_iter(args), |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -1931,7 +1932,10 @@ fn filter_sql(filter: &Filter) -> (String, Vec<Sql>) {
             clause.push_str(" AND i.device_id = ?");
             args.push(Sql::Text(id.clone()));
         }
-        Some(FromPhone::Unknown) => clause.push_str(" AND i.device_id IS NULL"),
+        // No paired phone: none recorded at all (a backup folder), or one unpaired since.
+        Some(FromPhone::Unknown) => {
+            clause.push_str(" AND (i.device_id IS NULL OR i.device_id NOT IN (SELECT phone_id FROM devices WHERE phone_id IS NOT NULL))")
+        }
         None => {}
     }
     if filter.fold_note_recordings {
@@ -2780,7 +2784,7 @@ mod tests {
         assert_eq!(of(&db, FromPhone::Id("PHONE-0".into())), ["A"]);
         assert_eq!(of(&db, FromPhone::Id("PHONE-1".into())), ["B"]);
         assert_eq!(of(&db, FromPhone::Unknown), ["C"]);
-        let mut counts = db.counts_by_phone().unwrap();
+        let mut counts = db.counts_by_phone_filtered(&Filter::default()).unwrap();
         counts.sort();
         assert_eq!(counts, [(None, 1), (Some("PHONE-0".to_string()), 1), (Some("PHONE-1".to_string()), 1)]);
         db.apply_items(&[item("C", 10.0, "from a backup")], &from("PHONE-1")).unwrap();

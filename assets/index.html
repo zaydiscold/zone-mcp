@@ -1341,7 +1341,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       const all = h("div", { class: "prow", "aria-current": String(!S.phone) }, btn("pick", [h("span", { class: "radio" }), h("span", { class: "who" }, h("b", null, st.phones.length > 1 ? "All phones" : "Everything"), h("small", null, plural(st.items.total, "item", "items")))], () => choosePhone("")));
       kids.push(all, ...st.phones.map((phone) => phoneLine(phone, true)));
       const none = st.items_without_a_phone.none_recorded + st.items_without_a_phone.unpaired;
-      if (none) kids.push(h("div", { class: "prow", "aria-current": String(S.phone === "none") }, btn("pick", [h("span", { class: "radio" }), h("span", { class: "who" }, h("b", null, "No phone on record"), h("small", null, plural(st.items_without_a_phone.none_recorded, "item", "items") + " read from a backup folder or sent before phones were told apart"))], () => choosePhone("none"))));
+      if (none) kids.push(h("div", { class: "prow", "aria-current": String(S.phone === "none") }, btn("pick", [h("span", { class: "radio" }), h("span", { class: "who" }, h("b", null, "No phone on record"), h("small", null, plural(none, "item", "items") + " read from a backup folder, or sent by a phone that is not paired now"))], () => choosePhone("none"))));
     } else kids.push(h("div", { class: "ask" }, "No phone is paired with this computer yet."));
     kids.push(h("div", { class: "foot" }, h("a", { class: "textbutton", href: href("settings"), onclick: closeDevices }, "Settings"), btn("button primary", st.phones.length ? "Pair another phone" : "Pair a phone", () => { closeDevices(); openPair(); })));
     box.replaceChildren(...kids);

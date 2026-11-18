@@ -988,7 +988,10 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
     // Words removed more than thirty days ago go now: the page asks this every few seconds
     // while it is open, and zone asks every hour by itself.
     db.erase_old_removed(now)?;
-    let by_phone = db.counts_by_phone()?;
+    // The page counts a voice note once: its recording is folded into the note. The same for
+    // each phone's count, so the phones add up to the total.
+    let shown = Filter { fold_note_recordings: true, ..Filter::default() };
+    let by_phone = db.counts_by_phone_filtered(&shown)?;
     let devices = db.devices()?;
     let count_of = |phone_id: &Option<String>| by_phone.iter().find(|(id, _)| id.is_some() && id == phone_id).map(|(_, n)| *n).unwrap_or(0);
     let phones: Vec<Value> = devices.iter().map(|d| phone_json(d, count_of(&d.phone_id), now)).collect();
@@ -998,8 +1001,6 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
     let from_none: i64 = by_phone.iter().filter(|(id, _)| id.is_none()).map(|(_, n)| *n).sum();
     let from_unpaired: i64 = by_phone.iter().filter(|(id, _)| id.as_ref().is_some_and(|id| !paired.contains(&id))).map(|(_, n)| *n).sum();
 
-    // The page counts a voice note once: its recording is folded into the note.
-    let shown = Filter { fold_note_recordings: true, ..Filter::default() };
     let mut by_kind = Map::new();
     for (kind, count) in db.counts_by_kind_filtered(&shown)? {
         by_kind.insert(kind, json!(count));
@@ -1643,6 +1644,14 @@ mod tests {
             pair(&mut db, "aa11", "PHONE-A");
             pair(&mut db, "bb22", "PHONE-B");
         }
+        // Each phone's count is what choosing it lists (a voice note once), and the phones
+        // and the items of no phone add up to the total.
+        let whole = get_json(&state, "/api/status");
+        let per_phone: Vec<i64> = whole["phones"].as_array().unwrap().iter().map(|p| p["items"].as_i64().unwrap()).collect();
+        assert_eq!(per_phone, [1, 1]);
+        assert_eq!(get_json(&state, "/api/items?device=aa11&limit=1")["total"], 1);
+        let without = whole["items_without_a_phone"]["none_recorded"].as_i64().unwrap() + whole["items_without_a_phone"]["unpaired"].as_i64().unwrap();
+        assert_eq!(per_phone.iter().sum::<i64>() + without, whole["items"]["total"].as_i64().unwrap());
         let status = get_json(&state, "/api/status")["items"].clone();
         // Folded, as the list is: the heading and the choices agree.
         let folded = get_json(&state, "/api/items?rail=1&limit=1");
@@ -1802,6 +1811,8 @@ mod tests {
         let status = get_json(&state, "/api/status");
         assert_eq!((status["phones"].as_array().unwrap().len(), status["items"]["total"].as_i64()), (1, Some(150)));
         assert_eq!(status["items_without_a_phone"], json!({ "none_recorded": 130, "unpaired": 5 }));
+        // "No phone on record" is where they are now, with the ones no phone ever was recorded for.
+        assert_eq!(get_json(&state, "/api/items?device=none&limit=1")["total"], 135);
         assert_eq!(post_json(&state, "/api/unpair", json!({ "id": "bb22" })).status(), StatusCode::BAD_REQUEST);
         // With the phone that said how it looks gone, following it falls back to violet.
         post_json(&state, "/api/settings", json!({ "accent": "phone", "appearance": "phone" }));
