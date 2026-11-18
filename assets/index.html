@@ -1097,8 +1097,15 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     let from = "", to = "";
     if (range === "today") { from = today; to = today; }
     else if (range === "7" || range === "30") { from = addDays(today, -(Number(range) - 1)); to = today; }
-    else if (range === "custom") { from = p.from || ""; to = p.to || p.from || ""; }
-    return { q: p.q || "", kinds: (p.kinds || "").split(",").filter(Boolean), sources: (p.sources || "").split(",").filter(Boolean), done: p.done || "", fold: p.fold !== "0", range, from, to };
+    else if (range === "custom") {
+      // From a link, which anyone can write: a day that is not a day is no filter, and two
+      // days the wrong way round are the same range.
+      const day = (text) => (/^\d{4}-\d{2}-\d{2}$/.test(text || "") && iso(fromIso(text)) === text ? text : "");
+      from = day(p.from); to = day(p.to) || from;
+      if (!from) to = "";
+      if (from > to) [from, to] = [to, from];
+    }
+    return { q: p.q || "", kinds: (p.kinds || "").split(",").filter(Boolean), sources: (p.sources || "").split(",").filter(Boolean), done: p.done === "open" || p.done === "done" ? p.done : "", fold: p.fold !== "0", range, from, to };
   }
   function choice(label, count, pressed, onclick, glyph, cls, title) {
     return btn("choice" + (cls ? " " + cls : ""), [glyph ? icon(glyph) : null, h("span", { class: "l" }, label), count === null ? null : h("span", { class: "n" }, count.toLocaleString())], onclick, { "aria-pressed": String(pressed), title });
