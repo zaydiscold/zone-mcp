@@ -661,6 +661,7 @@ impl Db {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         add_missing_columns(&conn)?;
+        settle_removed(&conn)?;
         let db = Db { conn, atomic: false };
         if db.meta_get("database_id")?.is_none() {
             // INSERT OR IGNORE: two programs opening a brand new library at once agree on one id.
@@ -1956,6 +1957,36 @@ fn add_missing_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Puts right what a zone from before removal existed (0.1.2 and earlier) can leave behind
+/// when it runs a library for a while: it stores an item the person had removed here as if it
+/// were new, so the item is in the library and among the removed at once, where Put back
+/// does nothing. Looked at every time the library is opened, written only when there is
+/// something to put right.
+fn settle_removed(conn: &Connection) -> Result<()> {
+    const BOTH: &str = "FROM removed r JOIN items i ON i.id = r.id WHERE i.deleted = 0";
+    let both: i64 = conn.query_row(&format!("SELECT count(*) {BOTH}"), [], |row| row.get(0))?;
+    let orphans: i64 = conn.query_row(
+        "SELECT count(*) FROM removed r WHERE r.with_note IS NOT NULL AND NOT EXISTS (SELECT 1 FROM removed n WHERE n.id = r.with_note)",
+        [],
+        |row| row.get(0),
+    )?;
+    if both == 0 && orphans == 0 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    // Edited on the phone since it was removed: it is back, as the phone now has it.
+    tx.execute("DELETE FROM removed WHERE id IN (SELECT r.id FROM removed r JOIN items i ON i.id = r.id WHERE i.deleted = 0 AND i.updated_at > r.item_updated_at)", [])?;
+    // The same version, or an older one: the person removed it, and it stays removed.
+    tx.execute(
+        "UPDATE items SET deleted = 1, text = '', title = NULL, extra = '{}', words = 0 WHERE deleted = 0 AND id IN (SELECT id FROM removed)",
+        [],
+    )?;
+    // A recording whose note was put back or dropped by another zone stands by itself.
+    tx.execute("UPDATE removed SET with_note = NULL WHERE with_note IS NOT NULL AND with_note NOT IN (SELECT id FROM removed)", [])?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Adds a scope's limits to a WHERE clause over `items i`.
 fn scope_sql(scope: &Scope, clause: &mut String, args: &mut Vec<Sql>) {
     if !scope.kinds.is_empty() {
@@ -2791,6 +2822,36 @@ mod tests {
         db.remove_items(&["R2".to_string()], 400.0).unwrap();
         assert_eq!(db.removed_items().unwrap().len(), 2);
         assert_eq!(db.restore_items(&["R2".to_string()]).unwrap(), ["R2"]);
+    }
+
+    #[test]
+    fn what_an_older_zone_brought_back_is_removed_again_when_the_library_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zone.sqlite");
+        {
+            let mut db = Db::open(&path).unwrap();
+            db.apply_items(&[item("A", 10.0, "buy cedar boards"), item("B", 10.0, "call the dentist"), item("C", 10.0, "water the fig")], &link(1.0)).unwrap();
+            db.remove_items(&["A".to_string(), "B".to_string()], 100.0).unwrap();
+            // A zone from before removal existed runs the library and the phone sends
+            // everything again: A as it was, B edited since. It knows nothing of `removed`.
+            db.execute_for_tests(
+                "UPDATE items SET deleted = 0, text = 'buy cedar boards', words = 3 WHERE id = 'A';
+                 UPDATE items SET deleted = 0, text = 'call the dentist on Friday', words = 5, updated_at = 20.0 WHERE id = 'B';",
+            )
+            .unwrap();
+            assert_eq!((db.total_items().unwrap(), db.removed_count().unwrap()), (3, 2));
+        }
+        for _ in 0..2 {
+            let mut db = Db::open(&path).unwrap();
+            // A is removed again and can be put back. B is back, as the phone now has it.
+            assert_eq!(db.total_items().unwrap(), 2);
+            assert_eq!(db.search("cedar", &Filter::default(), None, 5).unwrap().total, 0);
+            assert_eq!(db.removed_items().unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["A"]);
+            assert_eq!(db.get("B").unwrap().unwrap().text, "call the dentist on Friday");
+            assert_eq!(db.restore_items(&["A".to_string()]).unwrap(), ["A"]);
+            assert_eq!(db.get("A").unwrap().unwrap().text, "buy cedar boards");
+            db.remove_items(&["A".to_string()], 200.0).unwrap();
+        }
     }
 
     #[test]
