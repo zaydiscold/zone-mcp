@@ -1632,6 +1632,10 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
   refreshStatus(true).then(route).then(tellOfUpdate);
   setInterval(refreshStatus, 5000);
   setInterval(tellOfUpdate, 6 * 3600 * 1000);
+  // A page nobody is looking at is not given its timers (a tab in the background, Zone for
+  // Mac's History window while it is closed). When it is looked at again it asks at once, so
+  // what arrived meanwhile, or a zone that was updated, is there without a wait.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshStatus(); });
 })();
 </script>
 </body>
