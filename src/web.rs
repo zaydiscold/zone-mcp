@@ -1850,6 +1850,8 @@ mod tests {
         // An open item is drawn again when the phone changed it, and a change that arrived
         // under a selection or a dialog is drawn once that is over.
         assert!(PAGE.contains("if (R.view === \"item\" || R.view === \"meeting\") { refreshOpenItem(); return; }") && PAGE.contains("S.behind = true;"));
+        // Nothing recorded has no length, and a view without a list has nothing for `e` to export.
+        assert!(PAGE.contains("|| !(seconds > 0)) return null;") && PAGE.contains("    S.scope = null;\n    renderTabs();"));
         // A link that names a phone no longer paired shows everything, it does not fail.
         assert!(PAGE.contains("S.status.phones.some((p) => p.id === R.p.phone)"));
     }

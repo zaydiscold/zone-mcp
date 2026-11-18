@@ -584,7 +584,8 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     return Math.round(seconds / 86400) + " days ago";
   }
   function duration(seconds) {
-    if (seconds === null || seconds === undefined) return null;
+    // Nothing recorded is no length at all, not "1 s".
+    if (seconds === null || seconds === undefined || !(seconds > 0)) return null;
     const total = Math.round(seconds);
     if (total < 60) return Math.max(1, total) + " s";
     if (total < 3600) return Math.floor(total / 60) + " min" + (total % 60 && total < 600 ? " " + (total % 60) + " s" : "");
@@ -686,6 +687,9 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     parseRoute();
     const my = ++seq;
     const view = VIEWS[R.view] ? R.view : "home";
+    // What Export means here is set by the view that is drawn. A view with nothing to
+    // export (Statistics, Settings) leaves none, so `e` there does not export the last list.
+    S.scope = null;
     renderTabs();
     if (R.view !== "history" && document.activeElement !== $("q")) $("q").value = "";
     if (R.view === "history" && document.activeElement !== $("q")) $("q").value = R.p.q || "";
@@ -1181,7 +1185,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     const [data, dots] = await Promise.all([api("/api/items?" + qs(params)), calKey === cal.key ? null : api("/api/items?" + calKey).catch(() => null)]);
     if (my !== seq) return null;
     if (dots) { cal.counts = dots.day_counts || {}; cal.key = calKey; }
-    S.scope = { params: Object.assign({}, params, { days: "", rail: "" }), label: "what this view shows" };
+    const scope = S.scope = { params: Object.assign({}, params, { days: "", rail: "" }), label: "what this view shows" };
     // The numbers beside the choices count what this list can show: from the phone chosen,
     // with the recordings behind notes when they are shown.
     const among = data.rail || st.items;
@@ -1247,7 +1251,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       : !F.fold ? h("p", { class: "note-line" }, "Showing the recordings behind voice notes as well as the notes. ", btn("textbutton", "Fold them away", () => setP({ fold: "" }))) : null;
     if (cal.refocus) requestAnimationFrame(() => { cal.refocus = false; const b = document.querySelector('[data-day="' + cal.focus + '"]'); if (b) b.focus(); });
     return h("div", null,
-      h("div", { class: "vhead" }, h("h1", null, title), h("span", { class: "sub", "aria-live": "polite" }, sentence + "."), h("span", { class: "sp" }), btn("button", [icon("out"), "Export"], () => openExport(Object.assign({ title: title === "History" ? "" : title }, S.scope)), { title: "Export what this view shows (e)" })),
+      h("div", { class: "vhead" }, h("h1", null, title), h("span", { class: "sub", "aria-live": "polite" }, sentence + "."), h("span", { class: "sp" }), btn("button", [icon("out"), "Export"], () => openExport(Object.assign({ title: title === "History" ? "" : title }, scope)), { title: "Export what this view shows (e)" })),
       h("div", { class: "cols" }, rail, h("div", null, fold, list, pages.more)));
   };
 
