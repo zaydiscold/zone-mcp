@@ -1947,8 +1947,12 @@ fn filter_sql(filter: &Filter) -> (String, Vec<Sql>) {
 const FOLDED_RECORDING: &str = "(i.kind = 'dictation' AND i.source = 'note' AND EXISTS (SELECT 1 FROM items n WHERE n.kind = 'note' \
      AND n.deleted = 0 AND n.created_at >= i.created_at - 5 AND n.created_at <= i.created_at + coalesce(i.duration_s, 0) + 120))";
 
-/// The same window as [`FOLDED_RECORDING`], between a recording `i` and one note `note`.
-const RECORDING_OF_NOTE: &str = "note.created_at >= i.created_at - 5 AND note.created_at <= i.created_at + coalesce(i.duration_s, 0) + 120";
+/// The same window as [`FOLDED_RECORDING`], between a recording `i` and one note `note`. The
+/// last part says the same thing again in a way the index on `created_at` can use (no
+/// recording runs longer than a day), so that looking for a note's recording does not read
+/// every dictation in a large library.
+const RECORDING_OF_NOTE: &str = "note.created_at >= i.created_at - 5 AND note.created_at <= i.created_at + coalesce(i.duration_s, 0) + 120 \
+     AND i.created_at BETWEEN note.created_at - 86520 AND note.created_at + 5";
 
 /// Adds the columns of [`ADDED_COLUMNS`] that a library does not have yet.
 fn add_missing_columns(conn: &Connection) -> Result<()> {
@@ -1984,7 +1988,17 @@ fn settle_removed(conn: &Connection) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    if both == 0 && orphans == 0 {
+    // zone 0.1.3 removed a note and left the recording behind it in view, as a dictation with
+    // the same words. Those recordings go with their note now, as they do when a note is
+    // removed today (see [`Db::remove_items`]).
+    let stray = format!(
+        "FROM items i JOIN removed note ON note.kind = 'note' AND {RECORDING_OF_NOTE} \
+         WHERE i.deleted = 0 AND i.kind = 'dictation' AND i.source = 'note' \
+         AND NOT EXISTS (SELECT 1 FROM items n WHERE n.kind = 'note' AND n.deleted = 0 AND {})",
+        RECORDING_OF_NOTE.replace("note.", "n.")
+    );
+    let strays: i64 = conn.query_row(&format!("SELECT count(*) {stray}"), [], |row| row.get(0))?;
+    if both == 0 && orphans == 0 && strays == 0 {
         return Ok(());
     }
     let tx = conn.unchecked_transaction()?;
@@ -1997,6 +2011,23 @@ fn settle_removed(conn: &Connection) -> Result<()> {
     )?;
     // A recording whose note was put back or dropped by another zone stands by itself.
     tx.execute("UPDATE removed SET with_note = NULL WHERE with_note IS NOT NULL AND with_note NOT IN (SELECT id FROM removed)", [])?;
+    if strays > 0 {
+        // Kept as long as the note is: from when the note was removed.
+        tx.execute(
+            &format!(
+                "INSERT OR REPLACE INTO removed (id, removed_at, item_updated_at, kind, source, created_at, text, title, duration_s, \
+                 engine, status, extra, rev, words, with_note) \
+                 SELECT i.id, note.removed_at, i.updated_at, i.kind, i.source, i.created_at, i.text, i.title, i.duration_s, i.engine, \
+                 i.status, i.extra, i.rev, i.words, note.id {stray}"
+            ),
+            [],
+        )?;
+        tx.execute(
+            "UPDATE items SET deleted = 1, text = '', title = NULL, extra = '{}', words = 0 \
+             WHERE deleted = 0 AND id IN (SELECT id FROM removed WHERE with_note IS NOT NULL)",
+            [],
+        )?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -2866,6 +2897,34 @@ mod tests {
             assert_eq!(db.get("A").unwrap().unwrap().text, "buy cedar boards");
             db.remove_items(&["A".to_string()], 200.0).unwrap();
         }
+    }
+
+    #[test]
+    fn a_recording_zone_0_1_3_left_in_view_goes_with_its_removed_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zone.sqlite");
+        {
+            let mut db = Db::open(&path).unwrap();
+            let recording = |id: &str, created_at: f64| Item { source: Some("note".into()), created_at, duration_s: Some(20.0), ..item(id, created_at, "pick up the saffron") };
+            let note = |id: &str, created_at: f64| Item { kind: "note".into(), source: None, created_at, duration_s: None, ..item(id, created_at, "pick up the saffron") };
+            db.apply_items(&[recording("R1", 1000.0), note("N1", 1021.0), recording("R2", 5000.0), note("N2", 5021.0), recording("R3", 9000.0)], &link(1.0)).unwrap();
+            // What zone 0.1.3 did when N1 was removed on its page: the note alone.
+            db.execute_for_tests(
+                "INSERT INTO removed (id, removed_at, item_updated_at, kind, source, created_at, text, title, duration_s, engine, status, extra, rev, words) \
+                 SELECT id, 100.0, updated_at, kind, source, created_at, text, title, duration_s, engine, status, extra, rev, words FROM items WHERE id = 'N1';
+                 UPDATE items SET deleted = 1, text = '', title = NULL, extra = '{}', words = 0 WHERE id = 'N1';",
+            )
+            .unwrap();
+            assert_eq!(db.search("saffron", &Filter::default(), None, 9).unwrap().total, 4, "the removed note's words are still there, as R1");
+        }
+        let mut db = Db::open(&path).unwrap();
+        let ids = |db: &Db| -> Vec<String> { db.list(&Filter::default(), Order::Oldest, 10, None).unwrap().into_iter().map(|row| row.id).collect() };
+        // R1 went with N1. R2 has its note, and R3 never had one: both stay.
+        assert_eq!(ids(&db), ["R2", "N2", "R3"]);
+        assert_eq!(db.removed_items().unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["N1"]);
+        assert_eq!(db.restore_items(&["N1".to_string()]).unwrap(), ["N1"]);
+        assert_eq!(ids(&db), ["R1", "N1", "R2", "N2", "R3"]);
+        assert_eq!(db.get("R1").unwrap().unwrap().text, "pick up the saffron");
     }
 
     #[test]
