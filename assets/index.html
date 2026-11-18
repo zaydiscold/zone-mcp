@@ -1166,14 +1166,17 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
   VIEWS.history = async function (my) {
     const F = historyFilter();
     const st = S.status || (await refreshStatus(true), S.status);
-    const params = { q: F.q, kinds: F.kinds.join(","), sources: F.sources.join(","), start: F.from, end: F.to, done: F.done, fold: F.fold ? "" : "0", days: F.q ? "" : "1" };
+    const params = { q: F.q, kinds: F.kinds.join(","), sources: F.sources.join(","), start: F.from, end: F.to, done: F.done, fold: F.fold ? "" : "0", days: F.q ? "" : "1", rail: "1" };
     // The calendar's dots for the month shown, under the same kinds and sources.
     const first = iso(new Date(cal.year, cal.month, 1)), last = iso(new Date(cal.year, cal.month + 1, 0));
     const calKey = qs({ start: first, end: last, kinds: params.kinds, sources: params.sources, done: F.done, fold: params.fold, days: "1", limit: 1 });
     const [data, dots] = await Promise.all([api("/api/items?" + qs(params)), calKey === cal.key ? null : api("/api/items?" + calKey).catch(() => null)]);
     if (my !== seq) return null;
     if (dots) { cal.counts = dots.day_counts || {}; cal.key = calKey; }
-    S.scope = { params: Object.assign({}, params, { days: "" }), label: "what this view shows" };
+    S.scope = { params: Object.assign({}, params, { days: "", rail: "" }), label: "what this view shows" };
+    // The numbers beside the choices count what this list can show: from the phone chosen,
+    // with the recordings behind notes when they are shown.
+    const among = data.rail || st.items;
 
     // The title names what is shown.
     const names = KINDS.filter((k) => F.kinds.includes(k)).map((k, i) => (i ? KIND_NAMES[k].toLowerCase() : KIND_NAMES[k]));
@@ -1192,12 +1195,13 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     else if (F.from) sentence += F.from === F.to ? " on " + longDate(F.from) : " from " + span(F.from, F.to);
 
     const kinds = h("div", { class: "choices", role: "group", "aria-label": "Kind" },
-      choice("Everything", st.items.total, !F.kinds.length, () => setP({ kinds: "", sources: "" })),
-      KINDS.filter((k) => k !== "clip" || st.items.by_kind.clip).map((k) => choice(KIND_NAMES[k], st.items.by_kind[k] || 0, F.kinds.includes(k), () => setP({ kinds: toggled(F.kinds, k), sources: "" }), k, "kc-" + k, KIND_WHAT[k])));
-    const sourceNames = Object.keys(st.items.dictations_by_source);
+      choice("Everything", among.total, !F.kinds.length, () => setP({ kinds: "", sources: "" })),
+      KINDS.filter((k) => k !== "clip" || st.items.by_kind.clip).map((k) => choice(KIND_NAMES[k], among.by_kind[k] || 0, F.kinds.includes(k), () => setP({ kinds: toggled(F.kinds, k), sources: "" }), k, "kc-" + k, KIND_WHAT[k])));
+    // Every place a dictation was spoken, whichever phone is chosen, so a choice does not vanish.
+    const sourceNames = [...new Set(Object.keys(st.items.dictations_by_source).concat(Object.keys(among.dictations_by_source)))];
     const showSources = (!F.kinds.length || F.kinds.includes("dictation")) && sourceNames.length > 0;
     const sources = showSources ? h("section", { class: "group" }, h("h2", { class: "eyebrow" }, "Where a dictation was spoken"),
-      h("div", { class: "choices", role: "group", "aria-label": "Where a dictation was spoken" }, sourceNames.map((s) => choice(sourceName(s), st.items.dictations_by_source[s], F.sources.includes(s), () => setP({ sources: toggled(F.sources, s) }), null, null, SOURCES[s] ? SOURCES[s][1] : null))),
+      h("div", { class: "choices", role: "group", "aria-label": "Where a dictation was spoken" }, sourceNames.map((s) => choice(sourceName(s), among.dictations_by_source[s] || 0, F.sources.includes(s), () => setP({ sources: toggled(F.sources, s) }), null, null, SOURCES[s] ? SOURCES[s][1] : null))),
       h("details", { class: "what" }, h("summary", null, "What these mean"), h("ul", { class: "explain" }, sourceNames.map((s) => h("li", null, h("b", null, sourceName(s) + ": "), SOURCES[s] ? SOURCES[s][1] + "." : "")))))
       : null;
     const seg = (label, key, options, current) => h("div", { class: "seg", role: "group", "aria-label": label }, options.map(([value, name]) => btn(null, name, () => { cal.anchor = ""; setP(Object.assign({ [key]: value }, key === "range" ? { from: "", to: "" } : {})); }, { "aria-pressed": String(current === value) })));
@@ -1224,7 +1228,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       }
     };
     add(data.items);
-    const pages = pager(list, params, { add });
+    const pages = pager(list, Object.assign({}, params, { days: "", rail: "" }), { add });
     pages.start(data.next_cursor);
     if (!data.total) {
       const filtered = F.q || F.kinds.length || F.sources.length || F.from || F.done;

@@ -610,10 +610,22 @@ fn items(db: &mut Db, query: &HashMap<String, String>) -> Result<Value> {
     either.unprocessed_only = false;
     either.processed_only = false;
 
+    // The numbers beside History's choices of kind and of where a dictation was spoken: how
+    // many there are to choose from, under the phone chosen and with the recordings behind
+    // notes folded away or not, as the list itself is. Only when asked for.
+    let rail = if query.contains_key("rail") {
+        let among = Filter { phone: filter.phone.clone(), fold_note_recordings: query.get("fold").map(String::as_str) != Some("0"), ..Filter::default() };
+        let by_kind: Map<String, Value> = db.counts_by_kind_filtered(&among)?.into_iter().map(|(kind, count)| (kind, json!(count))).collect();
+        let by_source: Map<String, Value> = db.dictation_sources_filtered(&among)?.into_iter().map(|(source, count)| (source, json!(count))).collect();
+        json!({ "total": db.count(&among)?, "by_kind": by_kind, "dictations_by_source": by_source })
+    } else {
+        Value::Null
+    };
+
     if let Some(q) = search {
         let result = db.search(q, &filter, Some(order), SEARCH_LIMIT)?;
         let list: Vec<Value> = result.hits.iter().map(|hit| views.item(&hit.row, Some(&hit.snippet))).collect();
-        return Ok(json!({ "total": result.total, "items": list, "next_cursor": null, "matched": result.matched, "day_counts": {} }));
+        return Ok(json!({ "total": result.total, "items": list, "next_cursor": null, "matched": result.matched, "day_counts": {}, "rail": rail }));
     }
 
     // The calendar's dots, only when asked for: they take a pass over everything selected.
@@ -640,6 +652,7 @@ fn items(db: &mut Db, query: &HashMap<String, String>) -> Result<Value> {
         "items": list,
         "next_cursor": next_cursor,
         "day_counts": day_counts,
+        "rail": rail,
     }))
 }
 
@@ -1611,6 +1624,47 @@ mod tests {
         assert_eq!(get_json(&state, &format!("/api/item?id={}", ids[0]))["text"], first["items"][0]["text"]);
         assert_eq!(get_json(&state, "/api/removed")["items"].as_array().unwrap().len(), 1);
         assert_eq!(post_json(&state, "/api/remove", json!({ "ids": [] })).status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn the_numbers_beside_the_kinds_count_what_the_list_can_show() {
+        let state = state();
+        {
+            // A voice note with its recording, from one phone, and a dictation from another.
+            let mut db = state.db.lock().unwrap();
+            let item = |id: &str, kind: &str, source: Value, at: f64| Item::from_json(&json!({ "id": id, "kind": kind, "source": source, "created_at": at, "updated_at": at, "text": "pick up the saffron", "duration_s": 20.0 })).unwrap();
+            db.apply_items(&[item("R1", "dictation", json!("note"), 1000.0), item("N1", "note", Value::Null, 1021.0)], &Delivery { carrier: Carrier::Link, device_id: Some("PHONE-A"), received_at: 6.0 }).unwrap();
+            db.apply_items(&[item("K1", "dictation", json!("keyboard"), 2000.0)], &Delivery { carrier: Carrier::Link, device_id: Some("PHONE-B"), received_at: 6.0 }).unwrap();
+            let pair = |db: &mut Db, endpoint: &str, phone: &str| {
+                let secret = format!("{:0>64}", endpoint);
+                db.create_offer(&secret, 1.0, 600.0).unwrap();
+                db.admit(endpoint, Some(&secret), &crate::db::PhoneInfo { id: Some(phone.into()), name: Some("iPhone".into()), ..Default::default() }, 2.0).unwrap();
+            };
+            pair(&mut db, "aa11", "PHONE-A");
+            pair(&mut db, "bb22", "PHONE-B");
+        }
+        let status = get_json(&state, "/api/status")["items"].clone();
+        // Folded, as the list is: the heading and the choices agree.
+        let folded = get_json(&state, "/api/items?rail=1&limit=1");
+        assert_eq!(folded["rail"]["total"], folded["total"]);
+        assert_eq!(folded["rail"]["total"], status["total"]);
+        assert_eq!(folded["rail"]["by_kind"], status["by_kind"]);
+        assert!(folded["rail"]["dictations_by_source"].get("note").is_none());
+        // With the recordings shown, they are counted too: in everything, in dictations, and
+        // under their own source.
+        let shown = get_json(&state, "/api/items?rail=1&limit=1&fold=0");
+        assert_eq!(shown["rail"]["total"], shown["total"]);
+        assert_eq!(shown["rail"]["total"].as_i64(), folded["total"].as_i64().map(|n| n + 1));
+        assert_eq!(shown["rail"]["by_kind"]["dictation"].as_i64(), status["by_kind"]["dictation"].as_i64().map(|n| n + 1));
+        assert_eq!(shown["rail"]["dictations_by_source"]["note"], 1);
+        // From one phone: only what that phone sent, whatever kind is chosen in the list.
+        let one = get_json(&state, "/api/items?rail=1&limit=1&device=aa11&kinds=meeting");
+        assert_eq!((one["total"].as_i64(), one["rail"]["total"].as_i64()), (Some(0), Some(1)));
+        assert_eq!(one["rail"]["by_kind"], json!({ "note": 1 }));
+        let other = get_json(&state, "/api/items?rail=1&device=bb22&q=saffron");
+        assert_eq!((other["total"].as_i64(), other["rail"]["dictations_by_source"]["keyboard"].as_i64()), (Some(1), Some(1)));
+        // Not asked for, not counted.
+        assert!(get_json(&state, "/api/items?limit=1")["rail"].is_null());
     }
 
     #[test]

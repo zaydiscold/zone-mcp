@@ -838,6 +838,20 @@ impl Db {
         Ok(rows)
     }
 
+    /// `(source, count)` for the dictations a filter selects that say where they were spoken.
+    pub fn dictation_sources_filtered(&self, filter: &Filter) -> Result<Vec<(String, i64)>> {
+        let (clause, args) = filter_sql(filter);
+        let sql = format!(
+            "SELECT i.source, count(*) FROM items i WHERE {clause} AND i.kind = 'dictation' AND i.source IS NOT NULL \
+             GROUP BY i.source ORDER BY count(*) DESC, i.source"
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement
+            .query_map(params_from_iter(args), |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Full-text search. `order` none means best match first.
     pub fn search(&self, query: &str, filter: &Filter, order: Option<Order>, limit: usize) -> Result<SearchResult> {
         self.search_page(query, filter, order, limit, 0)
