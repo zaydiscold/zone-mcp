@@ -115,6 +115,16 @@ pub async fn run(options: Options) -> Result<std::process::ExitCode> {
     let link_task = tokio::spawn(link::accept_loop(endpoint.clone(), LinkState::new(db.clone(), computer_name)));
     let info_task = tokio::spawn(keep_info_fresh(endpoint.clone(), info.clone(), dir.clone(), db.clone()));
     let backup_task = tokio::spawn(watch_backup_folder(db.clone(), info.clone(), dir.clone()));
+    // Words removed on the page are kept thirty days, then erased, whether or not the page is open.
+    let erase_db = db.clone();
+    let erase_task = tokio::spawn(async move {
+        loop {
+            if let Ok(db) = erase_db.lock() {
+                let _ = db.erase_old_removed(paths::now_unix());
+            }
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
     // When `zone install` asked for it: register with AI clients installed since. This only
     // adds zone where it never was; see clients.rs.
     tokio::task::spawn_blocking({
@@ -131,7 +141,7 @@ pub async fn run(options: Options) -> Result<std::process::ExitCode> {
         Stop::Interrupt => info!("zone is stopping"),
         Stop::Signal(number) => info!("zone is stopping (signal {number})"),
     }
-    for task in [web_task, link_task, info_task, backup_task] {
+    for task in [web_task, link_task, info_task, backup_task, erase_task] {
         task.abort();
     }
     // Lets open sessions finish their last frame and tells peers the endpoint is gone.

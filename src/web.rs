@@ -973,7 +973,7 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
     let now = unix(clock.now);
     let age = |t: Option<f64>| t.map(|t| (now - t).max(0.0).round());
     // Words removed more than thirty days ago go now: the page asks this every few seconds
-    // while it is open, and every sync asks it too.
+    // while it is open, and zone asks every hour by itself.
     db.erase_old_removed(now)?;
     let by_phone = db.counts_by_phone()?;
     let devices = db.devices()?;
