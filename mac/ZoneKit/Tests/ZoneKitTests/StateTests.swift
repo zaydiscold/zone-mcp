@@ -364,12 +364,53 @@ final class StateTests: XCTestCase {
 
     func testUpdateAnswers() {
         let body = Data(#"{"tag_name": "v0.2.0", "html_url": "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.2.0"}"#.utf8)
-        XCTAssertEqual(
-            UpdateCheck.answer(status: 200, body: body, current: "0.1.0"),
-            .newer(version: "v0.2.0", page: URL(string: "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.2.0")!)
-        )
-        XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.2.0"), .upToDate)
-        XCTAssertEqual(UpdateCheck.answer(status: 404, body: Data(), current: "0.1.0"), .unknown("No release has been published yet."))
-        XCTAssertEqual(UpdateCheck.answer(status: 403, body: Data(), current: "0.1.0"), .unknown("GitHub did not answer (status 403)."))
+        let page = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.2.0")!
+        XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.1.0"), .newer(version: "0.2.0", page: page))
+        XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.2.0"), .upToDate(latest: "0.2.0"))
+        // A build made before its release was published is not behind.
+        XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.2.1"), .upToDate(latest: "0.2.0"))
+        XCTAssertEqual(UpdateCheck.answer(status: 404, body: Data(), current: "0.1.0"), .upToDate(latest: nil), "nothing released yet: nothing is newer")
+        XCTAssertEqual(UpdateCheck.answer(status: 403, body: Data(), current: "0.1.0"), .unknown("GitHub is limiting requests from this network for now"))
+        XCTAssertEqual(UpdateCheck.answer(status: 500, body: Data(), current: "0.1.0"), .unknown("GitHub did not answer (status 500)"))
+    }
+
+    func testTheWebsiteAnswersWhenTheAPIWillNot() {
+        let tag = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.1.1")!
+        XCTAssertEqual(UpdateCheck.answer(redirectedTo: tag, current: "0.1.2"), .upToDate(latest: "0.1.1"))
+        XCTAssertEqual(UpdateCheck.answer(redirectedTo: tag, current: "0.1.0"), .newer(version: "0.1.1", page: tag))
+        XCTAssertEqual(UpdateCheck.answer(redirectedTo: URL(string: "https://github.com/zaydiscold/zone-mcp/releases"), current: "0.1.0"), .upToDate(latest: nil))
+        XCTAssertEqual(UpdateCheck.answer(redirectedTo: nil, current: "0.1.0"), .unknown("GitHub did not say which release is the latest"))
+    }
+
+    func testTheUpdateLineSaysOneThingWithAtMostOneAction() {
+        let page = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.1.3")!
+        let newer = UpdateLine(answer: .newer(version: "0.1.3", page: page), checking: false, current: "0.1.2")
+        XCTAssertEqual(newer.text, "0.1.3 is available")
+        XCTAssertEqual(newer.action, .update(page))
+        XCTAssertEqual(newer.button, "Update")
+
+        let same = UpdateLine(answer: .upToDate(latest: "0.1.2"), checking: false, current: "0.1.2")
+        XCTAssertEqual(same.text, "Up to date")
+        XCTAssertNil(same.action)
+
+        // Installed 0.1.2, latest published 0.1.1: no update is claimed, nothing looks broken.
+        let ahead = UpdateLine(answer: .upToDate(latest: "0.1.1"), checking: false, current: "0.1.2")
+        XCTAssertEqual(ahead.text, "Up to date")
+        XCTAssertNil(ahead.action)
+        XCTAssertEqual(ahead.detail, "This is 0.1.2, newer than the latest published release (0.1.1).")
+
+        let offline = UpdateLine(answer: .unknown(UpdateCheck.words(for: URLError(.notConnectedToInternet))), checking: false, current: "0.1.2")
+        XCTAssertEqual(offline.text, "Could not check for updates: this Mac is offline")
+        XCTAssertEqual(offline.button, "Try again")
+
+        XCTAssertEqual(UpdateLine(answer: nil, checking: true, current: "0.1.2").text, "Checking for updates")
+        XCTAssertNil(UpdateLine(answer: nil, checking: true, current: "0.1.2").action)
+    }
+
+    func testTheVersionIsSaidOnce() {
+        XCTAssertEqual(Versions.line(app: "0.1.2", zone: "0.1.2"), "Zone 0.1.2")
+        XCTAssertEqual(Versions.line(app: "0.1.2", zone: nil), "Zone 0.1.2")
+        XCTAssertEqual(Versions.line(app: "0.1.2", zone: "0.1.3"), "Zone 0.1.2, with zone 0.1.3 inside")
+        XCTAssertEqual(Versions.plain("v0.1.3"), "0.1.3")
     }
 }

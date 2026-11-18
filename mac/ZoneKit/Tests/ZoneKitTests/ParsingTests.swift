@@ -202,6 +202,7 @@ final class ParsingTests: XCTestCase {
         XCTAssertEqual(agent.standing, .connected)
         XCTAssertEqual(agent.title, "Hermes")
         XCTAssertEqual(agent.note, "Connected in all 2 profiles")
+        XCTAssertEqual(AgentSections([agent]).summary, "1 app connected, 2 profiles in all")
     }
 
     // MARK: What an agent may read
@@ -282,7 +283,7 @@ final class ParsingTests: XCTestCase {
         let agent = Agent.list(from: survey)[0]
         XCTAssertTrue(agent.viewsDiffer)
         XCTAssertNil(agent.view)
-        XCTAssertEqual(agent.note, "Its profiles read different things")
+        XCTAssertEqual(agent.note, "2 profiles, they read different things")
         // Nothing is assumed for it: the person has to choose.
         XCTAssertEqual(agent.installArguments(), ["mcp", "install", "claude-code"])
         XCTAssertEqual(agent.installArguments(view: .notesAndMeetings), ["mcp", "install", "claude-code", "--kinds", "note,meeting", "--exclude-sources", "none"])

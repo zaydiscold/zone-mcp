@@ -53,6 +53,56 @@ public struct AgentSurvey: Decodable, Equatable, Sendable {
         }
 
         var isRegistered: Bool { state == "registered" || state == "registered_read_only" }
+
+        /// How zone stands in this one place, exactly as `zone mcp status` says it.
+        public enum Standing: Equatable, Sendable {
+            /// zone is registered here and it is the zone that was asked.
+            case registered
+            /// zone is registered here, but the entry starts a different copy of the program.
+            case otherCopy(String)
+            /// zone was here and the person took it out, so nothing puts it back by itself.
+            case removedByYou
+            case notRegistered
+            /// The settings file could not be read.
+            case unreadable(String)
+        }
+
+        public var standing: Standing {
+            switch state {
+            case "registered", "registered_read_only": return .registered
+            case "other_copy": return .otherCopy(detail ?? "")
+            case "removed_by_you": return .removedByYou
+            case "unreadable": return .unreadable(detail ?? "")
+            default: return .notRegistered
+            }
+        }
+
+        /// True when an agent started from this place gets a zone (whichever copy).
+        public var hasZone: Bool { isRegistered || state == "other_copy" }
+
+        /// The place's own name inside its app: "default", "~/.claude_work", "profile hooke".
+        /// An app with one place has none.
+        public var name: String { profile ?? label }
+
+        /// The standing in a few words, for a line under the place's name.
+        public func words(home: String = "") -> String {
+            switch standing {
+            case .registered: return "Connected"
+            case let .otherCopy(program):
+                return program.isEmpty ? "Starts another copy of zone" : "Starts another copy of zone: \(Formats.tilde(program, home: home))"
+            case .removedByYou: return "Removed by you"
+            case .notRegistered: return "Not connected"
+            case let .unreadable(why): return why.isEmpty ? "Its settings could not be read" : "Its settings could not be read: \(why)"
+            }
+        }
+
+        /// What an agent here may read, in a few words. Nil when it has no zone, or when
+        /// this zone is too old to say.
+        public func limit(knowsClips: Bool) -> String? {
+            guard hasZone, let scope else { return nil }
+            let reads = "reads \(AgentView(scope, knowsClips: knowsClips).words)"
+            return readOnly ? reads + ", cannot mark items" : reads
+        }
     }
 
     /// What one registered agent may see: which kinds of item, and which dictations are
@@ -240,8 +290,24 @@ public struct Agent: Equatable, Sendable, Identifiable {
     public var knowsClips = false
 
     /// The places where zone is (whichever copy of it).
-    var connectedPlaces: [AgentSurvey.Place] {
-        places.filter { $0.isRegistered || $0.state == "other_copy" }
+    public var connectedPlaces: [AgentSurvey.Place] {
+        places.filter(\.hasZone)
+    }
+
+    /// The places whose entry starts a different copy of zone than the one that was asked.
+    public var otherCopyPlaces: [AgentSurvey.Place] {
+        places.filter { $0.state == "other_copy" }
+    }
+
+    /// The other copy those places start, when they agree on one.
+    public var otherCopyProgram: String? {
+        let programs = Set(otherCopyPlaces.compactMap(\.detail).filter { !$0.isEmpty })
+        return programs.count == 1 ? programs.first : nil
+    }
+
+    /// True when the person took zone out of every place this app has (and it is in none).
+    public var removedByYou: Bool {
+        !isOn && !places.isEmpty && places.contains { $0.state == "removed_by_you" }
     }
 
     /// What this agent may read. Nil when it is not connected, when this zone cannot say,
@@ -286,25 +352,51 @@ public struct Agent: Equatable, Sendable, Identifiable {
         }
     }
 
-    /// A few words under the name.
+    /// A few words under the name: where it stands and what it may read. An app with
+    /// several profiles says how many, so seven profiles are one line, not seven.
     public var note: String {
+        let count = places.count
+        let profiles = count > 1 ? "\(count) profiles" : nil
+        func joined(_ parts: String?...) -> String {
+            let said = parts.compactMap { $0 }
+            guard let first = said.first else { return "" }
+            return ([first.prefix(1).uppercased() + first.dropFirst()] + said.dropFirst()).joined(separator: ", ")
+        }
         switch standing {
         case .connected:
-            if viewsDiffer { return "Its profiles read different things" }
+            if viewsDiffer { return joined(profiles, "they read different things") }
             if let view {
-                let reads = "Reads \(view.words)"
-                return readOnly ? reads + ", cannot mark items" : reads
+                return joined(profiles, "reads \(view.words)", readOnly ? "cannot mark items" : nil)
             }
-            return places.count > 1 ? "Connected in all \(places.count) profiles" : "Connected"
+            return count > 1 ? "Connected in all \(count) profiles" : "Connected"
         case let .partly(places, total):
-            return "Connected in \(places) of \(total) profiles"
+            let other = otherCopyPlaces.count
+            let base = "Connected in \(places) of \(total) profiles"
+            return other > 0 ? base + ", \(other) with another copy of zone" : base
         case .otherCopy:
-            return "Connected to another copy of zone"
+            let other = otherCopyPlaces.count
+            if count > 1, other < count { return "\(other) of \(count) profiles start another copy of zone" }
+            return joined(profiles, "starts another copy of zone")
         case .notConnected:
-            return installed ? "Not connected" : "Not on this Mac"
+            if !installed { return "Not on this Mac" }
+            return removedByYou ? "Off, removed by you" : "Not connected"
         case .unreadable:
             return "Its settings could not be read"
         }
+    }
+
+    /// An entry that starts another copy of zone: what that means, in two sentences.
+    /// (The zone that runs on this Mac is named once, at the foot of the panel.)
+    public func otherCopyExplanation(home: String = "") -> String {
+        let there = otherCopyProgram.map { " (\(Formats.tilde($0, home: home)))" } ?? ""
+        let who = otherCopyPlaces.count < places.count ? "\(otherCopyPlaces.count) of its profiles start" : "\(title) starts"
+        return "\(who) another copy of zone\(there), not the one that runs on this Mac. It reads the same library, but is updated on its own and can fall behind."
+    }
+
+    /// What "Use this one" does to what the agent may read: kept, when zone can say what
+    /// the other entry allows. An older zone cannot, and then the agent reads everything.
+    public var otherCopyKeepsView: Bool {
+        !otherCopyPlaces.contains { $0.scope == nil }
     }
 
     /// The clients on this computer (and any other that has zone), in zone's own order.
@@ -320,14 +412,16 @@ public struct Agent: Equatable, Sendable, Identifiable {
             let installed = places.contains(where: \.installed)
             let registered = places.filter(\.isRegistered).count
             let other = places.first(where: { $0.state == "other_copy" })
+            let withZone = places.filter(\.hasZone).count
             let unreadable = places.first(where: { $0.state == "unreadable" })
             let standing: Standing
             if registered == places.count, registered > 0 {
                 standing = .connected
-            } else if registered > 0 {
-                standing = .partly(places: registered, total: places.count)
-            } else if let other {
+            } else if let other, withZone == places.count {
+                // In every place, and at least one of them starts another copy.
                 standing = .otherCopy(other.detail ?? "")
+            } else if withZone > 0 {
+                standing = .partly(places: withZone, total: places.count)
             } else if let unreadable {
                 standing = .unreadable(unreadable.detail ?? "")
             } else {
@@ -346,5 +440,39 @@ public struct Agent: Equatable, Sendable, Identifiable {
             return String(first.label[..<cut.lowerBound])
         }
         return first.label
+    }
+}
+
+/// The agents as the panel lists them: the ones that have zone (or whose settings need a
+/// look) first, each app once however many profiles it has, and the rest folded away under
+/// one line, so twenty apps that are off do not bury the five that are on.
+public struct AgentSections: Equatable, Sendable {
+    public var on: [Agent]
+    public var off: [Agent]
+
+    public init(_ agents: [Agent]) {
+        func listed(_ agent: Agent) -> Bool {
+            if case .unreadable = agent.standing { return true }
+            return agent.isOn
+        }
+        on = agents.filter(listed)
+        off = agents.filter { !listed($0) }
+    }
+
+    /// "5 connected, 16 profiles" style counts for the top of the panel.
+    public var summary: String {
+        let connected = on.filter(\.isOn)
+        guard !connected.isEmpty else { return "None connected yet" }
+        let places = connected.reduce(0) { $0 + $1.connectedPlaces.count }
+        let apps = "\(connected.count) \(connected.count == 1 ? "app" : "apps") connected"
+        return places > connected.count ? "\(apps), \(places) profiles in all" : apps
+    }
+
+    /// The one line the apps that are off fold under.
+    public var offTitle: String {
+        let removed = off.filter(\.removedByYou).count
+        let count = "\(off.count) not connected"
+        if removed == off.count, removed > 0 { return count + ", removed by you" }
+        return removed > 0 ? count + " (\(removed) removed by you)" : count
     }
 }

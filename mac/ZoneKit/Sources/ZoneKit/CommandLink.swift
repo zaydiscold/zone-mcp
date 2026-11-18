@@ -101,37 +101,130 @@ public enum UpdateCheck {
     public enum Answer: Equatable, Sendable {
         /// A later version is out. `page` is where to get it.
         case newer(version: String, page: URL)
-        case upToDate
-        /// Nothing has been released yet, or GitHub could not be reached.
+        /// This is the latest release, or later than it (a build made before its release
+        /// was published). `latest` is the newest published one, when there is one.
+        case upToDate(latest: String?)
+        /// GitHub could not be asked. The words say why, to follow "Could not check: ".
         case unknown(String)
     }
 
     public static let releasesPage = URL(string: "https://github.com/zaydiscold/zone-mcp/releases")!
     static let latestRelease = URL(string: "https://api.github.com/repos/zaydiscold/zone-mcp/releases/latest")!
+    /// The same question asked of the website: it answers with a redirect to the latest
+    /// release's page, and is not counted against the API's hourly limit.
+    static let latestPage = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/latest")!
 
     /// Reads GitHub's answer about the latest release.
     public static func answer(status: Int, body: Data, current: String) -> Answer {
         if status == 404 {
-            return .unknown("No release has been published yet.")
+            // Nothing has been released yet, so nothing is newer.
+            return .upToDate(latest: nil)
+        }
+        if status == 403 || status == 429 {
+            return .unknown("GitHub is limiting requests from this network for now")
         }
         guard status == 200,
               let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
               let tag = object["tag_name"] as? String
         else {
-            return .unknown("GitHub did not answer (status \(status)).")
+            return .unknown("GitHub did not answer (status \(status))")
         }
         let page = (object["html_url"] as? String).flatMap(URL.init(string:)) ?? releasesPage
-        return Versions.isNewer(tag, than: current) ? .newer(version: tag, page: page) : .upToDate
+        return compare(tag: tag, page: page, current: current)
     }
 
-    public static func check(current: String) async -> Answer {
-        var request = URLRequest(url: latestRelease, timeoutInterval: 10)
+    /// Reads where the website's "latest release" link led: `.../releases/tag/v0.1.3`.
+    public static func answer(redirectedTo url: URL?, current: String) -> Answer {
+        guard let url, let tagIndex = url.pathComponents.firstIndex(of: "tag"), tagIndex + 1 < url.pathComponents.count else {
+            // No release at all sends the visitor to the plain list of releases.
+            if url?.path.hasSuffix("/releases") == true { return .upToDate(latest: nil) }
+            return .unknown("GitHub did not say which release is the latest")
+        }
+        return compare(tag: url.pathComponents[tagIndex + 1], page: url, current: current)
+    }
+
+    static func compare(tag: String, page: URL, current: String) -> Answer {
+        Versions.isNewer(tag, than: current) ? .newer(version: Versions.plain(tag), page: page) : .upToDate(latest: Versions.plain(tag))
+    }
+
+    /// Why a request did not get through, in a few words.
+    public static func words(for error: Error) -> String {
+        switch (error as? URLError)?.code {
+        case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed, .internationalRoamingOff:
+            return "this Mac is offline"
+        case .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            return "GitHub could not be reached"
+        default:
+            return "GitHub could not be reached"
+        }
+    }
+
+    /// Asks which release is the latest. `feed` stands in for GitHub's API in a test run.
+    public static func check(current: String, feed: URL? = nil) async -> Answer {
+        var request = URLRequest(url: feed ?? latestRelease, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let first: Answer
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            return answer(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data, current: current)
+            first = answer(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data, current: current)
         } catch {
-            return .unknown("Could not reach GitHub.")
+            return .unknown(words(for: error))
+        }
+        guard case .unknown = first, feed == nil else { return first }
+        // The API said no (most often its hourly limit for this network): ask the website.
+        var page = URLRequest(url: latestPage, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        page.httpMethod = "HEAD"
+        guard let (_, response) = try? await URLSession.shared.data(for: page), (response as? HTTPURLResponse)?.statusCode == 200 else { return first }
+        let second = answer(redirectedTo: response.url, current: current)
+        if case .unknown = second { return first }
+        return second
+    }
+}
+
+/// The one line about updates in Settings, and the one thing to click, if any.
+public struct UpdateLine: Equatable, Sendable {
+    public enum Action: Equatable, Sendable {
+        /// Opens the page the newer version is downloaded from.
+        case update(URL)
+        case checkAgain
+    }
+
+    public var text: String
+    public var action: Action?
+    /// The longer story, for whoever points at the line.
+    public var detail: String?
+
+    public var button: String? {
+        switch action {
+        case .update: return "Update"
+        case .checkAgain: return "Try again"
+        case nil: return nil
+        }
+    }
+
+    public init(answer: UpdateCheck.Answer?, checking: Bool, current: String) {
+        if checking {
+            self.text = "Checking for updates"
+            return
+        }
+        switch answer {
+        case let .newer(version, page):
+            text = "\(version) is available"
+            action = .update(page)
+            detail = "You have \(Versions.plain(current)). Update opens the page to download \(version) from."
+        case let .upToDate(latest):
+            text = "Up to date"
+            if let latest, Versions.isNewer(current, than: latest) {
+                detail = "This is \(Versions.plain(current)), newer than the latest published release (\(latest))."
+            } else {
+                detail = "\(Versions.plain(current)) is the latest release."
+            }
+        case let .unknown(why):
+            text = "Could not check for updates: \(why)"
+            action = .checkAgain
+        case nil:
+            text = "Not checked for updates yet"
+            action = .checkAgain
         }
     }
 }

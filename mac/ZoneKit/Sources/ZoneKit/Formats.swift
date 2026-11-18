@@ -49,6 +49,16 @@ public enum Formats {
         return formatter.string(from: date)
     }
 
+    /// How long something ran, in a few words: "38 sec", "42 min", "1 hr 5 min".
+    public static func length(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        if s < 60 { return "\(s) sec" }
+        let minutes = Int((Double(s) / 60).rounded())
+        if minutes < 60 { return "\(minutes) min" }
+        let rest = minutes % 60
+        return rest == 0 ? "\(minutes / 60) hr" : "\(minutes / 60) hr \(rest) min"
+    }
+
     /// A folder as a person writes it: under the home folder it starts with ~.
     public static func tilde(_ path: String, home: String) -> String {
         guard !home.isEmpty, path.hasPrefix(home) else { return path }
@@ -64,6 +74,19 @@ public enum Versions {
         let trimmed = text.trimmingCharacters(in: .whitespaces).drop { !$0.isNumber }
         let core = trimmed.prefix { $0.isNumber || $0 == "." }
         return core.split(separator: ".").map { Int($0) ?? 0 }
+    }
+
+    /// "v0.1.3" as people say it: "0.1.3".
+    public static func plain(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        return trimmed.hasPrefix("v") || trimmed.hasPrefix("V") ? String(trimmed.dropFirst()) : trimmed
+    }
+
+    /// The app's version, once: "Zone 0.1.2". The zone program inside is the same version
+    /// by design, so it is named only when it really is another one.
+    public static func line(app: String, zone: String?) -> String {
+        guard let zone, parts(zone) != parts(app) else { return "Zone \(plain(app))" }
+        return "Zone \(plain(app)), with zone \(plain(zone)) inside"
     }
 
     /// True when `candidate` is a later version than `current`.

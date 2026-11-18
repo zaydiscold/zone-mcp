@@ -168,6 +168,14 @@ public struct ZoneClient: Sendable {
         try await json(ItemList.self, ["list", "--json", "--limit", String(limit)])
     }
 
+    /// The newest items of some kinds. `openOnly` leaves out what an agent flagged as handled.
+    public func list(kinds: [String], limit: Int, openOnly: Bool = false) async throws -> ItemList {
+        var arguments = ["list", "--json", "--limit", String(limit)]
+        for kind in kinds { arguments += ["--kind", kind] }
+        if openOnly { arguments.append("--unprocessed") }
+        return try await json(ItemList.self, arguments)
+    }
+
     public func search(_ words: String, limit: Int) async throws -> ItemList {
         // "--" so a search that begins with a dash is still read as words.
         try await json(ItemList.self, ["search", "--json", "--limit", String(limit), "--"] + words.split(separator: " ").map(String.init))

@@ -259,12 +259,22 @@ public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
     /// How it got here: "link", "flash" or "backup".
     public var carrier: String?
     public var receivedAt: Double?
+    /// When an agent flagged it as handled (`mark_processed`). Nil while it is still open.
+    public var processedAt: Double?
+    /// A meeting's length when zone gives no duration: where its last line ends.
+    public var lastSegmentEnd: Double?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, source, text, title, words, carrier
+        case id, kind, source, text, title, words, carrier, extra
         case createdAt = "created_at"
         case duration = "duration_s"
         case receivedAt = "received_at"
+        case processedAt = "processed_at"
+    }
+
+    private struct Extra: Decodable {
+        struct Segment: Decodable { var end: Double? }
+        var segments: [Segment]?
     }
 
     public init(from decoder: Decoder) throws {
@@ -279,9 +289,12 @@ public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
         duration = try c.decodeIfPresent(Double.self, forKey: .duration)
         carrier = try c.decodeIfPresent(String.self, forKey: .carrier)
         receivedAt = try c.decodeIfPresent(Double.self, forKey: .receivedAt)
+        processedAt = try c.decodeIfPresent(Double.self, forKey: .processedAt)
+        // A field of another shape here is zone's business: the item still reads.
+        lastSegmentEnd = (try? c.decodeIfPresent(Extra.self, forKey: .extra))?.segments?.compactMap(\.end).max()
     }
 
-    public init(id: String, kind: String, createdAt: Double, text: String, title: String? = nil, words: Int = 0, receivedAt: Double? = nil) {
+    public init(id: String, kind: String, createdAt: Double, text: String, title: String? = nil, words: Int = 0, receivedAt: Double? = nil, duration: Double? = nil, processedAt: Double? = nil) {
         self.id = id
         self.kind = kind
         self.createdAt = createdAt
@@ -289,7 +302,20 @@ public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
         self.title = title
         self.words = words
         self.receivedAt = receivedAt
+        self.duration = duration
+        self.processedAt = processedAt
     }
+
+    /// How long it runs, in seconds: zone's own figure, or for a meeting the end of its
+    /// last line. Nil when neither is known.
+    public var length: Double? {
+        if let duration, duration > 0 { return duration }
+        if let lastSegmentEnd, lastSegmentEnd > 0 { return lastSegmentEnd }
+        return nil
+    }
+
+    /// True while no agent has flagged it as handled.
+    public var isOpen: Bool { processedAt == nil }
 
     public var created: Date { Date(timeIntervalSince1970: createdAt) }
 
