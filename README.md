@@ -113,17 +113,34 @@ zone update            # is a newer zone out? If so, download it, check it and s
 zone update --check    # only say
 ```
 
+| zone came from | To update it |
+|---|---|
+| The install script | `zone update`, or run the script again. Both install the latest published release, checked against that release's `SHA256SUMS`. |
+| `cargo install` | `cargo install --locked --force --git https://github.com/zaydiscold/zone-mcp zone`. It builds `main` as it is that day. |
+| Zone for Mac | Download the new `Zone.dmg` and replace the app: its Settings say when one is out. The zone the app keeps for agents and the terminal can also be updated by itself with `zone update`, and the app leaves a newer one alone. |
+| Homebrew | Not published yet. |
+
 zone never installs an update by itself. `zone update` and `zone doctor` ask GitHub once, when you
 run them, which release is the latest, and while the web page is open zone asks at most twice a
 day and the page tells you once when a newer one is out (`ZONE_NO_UPDATE_CHECK=1` turns all of
-that off). With no page open and no command run, zone asks nobody. An update is
-the install script run again: same download, same checksum, and a zone that starts at login is
-restarted so the new one is the one running. On macOS and Linux a zone that is running also looks
-at its own program file every few seconds, and when another version has taken its place it stops
-and starts that one, so a `zone serve` in a terminal does not go on running the old version
-(zone 0.1.3 and earlier did, until they were stopped and started). `zone status` names the version
-that is running whenever it is not the one on disk. A copy that came from Homebrew, from `cargo install`
-or inside Zone for Mac is left alone, and `zone update` says how that copy is updated instead.
+that off). With no page open and no command run, zone asks nobody. When GitHub's API will not
+answer (it allows sixty questions an hour from one address), zone asks the website instead.
+
+After an update, the new version is the one that runs:
+
+- A zone that starts at login is restarted by the install script (launchd, systemd, and on
+  Windows its launcher).
+- On macOS and Linux a zone that is running also looks at its own program file every few
+  seconds. When another version has taken its place, it stops and starts that one, so a `zone
+  serve` in a terminal, or the zone that Zone for Mac started, does not go on running the old
+  version. zone 0.1.3 and earlier did not do this: updated while running, they keep running
+  until they are stopped and started once.
+- A page that is open loads the new page by itself.
+- An AI client starts `zone mcp` again for each session, from the same path, so its next session
+  uses the new version. A session that is open keeps the old one until it ends, which is safe:
+  older and newer versions read and write the same library.
+- `zone status` and `zone doctor` name the version that is running whenever it is not the one on
+  disk.
 
 If you download an archive from the releases page with a browser on a Mac, macOS will refuse to
 open the program, because it is not notarized by Apple. The install script does not have that
