@@ -334,13 +334,13 @@ private struct DoneStep: View {
             StepHeading(
                 eyebrow: "All set",
                 title: "Zone lives in your menu bar",
-                detail: "Click the Z at the top of your screen to see what arrived, pair another phone or connect an agent.",
+                detail: "Click the Z at the top of your screen for your last meeting, your notes and the latest things you said.",
                 alignment: .center
             )
             .frame(maxWidth: 520)
             VStack(spacing: 0) {
                 Toggle(isOn: $startAtLogin) {
-                    option("power", "Start Zone when you log in", "So your phone can always reach this Mac.")
+                    option("power", "Open Zone when I log in", "So your iPhone can sync whenever this Mac is on.")
                 }
                 .toggleStyle(ZoneToggleStyle())
                 .padding(.vertical, 10)
@@ -356,7 +356,7 @@ private struct DoneStep: View {
                 if model.hasClips {
                     Hairline().padding(.leading, 44)
                     Toggle(isOn: $copyClips) {
-                        option("doc.on.clipboard", "Copy to this Mac's clipboard when a clip arrives", "Text you send from Zone on your iPhone, ready to paste here.")
+                        option("doc.on.clipboard", "Copy what I send from my iPhone", "Text you send to this Mac from Zone on the iPhone goes on the clipboard, ready to paste.")
                     }
                     .toggleStyle(ZoneToggleStyle())
                     .disabled(model.clipboardCopy?.available == false)

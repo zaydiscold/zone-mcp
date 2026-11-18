@@ -5,6 +5,7 @@
 # written.
 #
 #   dev-sandbox.sh start [--fresh] [--show popover,welcome] [--light] [--front] [--mock-camera]
+#                        [--update-feed URL]
 #   dev-sandbox.sh cmd popover:pair        steer the running app (see ZoneApp.swift)
 #   dev-sandbox.sh phone [count]           a stand-in phone scans the code on screen
 #   dev-sandbox.sh send [count]            that phone sends a few more items
@@ -50,7 +51,7 @@ command="${1:-start}"
 shift || true
 case "$command" in
 start)
-    fresh=0; show=""; appearance="dark"; quiet=1; mock_camera=0
+    fresh=0; show=""; appearance="dark"; quiet=1; mock_camera=0; update_feed=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --fresh) fresh=1 ;;
@@ -60,6 +61,9 @@ start)
             # WebKit's stand-in camera for the Flash window: the whole camera path runs
             # without a real camera, and macOS never asks.
             --mock-camera) mock_camera=1 ;;
+            # An address that stands in for GitHub's "latest release" answer, to see what
+            # Settings says when a newer version is out, or when nothing answers.
+            --update-feed) update_feed="$2"; shift ;;
             *) echo "unknown option $1" >&2; exit 1 ;;
         esac
         shift
@@ -93,6 +97,7 @@ start)
     variables=(ZONE_MAC_SANDBOX="$box" ZONE_PORT="$port" ZONE_NAME="Demo Mac" ZONE_MAC_APPEARANCE="$appearance" ZONE_MAC_SHOW="$show")
     if [ "$quiet" = 1 ]; then variables+=(ZONE_MAC_QUIET=1); fi
     if [ "$mock_camera" = 1 ]; then variables+=(ZONE_MAC_MOCK_CAMERA=1); fi
+    if [ -n "$update_feed" ]; then variables+=(ZONE_MAC_UPDATE_FEED="$update_feed"); fi
     nohup env -i HOME="$HOME" PATH=/usr/bin:/bin "${variables[@]}" "$app/Contents/MacOS/Zone" >"$box/app.log" 2>&1 &
     echo "$!" > "$box/app.pid"
     echo "Started $app (pid $!). Its windows are listed in $box/windows."
