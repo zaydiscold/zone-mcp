@@ -51,6 +51,13 @@ public enum MenuContent {
         return title.isEmpty ? "Meeting" : title
     }
 
+    /// The words "Last meeting" stand before this in the popover, so a meeting without a
+    /// title is "Untitled" there, not "Meeting" a second time.
+    public static func lastMeetingTitle(_ item: ZoneItem) -> String {
+        let title = item.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return title.isEmpty ? "Untitled" : title
+    }
+
     /// When a meeting was and how long it ran: "Yesterday, 42 min".
     public static func meetingFacts(_ item: ZoneItem, now: Date = Date(), calendar: Calendar = .current) -> String {
         var parts = [Formats.when(item.created, now: now, calendar: calendar)]

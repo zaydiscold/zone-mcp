@@ -53,6 +53,11 @@ final class MenuTests: XCTestCase {
         XCTAssertEqual(MenuContent.line(meeting), "Launch planning", "a meeting's row is its title, not its transcript")
 
         XCTAssertEqual(MenuContent.meetingTitle(item("m", "meeting", title: "  ")), "Meeting")
+        // After the words "Last meeting" in the popover, a meeting without a title is not
+        // "Meeting" a second time.
+        XCTAssertEqual(MenuContent.lastMeetingTitle(meeting), "Launch planning")
+        XCTAssertEqual(MenuContent.lastMeetingTitle(item("m", "meeting", title: "  ")), "Untitled")
+        XCTAssertEqual(MenuContent.lastMeetingTitle(item("m", "meeting")), "Untitled")
         let untimed = item("m", "meeting")
         XCTAssertNil(untimed.length)
         XCTAssertEqual(MenuContent.meetingFacts(untimed, now: untimed.created, calendar: calendar), Formats.when(untimed.created, now: untimed.created, calendar: calendar))

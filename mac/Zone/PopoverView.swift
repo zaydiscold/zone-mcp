@@ -363,11 +363,16 @@ private struct MainPage: View {
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(Zone.accentText(scheme))
                                 .frame(width: 18)
+                            Text("Last meeting")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Zone.muted(scheme))
+                                .lineLimit(1)
+                                .fixedSize()
                             Group {
                                 if model.state.hideText {
-                                    Text(MenuContent.meetingTitle(meeting)).redacted(reason: .placeholder)
+                                    Text(MenuContent.lastMeetingTitle(meeting)).redacted(reason: .placeholder)
                                 } else {
-                                    Text(MenuContent.meetingTitle(meeting))
+                                    Text(MenuContent.lastMeetingTitle(meeting))
                                 }
                             }
                             .font(.system(size: 12.5, weight: .semibold))
@@ -390,7 +395,7 @@ private struct MainPage: View {
                 }
                 .buttonStyle(.plain)
                 .help("Your last meeting. Click to open its transcript in History")
-                .accessibilityLabel("Last meeting: \(model.state.hideText ? "hidden" : MenuContent.meetingTitle(meeting)), \(MenuContent.meetingFacts(meeting, now: model.now)). Opens in History")
+                .accessibilityLabel("Last meeting: \(model.state.hideText ? "hidden" : MenuContent.lastMeetingTitle(meeting)), \(MenuContent.meetingFacts(meeting, now: model.now)). Opens in History")
             }
             if model.latestMeeting != nil, !model.openNotes.isEmpty {
                 Hairline().padding(.leading, 35)
