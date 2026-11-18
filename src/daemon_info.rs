@@ -87,7 +87,23 @@ pub struct DaemonLock {
 }
 
 /// Takes the daemon lock. Returns none when another daemon already holds it.
+///
+/// [`is_running`] holds the lock for an instant while it looks, and `zone status` is asked
+/// every few seconds by Zone for Mac. A daemon starting in that instant must not conclude that
+/// another daemon is running, so a refusal is asked about a few more times before it counts.
 pub fn acquire(dir: &Path) -> Result<Option<DaemonLock>> {
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        if let Some(lock) = acquire_once(dir)? {
+            return Ok(Some(lock));
+        }
+    }
+    Ok(None)
+}
+
+fn acquire_once(dir: &Path) -> Result<Option<DaemonLock>> {
     let path = paths::daemon_lock(dir);
     let file = OpenOptions::new()
         .read(true)
@@ -124,6 +140,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_look_at_the_lock_does_not_turn_a_starting_daemon_away() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(acquire(dir.path()).unwrap());
+        let path = dir.path().to_path_buf();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let looking = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    is_running(&path);
+                }
+            })
+        };
+        for _ in 0..300 {
+            let lock = acquire(dir.path()).unwrap();
+            assert!(lock.is_some(), "nobody else is running");
+            drop(lock);
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        looking.join().unwrap();
+    }
+
+    #[test]
     fn lock_shows_a_running_daemon() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!is_running(dir.path()));
@@ -134,6 +173,15 @@ mod tests {
         info.write(dir.path()).unwrap();
         assert_eq!(DaemonInfo::read_if_running(dir.path()).unwrap().http_port, 47813);
         drop(lock);
+        // Another test starting a program at this moment holds a copy of the lock's file
+        // until that program is running (a fork copies every open file), so the lock can
+        // outlive the drop by an instant.
+        for _ in 0..200 {
+            if !is_running(dir.path()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(!is_running(dir.path()));
         assert!(DaemonInfo::read_if_running(dir.path()).is_none());
         assert!(acquire(dir.path()).unwrap().is_some());
