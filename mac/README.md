@@ -445,8 +445,9 @@ this file was taken this way.
   app takes over.
 - Updates are a check against the latest GitHub release and a link to it. The app does not
   update itself.
-- The menu's links into the history page (`#/meeting/<id>`, `#/notes`) are the routes
-  planned for the page. A page that does not know them yet opens as it always did.
+- The menu's links into the history page (`#/meeting/<id>`, `#/notes`) are the routes of
+  the page as of 7281a21, and were opened against it on 2026-11-17. The page of zone 0.1.2
+  and earlier does not know them and opens as it always did.
 - "Open notes" are the notes not marked Done, which is the flag an agent sets with
   `mark_processed`: an agent that works through notes closes them here too.
 - The Developer ID certificate exists (made on 2026-11-16). A notarized disk image has not
