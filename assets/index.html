@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="__THEME__" data-accent="__ACCENT__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,10 +9,12 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a2a2a'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%239b7dff'/%3E%3C/svg%3E">
 <link rel="preload" href="/font/zone-serif.woff2" as="font" type="font/woff2" crossorigin>
 <style nonce="__NONCE__">
-/* Zone's look, as in the iPhone app and Zone for Mac: warm paper and ink, one purple accent
-   used sparingly, a serif for the wordmark, headings and numbers. Flat surfaces, 1 pt rules,
+/* Zone's look, as in the iPhone app and Zone for Mac: warm paper and ink, one accent used
+   sparingly, a serif for the wordmark, headings and numbers. Flat surfaces, 1 pt rules,
    hard-edged shadows. Zone Serif is Charis SemiBold (SIL Global, OFL 1.1), subset and renamed,
-   served by zone itself: see assets/fonts. Safari draws New York instead, as the Mac app does. */
+   served by zone itself: see assets/fonts. Safari draws New York instead, as the Mac app does.
+   The appearance (data-theme: auto, light, dark) and the accent (data-accent, the iPhone app's
+   five) are chosen in Settings and set by the server before the first paint. */
 @font-face {
   font-family: "Zone Serif";
   src: url("/font/zone-serif.woff2") format("woff2");
@@ -21,281 +23,315 @@
   font-display: swap;
 }
 :root {
-  --paper: #2a2a2a;
-  --card: #333333;
-  --field: #262626;
-  --ink: #f1e9d2;
-  --muted: #c9c1ab;
-  --quiet: #a5a092;
-  --faint: rgba(241, 233, 210, 0.42);
-  --rule: rgba(241, 233, 210, 0.16);
-  --rule-strong: rgba(241, 233, 210, 0.3);
-  --hover: rgba(241, 233, 210, 0.07);
-  --press: rgba(241, 233, 210, 0.12);
-  --accent: #9b7dff;
-  --accent-text: #a68bff;
-  --accent-wash: rgba(155, 125, 255, 0.2);
-  --on-ink: #2a2a2a;
-  --alarm: #ff6b6b;
-  --shadow: rgba(0, 0, 0, 0.5);
-  --qr-paper: #f7f2e4;
-  --qr-ink: #2a2a2a;
+  --paper: #2a2a2a; --card: #333333; --field: #262626; --ink: #f1e9d2; --muted: #c9c1ab; --quiet: #a5a092;
+  --faint: rgba(241, 233, 210, 0.42); --rule: rgba(241, 233, 210, 0.16); --rule-strong: rgba(241, 233, 210, 0.3);
+  --hover: rgba(241, 233, 210, 0.07); --press: rgba(241, 233, 210, 0.12);
+  --on-ink: #2a2a2a; --alarm: #ff6b6b; --shadow: rgba(0, 0, 0, 0.5);
+  --qr-paper: #f7f2e4; --qr-ink: #2a2a2a;
+  /* The accent: bright on dark paper, a deeper tone of the same hue on cream. */
+  --ad: #9b7dff; --atd: #a68bff; --al: #7a5af0; --atl: #6a4bdb;
+  --accent: var(--ad); --accent-text: var(--atd);
+  --accent-wash: color-mix(in srgb, var(--accent) 20%, transparent);
+  /* One quiet hue per kind, so a list can be read at a glance. Dictations stay ink. */
+  --k-note: #e3b65c; --k-meeting: #6cc5b0; --k-clip: #7fb2f0; --k-dictation: var(--quiet);
   --serif: ui-serif, "Zone Serif", Charter, "Iowan Old Style", "Sitka Text", Cambria, Georgia, serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --settle: cubic-bezier(0.22, 1, 0.36, 1);
-  --bar: 60px;
+  --bar: 56px;
+}
+:root[data-accent="ice"] { --ad: #8ee8ff; --atd: #8ee8ff; --al: #007d9d; --atl: #0a6b84; }
+:root[data-accent="ember"] { --ad: #ff9a6b; --atd: #ff9a6b; --al: #d14200; --atl: #a6461e; }
+:root[data-accent="mint"] { --ad: #a9dec4; --atd: #a9dec4; --al: #16844e; --atl: #32644d; }
+:root[data-accent="rose"] { --ad: #f2b8cf; --atd: #f2b8cf; --al: #db246d; --atl: #923d61; }
+:root[data-theme="light"] {
+  --paper: #f1e9d2; --card: #f7f2e4; --field: #f6efdb; --ink: #333333; --muted: #555555; --quiet: #686660;
+  --faint: rgba(51, 51, 51, 0.5); --rule: rgba(51, 51, 51, 0.18); --rule-strong: rgba(51, 51, 51, 0.32);
+  --hover: rgba(51, 51, 51, 0.06); --press: rgba(51, 51, 51, 0.11);
+  --on-ink: #f1e9d2; --alarm: #b3261e; --shadow: rgba(0, 0, 0, 0.16);
+  --accent: var(--al); --accent-text: var(--atl);
+  --k-note: #8a5d00; --k-meeting: #17695b; --k-clip: #2a5ea8;
 }
 @media (prefers-color-scheme: light) {
-  :root {
-    --paper: #f1e9d2;
-    --card: #f7f2e4;
-    --field: #f6efdb;
-    --ink: #333333;
-    --muted: #555555;
-    --quiet: #686660;
-    --faint: rgba(51, 51, 51, 0.5);
-    --rule: rgba(51, 51, 51, 0.18);
-    --rule-strong: rgba(51, 51, 51, 0.32);
-    --hover: rgba(51, 51, 51, 0.06);
-    --press: rgba(51, 51, 51, 0.11);
-    --accent: #7a5af0;
-    --accent-text: #6a4bdb;
-    --accent-wash: rgba(122, 90, 240, 0.16);
-    --on-ink: #f1e9d2;
-    --alarm: #b3261e;
-    --shadow: rgba(0, 0, 0, 0.16);
+  :root[data-theme="auto"] {
+    --paper: #f1e9d2; --card: #f7f2e4; --field: #f6efdb; --ink: #333333; --muted: #555555; --quiet: #686660;
+    --faint: rgba(51, 51, 51, 0.5); --rule: rgba(51, 51, 51, 0.18); --rule-strong: rgba(51, 51, 51, 0.32);
+    --hover: rgba(51, 51, 51, 0.06); --press: rgba(51, 51, 51, 0.11);
+    --on-ink: #f1e9d2; --alarm: #b3261e; --shadow: rgba(0, 0, 0, 0.16);
+    --accent: var(--al); --accent-text: var(--atl);
+    --k-note: #8a5d00; --k-meeting: #17695b; --k-clip: #2a5ea8;
   }
 }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--bar) + 60px); }
-body {
-  margin: 0;
-  background: var(--paper);
-  color: var(--ink);
-  font: 15px/1.55 var(--sans);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-variant-numeric: tabular-nums;
-}
+body { margin: 0; background: var(--paper); color: var(--ink); font: 14.5px/1.5 var(--sans); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; font-variant-numeric: tabular-nums; }
 ::selection { background: var(--accent-wash); }
 button, input { font: inherit; color: inherit; }
-button { cursor: pointer; background: none; border: 0; padding: 0; }
+button { cursor: pointer; background: none; border: 0; padding: 0; text-align: inherit; }
+a { color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 [hidden] { display: none !important; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .skip { position: absolute; left: 12px; top: -60px; z-index: 50; padding: 8px 14px; border-radius: 999px; background: var(--ink); color: var(--on-ink); font-weight: 600; text-decoration: none; }
 .skip:focus { top: 12px; }
-code { font-family: var(--mono); font-size: 0.88em; }
+code, kbd { font-family: var(--mono); font-size: 0.88em; }
+kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--rule); font: 500 11.5px/1 var(--sans); color: var(--quiet); }
+svg.i { width: 15px; height: 15px; flex: none; }
 
-/* The wordmark: a serif "zone" with the purple dot from the app icon. */
-.mark { display: inline-flex; align-items: baseline; gap: 0.06em; font: 600 25px/1 var(--serif); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+.mark { display: inline-flex; align-items: baseline; gap: 0.06em; font: 600 24px/1 var(--serif); letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
 .mark .dot { display: inline-block; width: 0.2em; height: 0.2em; border-radius: 50%; background: var(--accent); }
 
-/* Buttons: an ink capsule for the one main action, an outlined one for the rest. */
-.button {
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  height: 36px; padding: 0 18px; border-radius: 999px; white-space: nowrap;
-  font-size: 13.5px; font-weight: 550; text-decoration: none;
-  background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule);
-}
+.button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 14px; border-radius: 999px; white-space: nowrap; font-size: 13px; font-weight: 550; text-decoration: none; background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule); }
 .button:hover { background: var(--hover); }
 .button:active { transform: scale(0.97); }
 .button.primary { background: var(--ink); color: var(--on-ink); box-shadow: none; font-weight: 600; }
 .button.primary:hover { opacity: 0.9; }
-.navlink { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; margin: 0 -6px; border-radius: 999px; color: var(--ink); font-size: 14px; font-weight: 550; text-decoration: none; }
-.navlink:hover { background: var(--hover); }
-.navlink svg { width: 15px; height: 15px; color: var(--muted); }
-.textbutton { color: var(--accent-text); font-size: 13.5px; font-weight: 550; }
+.button.danger { color: var(--alarm); }
+.button:disabled { opacity: 0.5; cursor: default; }
+.textbutton { color: var(--accent-text); font-size: 13px; font-weight: 550; text-decoration: none; }
 .textbutton:hover { text-decoration: underline; text-underline-offset: 3px; }
+.iconbtn { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: var(--muted); }
+.iconbtn:hover { background: var(--hover); color: var(--ink); }
+.seg { display: inline-flex; padding: 2px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--rule); }
+.seg button { height: 26px; padding: 0 11px; border-radius: 999px; font-size: 12.5px; font-weight: 550; color: var(--muted); white-space: nowrap; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--press); color: var(--ink); }
 
 /* ---------------------------------------------------------------- the bar */
-header.top {
-  position: sticky; top: 0; z-index: 20;
-  background: var(--paper);
-  border-bottom: 1px solid var(--rule);
-}
-.bar { display: flex; align-items: center; gap: 22px; height: var(--bar); max-width: 1160px; margin: 0 auto; padding: 0 32px; }
-.wave {
-  flex: 0 1 380px; min-width: 40px; height: 26px; display: block; margin-right: auto;
-  -webkit-mask-image: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.55) 30%, #000 60%, #000 93%, transparent);
-  mask-image: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.55) 30%, #000 60%, #000 93%, transparent);
-}
-.device {
-  display: inline-flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px 0 8px; margin: 0 -4px 0 0;
-  border-radius: 999px; color: var(--muted); font-size: 13.5px; white-space: nowrap;
-}
-.device:hover { background: var(--hover); }
-.device b { color: var(--ink); font-weight: 600; }
-/* A state light: purple when a phone is paired, a hollow ring when none is. */
-.light { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
-.light.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
-.light::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1.5px solid var(--accent); opacity: 0; }
-.light.ping::after { animation: ping 2s var(--settle); }
-@keyframes ping { from { opacity: 0.8; transform: scale(0.6); } to { opacity: 0; transform: scale(1.8); } }
-.nav { display: flex; align-items: center; gap: 18px; }
-
-/* ---------------------------------------------------------------- the page */
-.page {
-  display: grid; grid-template-columns: 252px minmax(0, 720px); grid-template-rows: auto 1fr;
-  grid-template-areas: "rail head" "rail doc"; column-gap: 72px;
-  max-width: 1160px; margin: 0 auto; padding: 0 32px;
-}
-.masthead { grid-area: head; padding: 34px 0 6px; min-width: 0; }
-.doc { grid-area: doc; min-width: 0; padding: 0 0 120px; }
-.rail {
-  grid-area: rail;
-  position: sticky; top: var(--bar); align-self: start;
-  max-height: calc(100vh - var(--bar)); overflow-y: auto; scrollbar-width: none;
-  padding: 34px 0 32px;
-}
-.rail::-webkit-scrollbar { display: none; }
-.search { position: relative; display: block; }
-.search svg { position: absolute; left: 12px; top: 50%; width: 15px; height: 15px; margin-top: -7.5px; color: var(--quiet); pointer-events: none; }
-.search input {
-  width: 100%; height: 40px; padding: 0 34px 0 35px; border-radius: 10px;
-  background: var(--field); border: 0; box-shadow: inset 0 0 0 1px var(--rule);
-  font-size: 14.5px; -webkit-appearance: none; appearance: none;
-}
+header.top { position: sticky; top: 0; z-index: 20; background: var(--paper); border-bottom: 1px solid var(--rule); }
+.bar { display: flex; align-items: center; gap: 14px; min-height: var(--bar); max-width: 1480px; margin: 0 auto; padding: 0 24px; }
+.tabs { display: flex; align-items: center; gap: 2px; margin-left: 10px; }
+.tab { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; border-radius: 8px; color: var(--muted); font-size: 13.5px; font-weight: 550; text-decoration: none; white-space: nowrap; }
+.tab:hover { background: var(--hover); color: var(--ink); }
+.tab[aria-current="page"] { background: var(--press); color: var(--ink); }
+.tab .n { font: 600 12.5px/1 var(--serif); color: var(--quiet); }
+.search { position: relative; display: block; flex: 1 1 200px; max-width: 360px; margin-left: auto; }
+.search svg { position: absolute; left: 11px; top: 50%; margin-top: -7.5px; color: var(--quiet); pointer-events: none; }
+.search input { width: 100%; height: 34px; padding: 0 32px 0 33px; border-radius: 9px; background: var(--field); border: 0; box-shadow: inset 0 0 0 1px var(--rule); font-size: 13.5px; -webkit-appearance: none; appearance: none; }
 .search input::placeholder { color: var(--quiet); opacity: 1; }
 .search input:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-wash); }
 .search input::-webkit-search-cancel-button { -webkit-appearance: none; }
-.search kbd {
-  position: absolute; right: 9px; top: 50%; margin-top: -10px; height: 20px; min-width: 20px; padding: 0 5px;
-  display: grid; place-items: center; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--rule);
-  font: 500 11.5px/1 var(--sans); color: var(--quiet);
-}
+.search kbd { position: absolute; right: 8px; top: 50%; margin-top: -10px; }
 .search input:focus ~ kbd, .search input:not(:placeholder-shown) ~ kbd { display: none; }
+.device { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.device:hover, .device[aria-expanded="true"] { background: var(--hover); }
+.device b { color: var(--ink); font-weight: 600; }
+.device svg { color: var(--quiet); }
+/* The state light: filled when a phone is paired, a hollow ring when none is. It pulses once
+   when something arrives from a phone. That is the only moving thing in the bar. */
+.light { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.light.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
+.light::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1.5px solid var(--accent); opacity: 0; }
+.light.ping::after { animation: ping 2s var(--settle) 2; }
+@keyframes ping { from { opacity: 0.8; transform: scale(0.6); } to { opacity: 0; transform: scale(1.8); } }
+.pop { position: absolute; z-index: 40; top: calc(100% + 6px); right: 0; width: min(360px, calc(100vw - 24px)); padding: 6px; border-radius: 12px; background: var(--card); box-shadow: inset 0 0 0 1px var(--rule), 2px 3px 0 var(--shadow); }
+.popwrap { position: relative; }
+.pop h2 { margin: 6px 10px 4px; font-size: 12px; font-weight: 550; color: var(--quiet); }
+.prow { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 10px; border-radius: 8px; }
+.prow:hover { background: var(--hover); }
+.prow .pick { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; }
+.prow .radio { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--faint); flex: none; }
+.prow[aria-current="true"] .radio { box-shadow: inset 0 0 0 4.5px var(--accent); }
+.prow .who { min-width: 0; }
+.prow .who b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow .who small { display: block; color: var(--quiet); font-size: 12px; }
+.prow input.name { flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 9px; border-radius: 7px; border: 0; background: var(--field); box-shadow: inset 0 0 0 1px var(--accent); }
+.pop .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; padding: 8px 8px 4px 10px; border-top: 1px solid var(--rule); }
+.pop .ask { padding: 8px 10px; font-size: 13px; color: var(--muted); }
+.pop .ask div { display: flex; gap: 8px; margin-top: 8px; }
 
-.group { margin-top: 30px; }
-.eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 550; letter-spacing: 0; color: var(--quiet); }
-.choices { display: flex; flex-direction: column; gap: 1px; margin: 0 -10px; }
-.choice {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
-  min-height: 34px; padding: 6px 10px; border-radius: 8px; text-align: left;
-  color: var(--muted); font-size: 14.5px;
+/* ---------------------------------------------------------------- views */
+main { max-width: 1480px; margin: 0 auto; padding: 0 24px 96px; }
+.vhead { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; padding: 22px 0 14px; }
+.vhead h1 { margin: 0; font: 600 30px/1.1 var(--serif); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.vhead .sub { color: var(--muted); font-size: 13.5px; }
+.vhead .sp { margin-left: auto; }
+.note-line { margin: 0 0 14px; color: var(--quiet); font-size: 12.5px; }
+
+/* Home: what to do (notes), what to tackle (meetings), and what was said lately. */
+.strip { display: flex; align-items: stretch; gap: 0; margin: 14px 0; border-radius: 12px; background: var(--card); box-shadow: inset 0 0 0 1px var(--rule); text-decoration: none; overflow: hidden; }
+.strip:hover { box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.fig { flex: 0 1 auto; padding: 10px 18px; border-right: 1px solid var(--rule); min-width: 0; }
+.fig small { display: block; color: var(--quiet); font-size: 12px; font-weight: 550; white-space: nowrap; }
+.fig b { display: block; font: 600 21px/1.25 var(--serif); white-space: nowrap; }
+.fig span { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.fig.chart { flex: 1 1 220px; border-right: 0; display: flex; flex-direction: column; min-width: 160px; }
+.fig.chart svg { flex: 1 1 auto; width: 100%; height: 44px; margin-top: 4px; }
+.home { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.9fr); gap: 14px; height: calc(100vh - var(--bar) - 122px); min-height: 380px; }
+.panel { display: flex; flex-direction: column; min-height: 0; border-radius: 12px; background: var(--card); box-shadow: inset 0 0 0 1px var(--rule); border-top: 3px solid var(--kc, var(--rule-strong)); }
+.panel > header { display: flex; align-items: center; gap: 10px; padding: 10px 14px 8px; border-bottom: 1px solid var(--rule); }
+.panel > header h2 { margin: 0; display: flex; align-items: center; gap: 8px; font: 600 18px/1.2 var(--serif); }
+.panel > header h2 svg { color: var(--kc, var(--muted)); }
+.panel > header h2 a { color: var(--ink); }
+.panel > header .n { color: var(--muted); font-size: 12.5px; }
+.panel > header .sp { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.panel .scroll { flex: 1 1 auto; overflow-y: auto; padding: 0 6px 6px; }
+.panel .sub { margin: 0; padding: 12px 8px 4px; font-size: 12px; font-weight: 550; color: var(--quiet); display: flex; align-items: center; gap: 7px; }
+.panel .sub svg { color: var(--kc); }
+.kc-note { --kc: var(--k-note); } .kc-meeting { --kc: var(--k-meeting); } .kc-clip { --kc: var(--k-clip); } .kc-dictation { --kc: var(--k-dictation); }
+.empty { padding: 26px 12px; color: var(--muted); font-size: 13.5px; }
+.empty h3 { margin: 0 0 6px; font: 600 19px/1.2 var(--serif); color: var(--ink); }
+.empty p { margin: 0 0 12px; max-width: 46ch; }
+.welcome { max-width: 560px; padding: 60px 0; }
+.welcome h1 { margin: 0 0 10px; font: 600 34px/1.1 var(--serif); }
+.welcome ol { margin: 0 0 22px; padding-left: 20px; color: var(--muted); }
+.welcome li { margin: 6px 0; }
+
+/* One item, the same in every list. The kind shows in the stripe, the icon and the label. */
+.row { position: relative; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 0 8px; padding: 10px 8px 9px 10px; border-radius: 8px; --kc: var(--k-dictation); }
+.row + .row { box-shadow: 0 -1px 0 var(--rule); }
+.row::before { content: ""; position: absolute; left: 0; top: 9px; bottom: 9px; width: 3px; border-radius: 2px; background: var(--kc); opacity: 0.9; }
+.row.k-dictation::before { opacity: 0.28; }
+.row.k-note { --kc: var(--k-note); } .row.k-meeting { --kc: var(--k-meeting); } .row.k-clip { --kc: var(--k-clip); }
+.row:hover { background: var(--hover); }
+.row.cur { background: var(--hover); box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.row.sel { background: var(--accent-wash); }
+.row .lead { padding-top: 1px; display: flex; justify-content: center; color: var(--kc); }
+.row .lead svg { margin-top: 3px; }
+.check { width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--kc); display: grid; place-items: center; color: transparent; flex: none; }
+.check:hover { background: color-mix(in srgb, var(--kc) 22%, transparent); }
+.check[aria-checked="true"] { background: var(--kc); color: var(--paper); }
+.check svg { width: 11px; height: 11px; margin: 0 !important; }
+.row h3 { margin: 0 0 2px; font: 600 16.5px/1.3 var(--serif); }
+.row h3 a { text-decoration: none; }
+.row h3 a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.text { margin: 0; font-size: 14.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.big .text { font-size: 15.5px; line-height: 1.58; }
+.clamp { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; -webkit-line-clamp: var(--lines, 4); line-clamp: var(--lines, 4); }
+.l1 { --lines: 1; } .l2 { --lines: 2; } .l3 { --lines: 3; } .l6 { --lines: 6; } .l10 { --lines: 10; }
+.row.k-clip .text { font-family: var(--mono); font-size: 12.5px; }
+.row.done .text, .row.done h3 { color: var(--quiet); }
+.row.k-note.done .text { text-decoration: line-through; text-decoration-color: var(--faint); }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 0; margin-top: 3px; color: var(--quiet); font-size: 12px; min-height: 20px; }
+.meta > span { white-space: nowrap; }
+.meta > span + span::before { content: "\00b7"; display: inline-block; width: 13px; text-align: center; color: var(--faint); }
+.meta .kind { color: var(--kc); font-weight: 600; }
+.meta .kind.k-dictation { color: var(--muted); }
+.meta .src { border-bottom: 1px dotted var(--faint); cursor: help; }
+.meta .donetag { color: var(--muted); }
+.who-chip { display: inline-flex; align-items: center; height: 19px; padding: 0 7px; margin: 3px 4px 0 0; border-radius: 999px; font-size: 11.5px; font-weight: 550; color: var(--muted); box-shadow: inset 0 0 0 1px var(--rule); }
+.acts { position: absolute; right: 6px; bottom: 5px; display: flex; gap: 1px; padding: 2px; border-radius: 9px; background: var(--card); box-shadow: inset 0 0 0 1px var(--rule); }
+.acts .iconbtn { width: 27px; height: 27px; border-radius: 7px; }
+.acts .iconbtn.on { color: var(--accent-text); }
+.acts .iconbtn.rm:hover { color: var(--alarm); }
+@media (hover: hover) {
+  .row .acts { opacity: 0; pointer-events: none; }
+  .row:hover .acts, .row:focus-within .acts, .row.cur .acts, .row.sel .acts { opacity: 1; pointer-events: auto; }
 }
-.choice:hover { background: var(--hover); color: var(--ink); }
-.choice .n { font: 600 14px/1 var(--serif); color: var(--quiet); }
-.choice[aria-pressed="true"] { background: var(--press); color: var(--ink); font-weight: 600; }
-.choice[aria-pressed="true"] .n { color: var(--ink); }
+@media (hover: none) { .row .acts { position: static; grid-column: 2; justify-self: start; margin-top: 6px; } }
+mark { background: var(--accent-wash); color: inherit; border-radius: 2px; padding: 0 1px; box-shadow: inset 0 -1.5px 0 var(--accent); }
+.row.arrived .text, .row.arrived h3 { animation: land 1.6s var(--settle) both; }
+@keyframes land { from { color: var(--accent-text); } to { color: var(--ink); } }
 
-/* When: a few quick ranges and a month to pick days from. */
-.seg { display: flex; padding: 2px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--rule); }
-.seg button { flex: 1 1 auto; height: 30px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; font-weight: 550; color: var(--muted); white-space: nowrap; }
-.seg button:hover { color: var(--ink); }
-.seg button[aria-pressed="true"] { background: var(--press); color: var(--ink); }
-.datesToggle { display: none; }
-.cal { margin-top: 18px; }
-.calHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.calHead h3 { margin: 0; font: 600 16px/1.2 var(--serif); }
+/* A list view: optional rail of filters, and the list. */
+.cols { display: grid; grid-template-columns: 236px minmax(0, 820px); column-gap: 48px; }
+.one { max-width: 860px; }
+.rail { position: sticky; top: calc(var(--bar) + 1px); align-self: start; max-height: calc(100vh - var(--bar)); overflow-y: auto; scrollbar-width: none; padding: 4px 0 32px; }
+.rail::-webkit-scrollbar { display: none; }
+.rail .seg button { padding: 0 8px; font-size: 12px; }
+.group { margin-bottom: 22px; }
+.eyebrow { margin: 0 0 6px; font-size: 12px; font-weight: 550; color: var(--quiet); }
+.choices { display: flex; flex-direction: column; gap: 1px; margin: 0 -8px; }
+.choice { display: flex; align-items: center; gap: 9px; min-height: 30px; padding: 4px 8px; border-radius: 8px; color: var(--muted); font-size: 13.5px; }
+.choice svg { color: var(--kc, var(--quiet)); }
+.choice span.l { flex: 1 1 auto; }
+.choice:hover { background: var(--hover); color: var(--ink); }
+.choice .n { font: 600 13px/1 var(--serif); color: var(--quiet); }
+.choice[aria-pressed="true"] { background: var(--press); color: var(--ink); font-weight: 600; }
+.explain { margin: 8px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--quiet); }
+.explain li { margin: 0 0 5px; }
+.explain b { color: var(--muted); font-weight: 600; }
+details.what summary { cursor: pointer; font-size: 12px; color: var(--accent-text); margin-top: 6px; }
+.cal { margin-top: 12px; }
+.calHead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.calHead h3 { margin: 0; font: 600 15px/1.2 var(--serif); }
 .calHead div { display: flex; gap: 2px; margin-right: -6px; }
-.calHead button { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
-.calHead button:hover { background: var(--hover); color: var(--ink); }
 .calHead button:disabled { opacity: 0.35; cursor: default; background: none; }
-.calHead svg { width: 14px; height: 14px; }
 table.month { width: 100%; border-collapse: separate; border-spacing: 0 2px; table-layout: fixed; }
-.month th { height: 26px; font-size: 11.5px; font-weight: 550; color: var(--quiet); }
+.month th { height: 24px; font-size: 11.5px; font-weight: 550; color: var(--quiet); }
 .month td { padding: 0; text-align: center; }
 .month td.in { background: var(--accent-wash); }
 .month td.first { border-radius: 999px 0 0 999px; }
 .month td.last { border-radius: 0 999px 999px 0; }
 .month td.first.last { border-radius: 999px; }
-.day-cell {
-  position: relative; width: 32px; height: 32px; margin: 0 auto; border-radius: 50%;
-  display: grid; place-items: center; font-size: 13px; color: var(--quiet);
-}
+.day-cell { position: relative; width: 30px; height: 30px; margin: 0 auto; border-radius: 50%; display: grid; place-items: center; font-size: 12.5px; color: var(--quiet); }
 .day-cell.has { color: var(--ink); }
-.day-cell.has::after { content: ""; position: absolute; left: 50%; bottom: 4px; width: 3px; height: 3px; margin-left: -1.5px; border-radius: 50%; background: var(--accent); }
+.day-cell.has::after { content: ""; position: absolute; left: 50%; bottom: 3px; width: 3px; height: 3px; margin-left: -1.5px; border-radius: 50%; background: var(--accent); }
 .day-cell:hover:not(:disabled) { background: var(--hover); }
 .day-cell.today { box-shadow: inset 0 0 0 1px var(--rule-strong); }
 .day-cell.edge { background: var(--ink); color: var(--on-ink); font-weight: 650; }
 .day-cell.edge::after { background: var(--on-ink); }
 .day-cell:disabled { opacity: 0.4; cursor: default; }
-.day-cell.out { visibility: hidden; }
-.calNote { margin: 10px 0 0; font-size: 12.5px; color: var(--quiet); min-height: 20px; }
-.calNote button { font-size: 12.5px; }
-.colophon { margin: 34px 0 0; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 12.5px; line-height: 1.6; color: var(--quiet); }
-.colophon p { margin: 0 0 6px; }
+.calNote { margin: 8px 0 0; font-size: 12px; color: var(--quiet); min-height: 18px; }
+.dayHead { position: sticky; top: var(--bar); z-index: 5; display: flex; align-items: baseline; gap: 10px; margin-top: 18px; padding: 10px 0 7px; background: var(--paper); border-bottom: 1px solid var(--rule); }
+.dayHead h2 { margin: 0; font: 600 19px/1.2 var(--serif); }
+.dayHead .date { color: var(--quiet); font-size: 13px; }
+.dayHead .count { margin-left: auto; color: var(--quiet); font-size: 12.5px; }
+.loadmore { display: flex; justify-content: center; padding: 22px 0 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.cards .row { background: var(--card); box-shadow: inset 0 0 0 1px var(--rule); border-radius: 12px; padding: 13px 12px 11px 14px; }
+.cards .row:hover { box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.cards .row::before { top: 12px; bottom: 12px; }
 
-/* ---------------------------------------------------------------- the document */
-.masthead h1 { margin: 0; font: 600 42px/1.08 var(--serif); letter-spacing: -0.015em; overflow-wrap: anywhere; text-wrap: balance; }
-.masthead p { margin: 10px 0 0; color: var(--muted); font-size: 15px; min-height: 23px; }
-.masthead p .device-inline { display: none; }
+/* One item in full. */
+.doc { max-width: 780px; }
+.doc .back { display: inline-flex; align-items: center; gap: 6px; margin-top: 18px; }
+.doc h1 { margin: 10px 0 6px; font: 600 34px/1.12 var(--serif); letter-spacing: -0.012em; overflow-wrap: anywhere; }
+.doc .facts { color: var(--muted); font-size: 13.5px; }
+.doc .tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 22px; padding-bottom: 16px; border-bottom: 1px solid var(--rule); }
+.turn { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 16px; padding: 9px 0; }
+.turn .sp { font-weight: 650; font-size: 13.5px; color: var(--sc, var(--ink)); overflow-wrap: anywhere; }
+.turn .sp small { display: block; font-weight: 400; color: var(--quiet); font-size: 12px; }
+.turn p { margin: 0; font-size: 15.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.s0 { --sc: var(--k-meeting); } .s1 { --sc: var(--k-note); } .s2 { --sc: var(--k-clip); } .s3 { --sc: var(--accent-text); } .s4 { --sc: var(--muted); }
+.doc .body { font-size: 16.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 
-section.day { margin-top: 34px; }
-.dayHead {
-  position: sticky; top: var(--bar); z-index: 5;
-  display: flex; align-items: baseline; gap: 12px;
-  padding: 16px 0 10px; background: var(--paper); border-bottom: 1px solid var(--rule);
-}
-.dayHead h2 { margin: 0; font: 600 22px/1.2 var(--serif); letter-spacing: -0.005em; }
-.dayHead .date { color: var(--quiet); font-size: 13.5px; }
-.dayHead .count { margin-left: auto; color: var(--quiet); font-size: 13px; }
-ol.entries { list-style: none; margin: 0; padding: 0; }
-.entry { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 0 8px; padding: 18px 0 16px; border-bottom: 1px solid var(--rule); }
-.entry:last-child { border-bottom: 0; }
-.entry > time { padding-top: 2px; color: var(--quiet); font-size: 13px; white-space: nowrap; }
-.entry h3 { margin: 0 0 6px; font: 600 19px/1.3 var(--serif); }
-.text { margin: 0; font-size: 16px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.text.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; line-clamp: 6; overflow: hidden; }
-.turns { font-size: 15.5px; line-height: 1.6; }
-.turns p { margin: 0 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.turns b { font-weight: 650; margin-right: 0.35em; }
-.turns.clamp { max-height: calc(1.6em * 7); overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
-.more { display: inline-block; margin-top: 6px; }
-.meta { display: flex; align-items: center; gap: 12px; margin-top: 8px; color: var(--quiet); font-size: 13px; min-height: 26px; }
-/* Parts never break inside, and a separator that would start a line is clipped away. */
-.meta .info { flex: 1 1 auto; min-width: 0; overflow: hidden; line-height: 1.55; }
-.meta .parts { display: flex; flex-wrap: wrap; margin-left: -17px; }
-.meta .parts > span { white-space: nowrap; }
-.meta .parts > span::before { content: "\00b7"; display: inline-block; width: 17px; text-align: center; color: var(--faint); }
-.meta svg { width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; color: var(--muted); }
-.meta .kind { color: var(--muted); white-space: nowrap; }
-.meta .parts > .mtime { display: none; }
-.meta .copy { flex: none; }
-.copy {
-  height: 26px; padding: 0 12px; border-radius: 999px; font-size: 12px; font-weight: 550;
-  background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule);
-}
-.copy:hover { background: var(--hover); }
-.copy.done { color: var(--accent-text); }
-@media (hover: hover) {
-  .entry .copy { opacity: 0; }
-  .entry:hover .copy, .entry:focus-within .copy, .copy.done { opacity: 1; }
-}
-mark { background: var(--accent-wash); color: inherit; border-radius: 2px; padding: 0 1px; box-shadow: inset 0 -1.5px 0 var(--accent); }
+/* Statistics and settings: flat cards with serif figures. */
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; align-items: start; }
+.box { border-radius: 12px; background: var(--card); box-shadow: inset 0 0 0 1px var(--rule); padding: 16px 18px; min-width: 0; }
+.box.wide { grid-column: 1 / -1; }
+.box h2 { margin: 0 0 4px; font: 600 19px/1.2 var(--serif); }
+.box > p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.box .line { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--rule); font-size: 13.5px; }
+.box .line .l { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.box .line small { display: block; color: var(--quiet); font-size: 12px; }
+.box .line .r { color: var(--muted); text-align: right; font-size: 12.5px; flex: none; }
+.figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px 18px; }
+.figs .fig { padding: 0; border: 0; }
+.figs .fig b { font-size: 26px; }
+.chartbox svg { display: block; width: 100%; height: 150px; }
+.chartbox .axis { display: flex; justify-content: space-between; color: var(--quiet); font-size: 11.5px; margin-top: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; background: var(--kc); }
+.bar-f { fill: var(--accent); } .f-note { fill: var(--k-note); } .f-meeting { fill: var(--k-meeting); } .f-clip { fill: var(--k-clip); } .f-dictation { fill: var(--quiet); } .f-none { fill: var(--rule); }
+.kbar { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; margin-top: 5px; }
+.kbar i { display: block; height: 100%; background: var(--kc); border-radius: 3px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px 0 9px; border-radius: 999px; font-size: 12.5px; font-weight: 550; color: var(--muted); box-shadow: inset 0 0 0 1px var(--rule); }
+.swatch i { width: 12px; height: 12px; border-radius: 50%; background: var(--sw); }
+.swatch[aria-pressed="true"] { color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--ink); }
+.cmd { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.cmd code { flex: 1 1 auto; min-width: 0; padding: 7px 10px; border-radius: 8px; background: var(--field); box-shadow: inset 0 0 0 1px var(--rule); overflow-x: auto; white-space: nowrap; }
+.path { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 
-.empty { padding: 72px 0 40px; max-width: 460px; }
-.empty.locked { margin: 0 auto; padding: 18vh 24px 40px; }
-.empty.locked h2 { margin-top: 40px; font-size: 34px; }
-.empty h2 { margin: 0 0 10px; font: 600 28px/1.15 var(--serif); }
-.empty p { margin: 0 0 22px; color: var(--muted); font-size: 15.5px; }
-.status-line { margin: 26px 0 0; color: var(--muted); }
-.loadmore { display: flex; justify-content: center; padding: 26px 0 0; }
-
-/* New words land in the accent and settle to ink, as they do in the Mac app. */
-.entry.arrived .text, .entry.arrived .turns, .entry.arrived h3 { animation: land 1.6s var(--settle) both; }
-@keyframes land { from { color: var(--accent-text); } to { color: var(--ink); } }
-
-.fresh {
-  position: fixed; left: 50%; bottom: 24px; z-index: 30; transform: translateX(-50%);
-  display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 20px 0 16px; border-radius: 999px;
-  background: var(--ink); color: var(--on-ink); font-size: 13.5px; font-weight: 600;
-  box-shadow: 2px 3px 0 var(--shadow);
-}
+/* Selection, toasts, new items. */
+.selbar, .toast, .fresh { position: fixed; left: 50%; z-index: 30; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; border-radius: 999px; background: var(--ink); color: var(--on-ink); font-size: 13px; font-weight: 600; box-shadow: 2px 3px 0 var(--shadow); max-width: calc(100vw - 24px); }
+.selbar { bottom: 22px; padding: 6px 8px 6px 18px; flex-wrap: wrap; border-radius: 22px; }
+.selbar button { height: 28px; padding: 0 12px; border-radius: 999px; color: var(--on-ink); font-weight: 600; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--on-ink) 30%, transparent); }
+.selbar button:hover { background: color-mix(in srgb, var(--on-ink) 12%, transparent); }
+.toast { bottom: 74px; padding: 9px 10px 9px 18px; font-weight: 550; }
+.toast button { height: 26px; padding: 0 12px; border-radius: 999px; color: var(--on-ink); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.fresh { top: calc(var(--bar) + 12px); height: 36px; padding: 0 18px 0 14px; }
 .fresh i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 
-/* ---------------------------------------------------------------- pairing */
-dialog {
-  width: min(420px, calc(100vw - 28px)); max-height: calc(100vh - 40px); padding: 0; border: 0; border-radius: 16px;
-  background: var(--card); color: var(--ink);
-  box-shadow: inset 0 0 0 1px var(--rule), 3px 4px 0 var(--shadow);
-}
+dialog { width: min(440px, calc(100vw - 28px)); max-height: calc(100vh - 40px); padding: 0; border: 0; border-radius: 16px; background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule), 3px 4px 0 var(--shadow); }
+dialog.wide { width: min(640px, calc(100vw - 28px)); }
 dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
-.sheet { padding: 26px 26px 22px; }
-.sheet h2 { margin: 0 0 6px; font: 600 26px/1.15 var(--serif); }
-.sheet > p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+.sheet { padding: 24px 24px 20px; }
+.sheet h2 { margin: 0 0 6px; font: 600 24px/1.15 var(--serif); }
+.sheet > p { margin: 0 0 16px; color: var(--muted); font-size: 13.5px; }
 .qr { width: min(232px, 100%); aspect-ratio: 1; margin: 0 auto; padding: 10px; border-radius: 14px; background: var(--qr-paper); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08), 2px 3px 0 var(--shadow); }
 .qr svg { display: block; width: 100%; height: 100%; }
 .qr svg rect { fill: var(--qr-paper); }
@@ -303,146 +339,93 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
 .expires { margin: 14px 0 18px; text-align: center; color: var(--muted); font-size: 13.5px; }
 .expires b { font: 600 15px/1 var(--serif); color: var(--ink); }
 .linkrow { display: flex; gap: 8px; }
-.linkrow input {
-  flex: 1; min-width: 0; height: 36px; padding: 0 12px; border-radius: 10px; border: 0;
-  background: var(--field); box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); font: 12px var(--mono);
-}
-.phones { margin: 22px 0 0; }
-.phones h3 { margin: 0 0 4px; font-size: 12px; font-weight: 550; color: var(--quiet); }
-.phone { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 10px 0; border-top: 1px solid var(--rule); font-size: 14px; }
-.phone small { display: block; color: var(--quiet); font-size: 12.5px; }
-.phone .right { text-align: right; color: var(--quiet); font-size: 12.5px; }
-.sheet .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.linkrow input { flex: 1; min-width: 0; height: 32px; padding: 0 12px; border-radius: 10px; border: 0; background: var(--field); box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); font: 12px var(--mono); }
+.sheet .actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
 .err { margin: 0 0 16px; padding: 2px 0 2px 14px; border-left: 2px solid var(--alarm); color: var(--ink); font-size: 14px; }
+.opts { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 12px; }
+pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; border-radius: 10px; background: var(--field); box-shadow: inset 0 0 0 1px var(--rule); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; font-size: 13.5px; align-items: center; }
+.keys dt { white-space: nowrap; } .keys dd { margin: 0; color: var(--muted); }
+.locked { margin: 0 auto; padding: 18vh 24px 40px; max-width: 460px; }
+.locked h2 { margin: 40px 0 10px; font: 600 34px/1.15 var(--serif); }
+.locked p { color: var(--muted); }
 
 /* ---------------------------------------------------------------- narrow windows */
-@media (max-width: 900px) {
-  :root { --bar: 56px; }
-  .bar { gap: 14px; padding: 0 18px; }
-  .device { display: none; }
-  .nav { gap: 14px; }
-  .page { grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "rail" "doc"; padding: 0 18px; }
-  .masthead { padding: 24px 0 0; }
-  .rail { position: static; max-height: none; overflow: visible; padding: 16px 0 0; }
-  .search kbd { display: none; }
-  .group { margin-top: 16px; }
-  .eyebrow { display: none; }
-  .choices { flex-direction: row; gap: 4px; margin: 0 -18px; padding: 0 18px 2px; overflow-x: auto; scrollbar-width: none; }
+@media (max-width: 1180px) {
+  .home { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); height: auto; }
+  .home .panel { max-height: calc(100vh - var(--bar) - 150px); min-height: 300px; }
+  .home .panel.lately { grid-column: 1 / -1; max-height: 420px; }
+  .fig.opt { display: none; }
+}
+@media (max-width: 980px) {
+  .bar { flex-wrap: wrap; gap: 8px 10px; padding: 8px 14px 0; }
+  .tabs { order: 5; flex: 1 1 100%; margin: 0 -6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 6px; }
+  .tabs::-webkit-scrollbar { display: none; }
+  main { padding: 0 14px 96px; }
+  .device small, .device .sync { display: none; }
+  .cols { grid-template-columns: minmax(0, 1fr); }
+  .rail { position: static; max-height: none; padding: 0 0 6px; }
+  .rail .group { margin-bottom: 10px; }
+  .rail .eyebrow, .rail details.what { display: none; }
+  .choices { flex-direction: row; gap: 4px; margin: 0 -14px; padding: 0 14px 2px; overflow-x: auto; scrollbar-width: none; }
   .choices::-webkit-scrollbar { display: none; }
-  .choice { flex: none; align-items: center; min-height: 32px; padding: 0 12px; border-radius: 999px; gap: 7px; font-size: 14px; }
-  .choice[aria-pressed="false"] { box-shadow: inset 0 0 0 1px var(--rule); }
-  .choice .n { font-size: 13px; }
-  #sourcesGroup { margin-top: 8px; }
-  #sourcesGroup.optional { display: none; }
-  .whenRow { display: flex; gap: 8px; align-items: center; }
-  .whenRow .seg { flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }
-  .datesToggle { display: inline-flex; height: 34px; padding: 0 14px; }
-  .when:not(.open) .cal { display: none; }
-  .cal { max-width: 340px; }
-  .colophon { display: none; }
-  .doc { padding: 0 0 100px; }
-  section.day:first-child { margin-top: 22px; }
-  .masthead h1 { font-size: 34px; }
-  .masthead p .device-inline { display: inline; }
-  .dayHead { padding: 14px 0 8px; }
-  .dayHead .date { display: none; }
-  .entry { display: block; padding: 16px 0 14px; }
-  .entry > time { display: none; }
-  .meta .parts > .mtime { display: inline; }
+  .choice { flex: none; padding: 0 11px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--rule); }
+  .rail .cal { max-width: 320px; }
+  .rail .when:not(.open) .cal { display: none; }
+  html { scroll-padding-top: 150px; }
+  .dayHead { top: 0; position: static; }
 }
-@media (max-width: 420px) {
-  .navlink { padding: 0 8px; margin: 0 -4px; }
-  .bar .button { padding: 0 14px; }
-  .masthead h1 { font-size: 30px; }
+@media (max-width: 720px) {
+  .home { grid-template-columns: minmax(0, 1fr); }
+  .home .panel { max-height: 70vh; }
+  .strip { flex-wrap: wrap; }
+  .fig { flex: 1 1 33%; border-bottom: 1px solid var(--rule); }
+  .fig.chart { flex-basis: 100%; }
+  .turn { grid-template-columns: minmax(0, 1fr); }
+  .vhead h1, .doc h1 { font-size: 26px; }
+  .search { flex-basis: 120px; }
+  .navword, #keysOpen { display: none; }
 }
+@media (min-width: 981px) { .datesToggle { display: none; } }
 @media (prefers-reduced-motion: no-preference) {
-  .choice, .seg button, .day-cell, .button, .copy, .device, .navlink { transition: background-color 0.2s, color 0.2s, opacity 0.2s, transform 0.2s; }
-  dialog[open] { animation: rise 0.45s var(--settle); }
-  .fresh:not([hidden]) { animation: rise 0.45s var(--settle); }
+  .choice, .seg button, .day-cell, .button, .tab, .device, .iconbtn, .check { transition: background-color 0.2s, color 0.2s, opacity 0.2s, transform 0.2s; }
+  dialog[open], .toast, .selbar, .fresh:not([hidden]), .pop { animation: rise 0.45s var(--settle); }
   @keyframes rise { from { opacity: 0; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
 }
 @media (prefers-reduced-motion: reduce) {
-  .entry.arrived .text, .entry.arrived .turns, .entry.arrived h3 { animation: none; }
+  .row.arrived .text, .row.arrived h3 { animation: none; }
   .light.ping::after { animation: none; }
 }
 @media (forced-colors: active) {
-  .day-cell.edge, .choice[aria-pressed="true"], .seg button[aria-pressed="true"] { outline: 2px solid CanvasText; }
+  .day-cell.edge, .choice[aria-pressed="true"], .seg button[aria-pressed="true"], .tab[aria-current="page"], .row.cur { outline: 2px solid CanvasText; }
 }
 </style>
 </head>
 <body>
-<a class="skip" href="#list">Skip to your library</a>
+<a class="skip" href="#view">Skip to your library</a>
 <header class="top">
   <div class="bar">
-    <a class="mark" href="/" aria-label="Zone, your library">zone<span class="dot" aria-hidden="true"></span></a>
-    <canvas class="wave" id="wave" aria-hidden="true"></canvas>
-    <button class="device" id="device" type="button" aria-label="Paired phones"><span class="light off" id="light"></span><span id="deviceText">Loading</span></button>
-    <nav class="nav" aria-label="Zone">
-      <a class="navlink" href="/flash" title="Send from the phone's screen to this computer's camera, with no network"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9.2 1.75 3.5 9.1h4.1l-.8 5.15L12.5 6.9H8.4z"/></svg>Flash</a>
-      <button class="button primary" id="pairOpen" type="button">Pair a phone</button>
-    </nav>
-  </div>
-</header>
-
-<main class="page" id="main">
-  <div class="masthead">
-    <h1 id="title">Your library</h1>
-    <p id="summary" aria-live="polite"></p>
-  </div>
-
-  <aside class="rail" aria-label="Find in your library">
+    <a class="mark" href="#/" aria-label="Zone, home">zone<span class="dot" aria-hidden="true"></span></a>
+    <nav class="tabs" id="tabs" aria-label="Views"></nav>
     <label class="search">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.7"/><path d="M10.6 10.6 14 14"/></svg>
+      <svg class="i" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.7"/><path d="M10.6 10.6 14 14"/></svg>
       <input id="q" type="search" placeholder="Search everything you said" autocomplete="off" spellcheck="false" aria-label="Search" aria-keyshortcuts="/">
       <kbd aria-hidden="true">/</kbd>
     </label>
-
-    <section class="group">
-      <h2 class="eyebrow" id="kindLabel">Kind</h2>
-      <div class="choices" id="kinds" role="group" aria-labelledby="kindLabel"></div>
-    </section>
-    <section class="group" id="sourcesGroup" hidden>
-      <h2 class="eyebrow" id="sourceLabel">Dictations from</h2>
-      <div class="choices" id="sources" role="group" aria-labelledby="sourceLabel"></div>
-    </section>
-
-    <section class="group when" id="when">
-      <h2 class="eyebrow" id="whenLabel">When</h2>
-      <div class="whenRow">
-        <div class="seg" role="group" aria-labelledby="whenLabel">
-          <button type="button" data-range="all" aria-pressed="true">Any time</button>
-          <button type="button" data-range="today" aria-pressed="false">Today</button>
-          <button type="button" data-range="7" aria-pressed="false">7 days</button>
-          <button type="button" data-range="30" aria-pressed="false">30 days</button>
-        </div>
-        <button class="button datesToggle" id="datesToggle" type="button" aria-expanded="false" aria-controls="cal">Dates</button>
-      </div>
-      <div class="cal" id="cal">
-        <div class="calHead">
-          <h3 id="calTitle" aria-live="polite"></h3>
-          <div>
-            <button type="button" id="calPrev" aria-label="Previous month"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg></button>
-            <button type="button" id="calNext" aria-label="Next month"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg></button>
-          </div>
-        </div>
-        <table class="month" role="grid" aria-labelledby="calTitle">
-          <thead><tr id="calDays"></tr></thead>
-          <tbody id="calBody"></tbody>
-        </table>
-        <p class="calNote" id="calNote"></p>
-      </div>
-    </section>
-
-    <div class="colophon" id="colophon"></div>
-  </aside>
-
-  <div class="doc">
-    <div id="list" tabindex="-1"></div>
-    <div class="loadmore"><button class="button" id="more" type="button" hidden>Show older items</button></div>
+    <div class="popwrap">
+      <button class="device" id="device" type="button" aria-haspopup="true" aria-expanded="false" title="Your phones. The light is filled when a phone is paired and pulses when something arrives from it."><span class="light off" id="light"></span><span id="deviceText">Loading</span></button>
+      <div class="pop" id="devices" hidden></div>
+    </div>
+    <a class="iconbtn" href="/flash" title="Flash: send from the phone's screen to this computer's camera, with no network" aria-label="Flash"><svg class="i" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M9.2 1.75 3.5 9.1h4.1l-.8 5.15L12.5 6.9H8.4z"/></svg></a>
+    <button class="iconbtn" id="keysOpen" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><kbd>?</kbd></button>
   </div>
-</main>
+</header>
+
+<main id="view" tabindex="-1" aria-live="off"></main>
 
 <button class="fresh" id="fresh" type="button" hidden><i aria-hidden="true"></i>New items. Show them</button>
+<div class="selbar" id="selbar" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
 <dialog id="pair" aria-labelledby="pairTitle">
   <div class="sheet">
@@ -457,10 +440,6 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
         <button class="button" id="pairCopy" type="button">Copy</button>
       </div>
     </div>
-    <div class="phones">
-      <h3>Paired phones</h3>
-      <div id="phones"></div>
-    </div>
     <div class="actions">
       <button class="button" id="pairNew" type="button">New code</button>
       <button class="button primary" id="pairClose" type="button" autofocus>Done</button>
@@ -468,63 +447,134 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
   </div>
 </dialog>
 
+<dialog id="export" class="wide" aria-labelledby="exportTitle">
+  <div class="sheet">
+    <h2 id="exportTitle">Export</h2>
+    <p id="exportWhat"></p>
+    <div class="opts">
+      <div class="seg" id="exportFormat" role="group" aria-label="Format"></div>
+      <div class="seg" id="exportOrder" role="group" aria-label="Order"></div>
+    </div>
+    <pre class="preview" id="exportPreview" tabindex="0" aria-label="Preview"></pre>
+    <div class="actions">
+      <button class="button" id="exportClose" type="button">Close</button>
+      <button class="button" id="exportSave" type="button">Download</button>
+      <button class="button primary" id="exportCopy" type="button" autofocus>Copy</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="keys" aria-labelledby="keysTitle">
+  <div class="sheet">
+    <h2 id="keysTitle">Keyboard</h2>
+    <dl class="keys" id="keysList"></dl>
+    <div class="actions"><button class="button primary" id="keysClose" type="button" autofocus>Done</button></div>
+  </div>
+</dialog>
+
 <script nonce="__NONCE__">
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const el = (tag, cls, text) => {
+  // h("div", { class: "x", onclick: f }, child, ...): text is always added as text, never HTML.
+  function h(tag, attrs, ...kids) {
     const node = document.createElement(tag);
-    if (cls) node.className = cls;
-    if (text !== undefined && text !== null) node.textContent = text;
+    for (const key in attrs || {}) {
+      const value = attrs[key];
+      if (value === null || value === undefined || value === false) continue;
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else if (typeof value !== "string" && key in node) node[key] = value;
+      else node.setAttribute(key, value === true ? "" : value);
+    }
+    for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) node.append(kid);
     return node;
-  };
-  const svg = (markup) => new DOMParser().parseFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + markup + "</svg>", "image/svg+xml").documentElement;
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-
-  const KINDS = ["dictation", "note", "meeting", "clip"];
-  const KIND_NAMES = { dictation: "Dictations", note: "Notes", meeting: "Meetings", clip: "Clips" };
-  const KIND_ONE = { dictation: "Dictation", note: "Note", meeting: "Meeting", clip: "Clip" };
-  // The first four are where a dictation was spoken, the rest how a clip was sent.
-  const SOURCE_NAMES = { keyboard: "Keyboard", app: "In Zone", note: "Voice note", remote: "Remote", clipboard: "From the clipboard", share: "Shared", shortcut: "Shortcut", typed: "Typed" };
-  const ALWAYS_SHOWN = ["dictation", "note", "meeting"];
-  // The same symbols as the Mac app: a waveform, a page, two people, a clipboard.
+  }
+  const btn = (cls, label, onclick, attrs) => h("button", Object.assign({ class: cls, type: "button", onclick }, attrs || {}), label);
+  const NS = "http://www.w3.org/2000/svg";
   const ICONS = {
     dictation: '<path d="M2.5 7v2M5 5v6M7.5 2.75v10.5M10 5v6M12.5 6.5v3"/>',
     note: '<rect x="3" y="2.25" width="10" height="11.5" rx="2"/><path d="M5.75 5.75h4.5M5.75 8h4.5M5.75 10.25h2.75"/>',
     meeting: '<circle cx="6" cy="5.5" r="2.25"/><path d="M1.75 13c.4-2.3 2.1-3.6 4.25-3.6s3.85 1.3 4.25 3.6"/><path d="M10.6 3.4a2.2 2.2 0 1 1 .4 4.3M11.6 9.6c1.4.4 2.4 1.5 2.65 3.4"/>',
     clip: '<rect x="3.25" y="3" width="9.5" height="11" rx="2"/><path d="M6 3V2.5c0-.4.3-.75.75-.75h2.5c.4 0 .75.35.75.75V3c0 .4-.3.75-.75.75h-2.5C6.35 3.75 6 3.4 6 3z"/><path d="M5.75 7.5h4.5M5.75 10h3"/>',
+    check: '<path d="M3.5 8.4 6.6 11.5 12.5 4.8" stroke-width="2"/>',
+    copy: '<rect x="5.25" y="5.25" width="8" height="8.5" rx="1.75"/><path d="M10.75 5.25v-1.5c0-.83-.67-1.5-1.5-1.5h-5c-.83 0-1.5.67-1.5 1.5v5.5c0 .83.67 1.5 1.5 1.5h1"/>',
+    out: '<path d="M8 10V2.5M5 5.25 8 2.25l3 3M3 9.75v2.5c0 .83.67 1.5 1.5 1.5h7c.83 0 1.5-.67 1.5-1.5v-2.5"/>',
+    trash: '<path d="M2.75 4.25h10.5M6.25 4.25v-1.5h3.5v1.5M4.25 4.25l.6 8.1c.06.8.72 1.4 1.5 1.4h3.3c.78 0 1.44-.6 1.5-1.4l.6-8.1"/>',
+    pick: '<rect x="2.75" y="2.75" width="10.5" height="10.5" rx="2.5"/>',
+    pen: '<path d="M10.6 2.9 13.1 5.4 5.6 12.9l-3 .5.5-3z"/>',
+    down: '<path d="M4 6.25 8 10l4-3.75"/>',
+    left: '<path d="M10 3.5 5.5 8l4.5 4.5"/>',
+    right: '<path d="M6 3.5 10.5 8 6 12.5"/>',
+    gear: '<circle cx="8" cy="8" r="2.1"/><path d="M8 1.9v1.6M8 12.5v1.6M1.9 8h1.6M12.5 8h1.6M3.7 3.7l1.1 1.1M11.2 11.2l1.1 1.1M3.7 12.3l1.1-1.1M11.2 4.8l1.1-1.1"/>',
+    home: '<path d="M2.5 7.5 8 2.75l5.5 4.75v5.25c0 .55-.45 1-1 1h-9c-.55 0-1-.45-1-1z"/>',
+    stats: '<path d="M3 13V8.5M6.5 13V3M10 13V6.5M13.5 13v-3"/>',
+    clock: '<circle cx="8" cy="8" r="5.5"/><path d="M8 4.75V8l2.25 1.5"/>',
+    phone: '<rect x="4.25" y="1.75" width="7.5" height="12.5" rx="2"/><path d="M7 12h2"/>',
   };
-
-  const state = { q: "", kinds: new Set(), sources: new Set(), from: "", to: "", range: "all", cursor: null, loading: false, revision: null, lastDay: null, shown: 0, total: 0, matched: null };
-  let status = null;
-  let request = 0;
-  // Every item shown so far. After the library changes, the ones not in it are new and land in
-  // the accent; a change of filter shows older items for the first time and marks none.
-  const known = new Set();
-  let arrivals = false;
-
-  async function api(path, options) {
-    const response = await fetch(path, Object.assign({ credentials: "same-origin", cache: "no-store" }, options || {}));
-    if (response.status === 401) { showLocked(); throw new Error("locked"); }
-    if (!response.ok) throw new Error("request failed: " + response.status);
-    return response.json();
+  function icon(name) {
+    const node = new DOMParser().parseFromString('<svg xmlns="' + NS + '" class="i" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || "") + "</svg>", "image/svg+xml").documentElement;
+    return document.importNode(node, true);
   }
 
+  const KINDS = ["note", "meeting", "dictation", "clip"];
+  const KIND_NAMES = { dictation: "Dictations", note: "Notes", meeting: "Meetings", clip: "Clips" };
+  const KIND_ONE = { dictation: "Dictation", note: "Note", meeting: "Meeting", clip: "Clip" };
+  const KIND_WHAT = {
+    note: "A voice note you saved in Zone. Your list of things to do.",
+    meeting: "A recorded meeting, with who said what.",
+    dictation: "Something you said that Zone turned into text.",
+    clip: "Text you sent from the phone to this computer on purpose.",
+  };
+  // Where a dictation was spoken, and how a clip was sent: a short name and what it means.
+  const SOURCES = {
+    keyboard: ["Keyboard", "Spoken into another app with the Zone keyboard"],
+    app: ["In Zone", "Dictated inside the Zone app"],
+    note: ["Note recording", "The recording behind a voice note"],
+    remote: ["Remote", "Sent from Zone to another device"],
+    clipboard: ["Clipboard", "Copied on the phone and sent here"],
+    share: ["Shared", "Shared to Zone from another app"],
+    shortcut: ["Shortcut", "Sent by a shortcut"],
+    typed: ["Typed", "Typed in Zone and sent here"],
+  };
+  const sourceName = (s) => (SOURCES[s] ? SOURCES[s][0] : s);
+  const ACCENT_NAMES = { violet: "Violet", ice: "Ice", ember: "Ember", mint: "Mint", rose: "Rose" };
+  const ACCENT_HEX = { violet: "#9b7dff", ice: "#8ee8ff", ember: "#ff9a6b", mint: "#a9dec4", rose: "#f2b8cf" };
+
+  const store = {
+    get(key, fallback) { try { return localStorage.getItem("zone." + key) || fallback; } catch (_) { return fallback; } },
+    set(key, value) { try { if (value) localStorage.setItem("zone." + key, value); else localStorage.removeItem("zone." + key); } catch (_) { /* private windows */ } },
+  };
+  // What is on screen: the route, the status, the items drawn (by id), the selection.
+  const R = { view: "home", arg: "", p: {} };
+  const S = { status: null, revision: null, phone: store.get("phone", ""), items: new Map(), sel: new Set(), cur: null, known: new Set(), arrivals: false, scope: null };
+  let seq = 0;
+
+  async function api(path, body) {
+    const options = { credentials: "same-origin", cache: "no-store" };
+    if (body !== undefined) { options.method = "POST"; options.headers = { "Content-Type": "application/json" }; options.body = JSON.stringify(body); }
+    const response = await fetch(path, options);
+    if (response.status === 401) { showLocked(); throw new Error("locked"); }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "request failed: " + response.status);
+    return data;
+  }
   function showLocked() {
     document.body.textContent = "";
-    const box = el("main", "empty locked");
-    const code = el("code", null, "zone open");
-    const p = el("p");
-    p.append("Run ", code, " in a terminal, or choose History in Zone for Mac. Either opens this page with the key that unlocks it in this browser.");
-    const mark = el("div", "mark");
-    mark.append("zone", el("span", "dot"));
-    box.append(mark, el("h2", null, "This page is locked."), p);
-    document.body.append(box);
+    const p = h("p", null, "Run ", h("code", null, "zone open"), " in a terminal, or choose History in Zone for Mac. Either opens this page with the key that unlocks it in this browser.");
+    document.body.append(h("main", { class: "locked" }, h("div", { class: "mark" }, "zone", h("span", { class: "dot" })), h("h2", null, "This page is locked."), p));
+  }
+  // Query for the API: the given filters plus the phone chosen in the bar.
+  function qs(params) {
+    const out = new URLSearchParams();
+    for (const key in params) if (params[key] !== undefined && params[key] !== null && params[key] !== "") out.set(key, params[key]);
+    if (S.phone) out.set("device", S.phone);
+    return out.toString();
   }
 
   // ---------------------------------------------------------------- words
 
-  const plural = (n, one, many) => n.toLocaleString() + " " + (n === 1 ? one : many);
+  const plural = (n, one, many) => Number(n).toLocaleString() + " " + (n === 1 ? one : many);
   const listing = (words) => (words.length < 2 ? words.join("") : words.slice(0, -1).join(", ") + " and " + words[words.length - 1]);
   function ago(seconds) {
     if (seconds === null || seconds === undefined) return "never";
@@ -547,494 +597,472 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
   const addDays = (day, n) => { const date = fromIso(day); date.setDate(date.getDate() + n); return iso(date); };
   const daysBetween = (a, b) => Math.round((fromIso(b) - fromIso(a)) / 86400000);
   const clock = (rfc) => new Date(rfc).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const hourName = (hour) => new Date(2026, 0, 1, hour).toLocaleTimeString([], { hour: "numeric" });
   function longDate(day, withYear) {
     const options = { weekday: "long", month: "long", day: "numeric" };
     if (withYear) options.year = "numeric";
     return fromIso(day).toLocaleDateString([], options);
   }
   function shortDate(day) {
-    const options = { month: "long", day: "numeric" };
+    const options = { month: "short", day: "numeric" };
     if (fromIso(day).getFullYear() !== new Date().getFullYear()) options.year = "numeric";
     return fromIso(day).toLocaleDateString([], options);
   }
-  // A day's heading: Today, Yesterday, a weekday this week, or the date.
   function dayName(day) {
     const back = daysBetween(day, todayIso());
     if (back === 0) return ["Today", longDate(day)];
     if (back === 1) return ["Yesterday", longDate(day)];
     if (back > 1 && back < 7) return [fromIso(day).toLocaleDateString([], { weekday: "long" }), shortDate(day)];
-    const sameYear = fromIso(day).getFullYear() === new Date().getFullYear();
-    return [longDate(day, !sameYear), ""];
+    return [longDate(day, fromIso(day).getFullYear() !== new Date().getFullYear()), ""];
   }
-  function rangeWords() {
-    if (!state.from && !state.to) return "";
-    if (state.range === "today") return "today";
-    if (state.range === "7") return "in the last 7 days";
-    if (state.range === "30") return "in the last 30 days";
-    if (state.from === state.to) return "on " + longDate(state.from, fromIso(state.from).getFullYear() !== new Date().getFullYear());
-    return "from " + span(state.from, state.to);
+  // When, for a list that is not grouped by day: 2:14 PM, Yesterday 2:14 PM, Mon 2:14 PM, Nov 3.
+  function whenShort(item) {
+    const back = daysBetween(item.day, todayIso());
+    const time = clock(item.rfc3339);
+    if (back <= 0) return time;
+    if (back === 1) return "Yesterday " + time;
+    if (back < 7) return fromIso(item.day).toLocaleDateString([], { weekday: "short" }) + " " + time;
+    return shortDate(item.day);
   }
   function span(from, to) {
     const a = fromIso(from), b = fromIso(to);
     if (a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()) return shortDate(from) + " to " + b.getDate();
     return shortDate(from) + " to " + shortDate(to);
   }
-
-  // ---------------------------------------------------------------- the wave
-
-  // The voice as one wave flowing right to left, mirrored about a center line, as in the Mac
-  // app's header. It lies flat as a hairline until something arrives, then wakes for a moment.
-  const wave = { canvas: $("wave"), energy: 0, target: 0, until: 0, raf: 0, last: 0 };
-  function voice(t) {
-    const phrase = Math.max(0, Math.sin(t * 0.83) * 0.75 + Math.sin(t * 0.31 + 1.7) * 0.45);
-    const syllable = 0.55 + 0.45 * Math.sin(t * 6.1 + Math.sin(t * 1.3) * 1.5);
-    const texture = 0.8 + 0.2 * Math.sin(t * 17.3 + 0.6);
-    return Math.min(1, Math.max(0, phrase * syllable * texture));
-  }
-  function drawWave(time) {
-    const canvas = wave.canvas;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
-    if (!w || !h) return;
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, w, h);
-    const color = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#9b7dff";
-    const mid = h / 2, amplitude = h / 2 - dpr, count = Math.max(24, Math.round(canvas.clientWidth / 7));
-    const interval = 0.05, phase = (time / interval) % 1, newest = Math.floor(time / interval) * interval;
-    const step = w / (count - 2);
-    const top = [];
-    for (let i = 0; i < count; i++) {
-      const value = voice(newest - (count - 1 - i) * interval) * wave.energy;
-      const entry = i === count - 1 ? Math.max(phase, 0.15) : 1;
-      top.push([(i - 0.5 - phase) * step, mid - Math.max(0.75 * dpr, Math.pow(value, 0.62) * amplitude * entry)]);
-    }
-    const bottom = top.slice().reverse().map(([x, y]) => [x, 2 * mid - y]);
-    const path = (points, move) => {
-      if (move) ctx.moveTo(points[0][0], points[0][1]); else ctx.lineTo(points[0][0], points[0][1]);
-      for (let i = 0; i < points.length - 1; i++) {
-        const p0 = points[Math.max(i - 1, 0)], p1 = points[i], p2 = points[i + 1], p3 = points[Math.min(i + 2, points.length - 1)];
-        ctx.bezierCurveTo(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6, p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6, p2[0], p2[1]);
-      }
-    };
-    // Pale at the center line and deeper toward the reaches, as the Mac draws it.
-    const rgb = (color.match(/[0-9a-f]{2}/gi) || ["9b", "7d", "ff"]).slice(0, 3).map((x) => parseInt(x, 16)).join(", ");
-    const gradient = ctx.createLinearGradient(0, 0, 0, h);
-    [[0, 1], [0.32, 0.85], [0.5, 0.18], [0.68, 0.85], [1, 1]].forEach(([at, alpha]) => gradient.addColorStop(at, "rgba(" + rgb + ", " + alpha + ")"));
-    ctx.beginPath(); path(top, true); path(bottom, false); ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
-    ctx.globalAlpha = 0.9;
-    ctx.beginPath(); path(top, true); path(bottom, true);
-    ctx.strokeStyle = color; ctx.lineWidth = 1.25 * dpr; ctx.lineJoin = "round"; ctx.lineCap = "round";
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-  function waveFrame(now) {
-    wave.raf = 0;
-    const dt = Math.min(0.05, wave.last ? (now - wave.last) / 1000 : 1 / 60);
-    wave.last = now;
-    if (now > wave.until) wave.target = 0;
-    wave.energy += (wave.target - wave.energy) * (1 - Math.exp(-dt / 0.35));
-    drawWave(now / 1000);
-    if (wave.target > 0 || wave.energy > 0.01) wave.raf = requestAnimationFrame(waveFrame);
-    else { wave.energy = 0; wave.last = 0; drawWave(now / 1000); }
-  }
-  function wake(seconds) {
-    if (reduceMotion.matches) {
-      // Held still: one frame of the wave, then flat again.
-      wave.energy = 1; drawWave(12);
-      clearTimeout(wake.timer);
-      wake.timer = setTimeout(() => { wave.energy = 0; drawWave(12); }, seconds * 1000);
-      return;
-    }
-    wave.target = 1;
-    wave.until = performance.now() + seconds * 1000;
-    if (!wave.raf) wave.raf = requestAnimationFrame(waveFrame);
-  }
-  window.addEventListener("resize", () => { if (!wave.raf) drawWave(12); });
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (!wave.raf) drawWave(12); });
-
-  // ---------------------------------------------------------------- the rail
-
-  function choice(label, count, pressed, onClick) {
-    const button = el("button", "choice");
-    button.type = "button";
-    button.setAttribute("aria-pressed", pressed ? "true" : "false");
-    button.append(el("span", null, label));
-    if (count !== null) button.append(el("span", "n", count.toLocaleString()));
-    button.addEventListener("click", onClick);
-    return button;
-  }
-  const showsSources = () => state.kinds.size === 0 || state.kinds.has("dictation");
-
-  function renderStatus() {
-    const phones = status.phones;
-    const light = $("light");
-    light.className = "light" + (phones.length ? "" : " off");
-    const text = $("deviceText");
-    text.textContent = "";
-    if (!phones.length) {
-      text.append("No phone paired");
-    } else {
-      const newest = phones.slice().sort((a, b) => (a.last_sync_age_s ?? 1e12) - (b.last_sync_age_s ?? 1e12))[0];
-      text.append(el("b", null, newest.name || "iPhone"), ", synced " + ago(newest.last_sync_age_s));
-      if (phones.length > 1) text.append(", and " + (phones.length - 1) + " more");
-    }
-    $("device").setAttribute("aria-label", text.textContent + ". Show paired phones");
-
-    const kinds = $("kinds");
-    kinds.textContent = "";
-    kinds.append(choice("All", status.items.total, state.kinds.size === 0, () => { state.kinds.clear(); state.sources.clear(); changed(); }));
-    // Clips (text sent from the phone on purpose) get a row once there is one.
-    for (const kind of ALWAYS_SHOWN.concat(Object.keys(status.items.by_kind).filter((k) => !ALWAYS_SHOWN.includes(k)))) {
-      const count = status.items.by_kind[kind] || 0;
-      if (!count && !ALWAYS_SHOWN.includes(kind)) continue;
-      kinds.append(choice(KIND_NAMES[kind] || kind, count, state.kinds.has(kind), () => {
-        if (state.kinds.has(kind)) state.kinds.delete(kind); else state.kinds.add(kind);
-        if (!showsSources()) state.sources.clear();
-        changed();
-      }));
-    }
-    const sources = $("sources");
-    sources.textContent = "";
-    const names = Object.keys(status.items.dictations_by_source);
-    $("sourcesGroup").hidden = !showsSources() || names.length < 2;
-    // In a narrow window the sources wait until dictations are chosen, to keep the list near.
-    $("sourcesGroup").classList.toggle("optional", !state.kinds.has("dictation") && !state.sources.size);
-    for (const source of names) {
-      sources.append(choice(SOURCE_NAMES[source] || source, status.items.dictations_by_source[source], state.sources.has(source), () => {
-        if (state.sources.has(source)) state.sources.delete(source); else state.sources.add(source);
-        changed();
-      }));
-    }
-
-    const colophon = $("colophon");
-    colophon.textContent = "";
-    if (status.backup_folder) {
-      const watch = status.backup_folder_state || {};
-      const said = watch.state === "waiting" ? watch.message
-        : watch.state === "error" ? "The backup folder cannot be read. Run zone doctor."
-        : "Backup folder read " + ago(status.last_sync.backup_age_s) + ".";
-      colophon.append(el("p", null, said));
-    }
-    const computer = status.computer || {};
-    colophon.append(el("p", null, plural(status.items.total, "item", "items") + " kept on " + (computer.name || "this computer") + ", in zone " + (computer.version || "") + ". This page loads nothing from the internet."));
-    renderPhones();
-  }
-
-  function renderPhones() {
-    const box = $("phones");
-    box.textContent = "";
-    if (!status || !status.phones.length) {
-      box.append(el("div", "phone", "None yet"));
-      return;
-    }
-    for (const phone of status.phones) {
-      const row = el("div", "phone");
-      const left = el("div");
-      left.append(el("div", null, phone.name || "iPhone"));
-      const detail = [phone.app ? "Zone " + phone.app : null, phone.last_path ? phone.last_path + " connection" : null].filter(Boolean).join(", ");
-      if (detail) left.append(el("small", null, detail));
-      const right = el("div", "right");
-      right.append(el("div", null, "synced " + ago(phone.last_sync_age_s)), el("div", null, plural(phone.items_received, "item", "items") + " received"));
-      row.append(left, right);
-      box.append(row);
+  async function copyText(value) {
+    try { await navigator.clipboard.writeText(value); }
+    catch (_) {
+      const area = h("textarea", { value });
+      document.body.append(area); area.select(); document.execCommand("copy"); area.remove();
     }
   }
 
-  // ---------------------------------------------------------------- the list
+  // ---------------------------------------------------------------- routes
+
+  // Every view and filter is in the address after the #, so a link opens exactly it.
+  // See docs/page-routes.md.
+  function parseRoute() {
+    const raw = location.hash.replace(/^#\/?/, "");
+    const cut = raw.indexOf("?");
+    const path = cut < 0 ? raw : raw.slice(0, cut);
+    const parts = path.split("/").filter(Boolean);
+    R.view = parts[0] || "home";
+    R.arg = parts.slice(1).map(decodeURIComponent).join("/");
+    R.p = Object.fromEntries(new URLSearchParams(cut < 0 ? "" : raw.slice(cut + 1)));
+    if ("phone" in R.p) { S.phone = R.p.phone === "all" ? "" : R.p.phone; store.set("phone", S.phone); delete R.p.phone; }
+  }
+  function href(view, arg, params) {
+    const out = new URLSearchParams();
+    for (const key in params || {}) if (params[key]) out.set(key, params[key]);
+    const query = out.toString();
+    return "#/" + (view === "home" ? "" : view) + (arg ? "/" + encodeURIComponent(arg) : "") + (query ? "?" + query : "");
+  }
+  function go(view, arg, params, replace) {
+    const target = href(view, arg, params);
+    if (replace) { history.replaceState(null, "", target); route(); } else if (location.hash === target || (target === "#/" && !location.hash)) route(); else location.hash = target;
+  }
+  const setP = (changes, replace) => go(R.view, R.arg, Object.assign({}, R.p, changes), replace);
+
+  const TABS = [["home", "Home", "home"], ["notes", "Notes", "note"], ["meetings", "Meetings", "meeting"], ["history", "History", "clock"], ["stats", "Stats", "stats"], ["settings", "Settings", "gear"]];
+  function renderTabs() {
+    const current = { meeting: "meetings", item: "history", pair: "home" }[R.view] || R.view;
+    $("tabs").replaceChildren(...TABS.map(([view, name, glyph]) => {
+      const count = view === "notes" && S.status ? S.status.items.notes_open : null;
+      return h("a", { class: "tab", href: href(view), "aria-current": current === view ? "page" : null, title: view === "notes" && count !== null ? plural(count, "open note", "open notes") : null },
+        icon(glyph), h("span", { class: view === "settings" || view === "stats" ? "navword" : null }, name), count ? h("span", { class: "n" }, count.toLocaleString()) : null);
+    }));
+  }
+
+  const VIEWS = {};
+  async function route() {
+    parseRoute();
+    const my = ++seq;
+    const view = VIEWS[R.view] ? R.view : "home";
+    renderTabs();
+    if (R.view !== "history" && document.activeElement !== $("q")) $("q").value = "";
+    if (R.view === "history" && document.activeElement !== $("q")) $("q").value = R.p.q || "";
+    let node;
+    try { node = await VIEWS[view](my); }
+    catch (error) {
+      if (error.message === "locked" || my !== seq) return;
+      node = h("div", { class: "empty" }, h("h3", null, "Could not load this."), h("p", null, String(error.message || error) + ". Is zone still running?"));
+    }
+    if (my !== seq || !node) return;
+    // A refresh keeps each panel where it was scrolled.
+    const kept = {};
+    document.querySelectorAll("[data-scroll]").forEach((el) => { kept[el.dataset.scroll] = el.scrollTop; });
+    const fresh = S.lastView !== R.view + "/" + R.arg;
+    $("view").replaceChildren(node);
+    document.querySelectorAll("[data-scroll]").forEach((el) => { if (kept[el.dataset.scroll]) el.scrollTop = kept[el.dataset.scroll]; });
+    if (fresh) { window.scrollTo(0, 0); clearSelection(); }
+    S.lastView = R.view + "/" + R.arg;
+    S.arrivals = false;
+    $("fresh").hidden = true;
+    if (S.cur) setCursor(document.querySelector('.row[data-id="' + S.cur + '"]'), true);
+    paintSelection();
+    if (R.view === "pair") openPair();
+  }
+  window.addEventListener("hashchange", route);
+
+  // ---------------------------------------------------------------- one item in a list
 
   function highlight(node, snippet) {
     // Matches arrive wrapped in [brackets]. Everything is added as text, never as HTML.
-    const parts = snippet.split(/(\[[^\[\]]*\])/);
-    for (const part of parts) {
-      if (part.length > 1 && part.startsWith("[") && part.endsWith("]")) node.append(el("mark", null, part.slice(1, -1)));
-      else if (part) node.append(document.createTextNode(part));
+    for (const part of snippet.split(/(\[[^\[\]]*\])/)) {
+      if (part.length > 1 && part.startsWith("[") && part.endsWith("]")) node.append(h("mark", null, part.slice(1, -1)));
+      else if (part) node.append(part);
     }
   }
-
-  // A meeting's transcript is one line per turn, "Name: words". The name is set in bold.
-  function turns(node, text) {
-    node.textContent = "";
-    for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
-      const p = el("p");
-      const match = line.match(/^([^:\n]{1,40}):\s+(.*)$/);
-      if (match) p.append(el("b", null, match[1]), match[2]); else p.append(line);
-      node.append(p);
-    }
+  async function wholeText(item) {
+    if (item.truncated) { Object.assign(item, await api("/api/item?id=" + encodeURIComponent(item.id))); }
+    return item.text;
   }
-
-  function renderItem(item, arrived) {
-    const entry = el("li", "entry" + (arrived ? " arrived" : ""));
-    const when = clock(item.rfc3339);
-    const time = el("time", null, when);
-    time.dateTime = item.rfc3339;
-    time.title = item.full_time;
-    entry.append(time);
-    const body = el("div", "body");
-    if (item.title) body.append(el("h3", null, item.title));
-
-    const meeting = item.kind === "meeting" && !item.snippet;
-    const text = el(meeting ? "div" : "p", meeting ? "turns" : "text");
-    let full = item.truncated ? null : item.text;
-    const long = item.truncated || item.text.length > 700 || item.text.split("\n").length > (meeting ? 7 : 8);
+  function kindTag(item) {
+    return h("span", { class: "kind k-" + item.kind, title: KIND_WHAT[item.kind] || null }, KIND_ONE[item.kind] || item.kind);
+  }
+  // options: lines (how many to show before "more"), when ("time" under a day heading, else
+  // short date and time), big (the working lists: larger text).
+  function row(item, options) {
+    const o = options || {};
+    S.items.set(item.id, item);
+    const arrived = S.arrivals && !S.known.has(item.id);
+    S.known.add(item.id);
+    const node = h("article", { class: "row k-" + item.kind + (item.done ? " done" : "") + (o.big ? " big" : "") + (arrived ? " arrived" : ""), "data-id": item.id, tabindex: "-1" });
+    const lead = h("div", { class: "lead" });
+    if (item.kind === "note") {
+      lead.append(h("button", { class: "check", type: "button", role: "checkbox", "aria-checked": item.done ? "true" : "false", "aria-label": "Done", title: "Mark done (x)", onclick: (event) => { event.stopPropagation(); setDone([item.id], !item.done); } }, icon("check")));
+    } else lead.append(icon(item.kind in ICONS ? item.kind : "dictation"));
+    const body = h("div", { class: "body" });
+    const open = item.kind === "meeting" ? href("meeting", item.id) : href("item", item.id);
+    if (item.kind === "meeting") body.append(h("h3", null, h("a", { href: open }, item.title || "Meeting")));
+    const lines = o.lines || 4;
+    const text = h("p", { class: "text clamp l" + lines });
     if (item.snippet) highlight(text, item.snippet);
-    else if (meeting) turns(text, item.text);
-    else text.textContent = item.text;
-    if (long && !item.snippet) text.classList.add("clamp");
+    else text.textContent = item.kind === "meeting" ? (item.first_line || item.text) : item.text;
     body.append(text);
-
-    async function whole() {
-      if (full === null) full = (await api("/api/item?id=" + encodeURIComponent(item.id))).text;
-      return full;
-    }
-    // A snippet that already is the whole text needs no button.
-    const partial = item.snippet && (item.truncated || item.snippet.replace(/[\[\]]/g, "") !== item.text);
-    if (long || partial) {
-      const more = el("button", "textbutton more", item.kind === "meeting" ? "Show the whole meeting" : "Show all " + plural(item.words, "word", "words"));
-      more.type = "button";
-      more.addEventListener("click", async () => {
-        const all = await whole();
-        if (item.kind === "meeting") {
-          const box = el("div", "turns");
-          turns(box, all);
-          text.replaceWith(box);
-        } else {
-          text.textContent = all;
-          text.classList.remove("clamp");
-        }
+    if (item.kind === "meeting" && item.speakers && item.speakers.length) body.append(h("div", null, item.speakers.slice(0, 6).map((name) => h("span", { class: "who-chip" }, name))));
+    const meta = h("div", { class: "meta" });
+    if (o.kind !== false) meta.append(kindTag(item));
+    // A note's source would only repeat its kind.
+    if (item.source && item.kind !== "note") meta.append(h("span", { class: "src", title: SOURCES[item.source] ? SOURCES[item.source][1] : null }, sourceName(item.source)));
+    const time = h("time", { datetime: item.rfc3339, title: item.full_time }, o.when === "time" ? clock(item.rfc3339) : whenShort(item));
+    meta.append(h("span", null, time));
+    const length = duration(item.duration_s);
+    if (length && item.kind !== "clip") meta.append(h("span", null, length));
+    if (item.kind === "meeting" && item.turn_count) meta.append(h("span", null, plural(item.turn_count, "turn", "turns")));
+    else if (item.words && item.kind !== "note") meta.append(h("span", null, plural(item.words, "word", "words")));
+    if (item.phone && S.status && S.status.phones.length > 1) meta.append(h("span", null, item.phone));
+    if (item.done && item.kind !== "note") meta.append(h("span", { class: "donetag" }, "Done"));
+    body.append(meta);
+    // Longer than what is shown: a note opens in place (it is the work list), the rest open their page.
+    requestAnimationFrame(() => {
+      if (o.more === false || item.kind === "meeting" || !(text.scrollHeight > text.clientHeight + 2 || item.truncated || item.snippet)) return;
+      const more = btn("textbutton", item.snippet ? "Show it all" : "Show all " + plural(item.words, "word", "words"), async (event) => {
+        event.stopPropagation();
+        text.textContent = await wholeText(item);
+        text.classList.remove("clamp");
         more.remove();
       });
-      body.append(more);
-    }
-
-    const meta = el("div", "meta");
-    const info = el("span", "info");
-    const parts = el("span", "parts");
-    info.append(parts);
-    const kind = el("span", "kind");
-    if (ICONS[item.kind]) kind.append(svg(ICONS[item.kind]));
-    kind.append(KIND_ONE[item.kind] || item.kind);
-    const mtime = el("span", "mtime", when);
-    mtime.setAttribute("aria-hidden", "true");
-    parts.append(mtime, kind);
-    // A voice note's source says the same as its kind.
-    if (item.source && !(item.kind === "note" && item.source === "note")) parts.append(el("span", null, SOURCE_NAMES[item.source] || item.source));
-    const length = duration(item.duration_s);
-    if (length && item.kind !== "clip") parts.append(el("span", null, length));
-    if (item.words) parts.append(el("span", null, plural(item.words, "word", "words")));
-    meta.append(info);
-    const copy = el("button", "copy", "Copy");
-    copy.type = "button";
-    copy.setAttribute("aria-label", "Copy the " + (KIND_ONE[item.kind] || item.kind).toLowerCase() + " from " + when);
-    meta.append(copy);
-    body.append(meta);
-    entry.append(body);
-
-    copy.addEventListener("click", async () => {
-      const value = (item.title ? item.title + "\n\n" : "") + (await whole());
-      try {
-        await navigator.clipboard.writeText(value);
-      } catch (_) {
-        const area = el("textarea");
-        area.value = value;
-        document.body.append(area);
-        area.select();
-        document.execCommand("copy");
-        area.remove();
-      }
-      copy.textContent = "Copied";
-      copy.classList.add("done");
-      clearTimeout(copy.timer);
-      copy.timer = setTimeout(() => { copy.textContent = "Copy"; copy.classList.remove("done"); }, 1600);
+      meta.before(more);
     });
-    return entry;
+    const acts = h("div", { class: "acts" },
+      btn("iconbtn" + (item.done ? " on" : ""), icon("check"), () => setDone([item.id], !item.done), { title: item.done ? "Not done (x)" : "Done (x)", "aria-label": item.done ? "Mark not done" : "Mark done" }),
+      btn("iconbtn", icon("copy"), () => copyItems([item.id]), { title: "Copy (c)", "aria-label": "Copy" }),
+      btn("iconbtn", icon("out"), () => openExport({ ids: [item.id] }), { title: "Export (e)", "aria-label": "Export" }),
+      btn("iconbtn rm", icon("trash"), () => removeItems([item.id]), { title: "Remove from this computer. Nothing is deleted on your iPhone.", "aria-label": "Remove from this computer" }),
+      btn("iconbtn", icon("pick"), () => toggleSelect(item.id), { title: "Select", "aria-label": "Select", class: "iconbtn pickbtn" }));
+    node.append(lead, body, acts);
+    node.addEventListener("click", (event) => {
+      if (event.target.closest("button, a, input") || String(window.getSelection())) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || S.sel.size) { toggleSelect(item.id); return; }
+      setCursor(node, true);
+      if (item.kind === "meeting") location.hash = open;
+    });
+    node.addEventListener("dblclick", () => { if (item.kind !== "meeting") location.hash = open; });
+    return node;
   }
-
-  function title() {
-    if (state.q) return "“" + state.q + "”";
-    const kinds = KINDS.filter((k) => state.kinds.has(k)).concat([...state.kinds].filter((k) => !KINDS.includes(k)));
-    if (!kinds.length) return "Your library";
-    const names = kinds.map((k, i) => (i ? (KIND_NAMES[k] || k).toLowerCase() : KIND_NAMES[k] || k));
-    return listing(names);
+  function emptyBox(title, words, action) {
+    return h("div", { class: "empty" }, h("h3", null, title), h("p", null, words), action || null);
   }
+  const pairButton = (label) => btn("button primary", label || "Pair a phone", openPair);
 
-  function summarize(data) {
-    const summary = $("summary");
-    summary.textContent = "";
-    const parts = [];
-    if (state.q) {
-      parts.push(plural(data.total, "match", "matches"));
-      if (data.total > state.shown) parts.push("the newest " + state.shown.toLocaleString() + " shown");
-      if (data.total && data.matched === "prefix") parts.push("found by the beginnings of words");
-    } else {
-      const single = state.kinds.size === 1 ? [...state.kinds][0] : null;
-      parts.push(single ? plural(data.total, (KIND_ONE[single] || single).toLowerCase(), (KIND_NAMES[single] || single).toLowerCase()) : plural(data.total, "item", "items"));
+  // ---------------------------------------------------------------- done, copy, remove
+
+  let toastTimer = 0;
+  function toast(words, undo) {
+    const box = $("toast");
+    box.replaceChildren(words, undo ? btn(null, "Undo", () => { box.hidden = true; undo(); }) : "");
+    box.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { box.hidden = true; }, undo ? 8000 : 2600);
+  }
+  // After this page's own write: take the new revision quietly, so the list does not jump.
+  async function quietStatus() { await refreshStatus(true); }
+  async function setDone(ids, done, quiet) {
+    if (!ids.length) return;
+    try { await api("/api/done", { ids, done }); } catch (error) { toast("Could not save that. " + error.message); return; }
+    for (const id of ids) {
+      const item = S.items.get(id);
+      if (item) item.done = done;
+      document.querySelectorAll('.row[data-id="' + id + '"]').forEach((node) => {
+        node.classList.toggle("done", done);
+        const check = node.querySelector(".check");
+        if (check) check.setAttribute("aria-checked", done ? "true" : "false");
+        const act = node.querySelector(".acts .iconbtn");
+        if (act) { act.classList.toggle("on", done); act.title = done ? "Not done (x)" : "Done (x)"; }
+      });
     }
-    let sentence = parts.join(", ");
-    if (state.sources.size) sentence += " from " + listing([...state.sources].map((s) => (SOURCE_NAMES[s] || s).toLowerCase().replace(/^in zone$/, "Zone")));
-    const range = rangeWords();
-    if (range) sentence += " " + range;
-    summary.append(sentence + ".");
-    if (status && status.phones.length) {
-      const span = el("span", "device-inline", " " + (status.phones[0].name || "iPhone") + " synced " + ago(status.phones[0].last_sync_age_s) + ".");
-      summary.append(span);
-    }
+    await quietStatus();
+    document.querySelectorAll("[data-open-count]").forEach((node) => { if (!S.phone) node.textContent = plural(S.status.items.notes_open, "open", "open"); });
+    if (!quiet) toast(done ? plural(ids.length, "item", "items") + " marked done." : plural(ids.length, "item", "items") + " open again.", () => setDone(ids, !done, true));
   }
-
-  async function load(reset) {
-    if (state.loading && !reset) return;
-    const mine = ++request;
-    // Only the load the library's change asked for marks new items.
-    const marking = arrivals;
-    arrivals = false;
-    state.loading = true;
-    const params = new URLSearchParams();
-    if (state.q) params.set("q", state.q);
-    if (state.kinds.size) params.set("kinds", [...state.kinds].join(","));
-    if (state.sources.size) params.set("sources", [...state.sources].join(","));
-    if (state.from) params.set("start", state.from);
-    if (state.to) params.set("end", state.to);
-    if (!reset && state.cursor) params.set("cursor", state.cursor);
-    let data;
-    try {
-      data = await api("/api/items?" + params.toString());
-    } catch (error) {
-      if (mine === request) state.loading = false;
-      if (error.message !== "locked") {
-        $("summary").textContent = "Could not load your library. Is zone still running?";
-      }
+  async function copyItems(ids) {
+    if (!ids.length) return;
+    if (ids.length === 1 && S.items.get(ids[0])) {
+      const item = S.items.get(ids[0]);
+      if (item.kind === "meeting") { await copyText((await api("/api/export?" + qs({ ids: item.id, format: "txt" }))).content); }
+      else await copyText(await wholeText(item));
+      toast("Copied.");
       return;
     }
-    if (mine !== request) return;
-    const list = $("list");
-    if (reset) { list.textContent = ""; state.lastDay = null; state.shown = 0; }
-    $("title").textContent = title();
-    document.title = state.q || state.kinds.size ? title() + ", Zone" : "Zone";
-    let entries = list.querySelector("section.day:last-of-type ol.entries");
-    const seen = new Set();
-    for (const item of data.items) {
-      seen.add(item.id);
-      if (item.day !== state.lastDay) {
-        state.lastDay = item.day;
-        const section = el("section", "day");
-        const head = el("div", "dayHead");
-        const [name, date] = dayName(item.day);
-        const h2 = el("h2", null, name);
-        h2.id = "day-" + item.day;
-        section.setAttribute("aria-labelledby", h2.id);
-        head.append(h2);
-        if (date) head.append(el("span", "date", date));
-        if (data.day_counts && data.day_counts[item.day]) head.append(el("span", "count", plural(data.day_counts[item.day], "item", "items")));
-        entries = el("ol", "entries");
-        section.append(head, entries);
-        list.append(section);
+    const data = await api("/api/export?" + new URLSearchParams({ ids: ids.join(","), format: "md", order: "oldest" }));
+    await copyText(data.content);
+    toast(plural(data.items, "item", "items") + " copied as Markdown.");
+  }
+  async function removeItems(ids) {
+    if (!ids.length) return;
+    let result;
+    try { result = await api("/api/remove", { ids }); } catch (error) { toast("Could not remove that. " + error.message); return; }
+    for (const id of result.removed) { S.sel.delete(id); document.querySelectorAll('.row[data-id="' + id + '"]').forEach((node) => node.remove()); }
+    paintSelection();
+    await quietStatus();
+    if (R.view === "meeting" || R.view === "item") go(R.view === "meeting" ? "meetings" : "history");
+    toast("Removed from this computer. Still on your iPhone.", async () => { await api("/api/restore", { ids: result.removed }); await quietStatus(); route(); });
+  }
+
+  // ---------------------------------------------------------------- selection and the cursor
+
+  function toggleSelect(id) { if (S.sel.has(id)) S.sel.delete(id); else S.sel.add(id); paintSelection(); }
+  function clearSelection() { S.sel.clear(); paintSelection(); }
+  function paintSelection() {
+    document.querySelectorAll(".row").forEach((node) => node.classList.toggle("sel", S.sel.has(node.dataset.id)));
+    const bar = $("selbar");
+    bar.hidden = !S.sel.size;
+    if (!S.sel.size) return;
+    const ids = [...S.sel];
+    bar.replaceChildren(h("span", null, plural(ids.length, "selected", "selected")),
+      btn(null, "Done", () => { setDone(ids, true); clearSelection(); }),
+      btn(null, "Copy as Markdown", () => copyItems(ids.length === 1 ? ids.concat([""]).filter(Boolean) : ids).then(clearSelection)),
+      btn(null, "Export", () => openExport({ ids })),
+      btn(null, "Remove", () => removeItems(ids)),
+      btn(null, "Clear", clearSelection));
+  }
+  function setCursor(node, quiet) {
+    document.querySelectorAll(".row.cur").forEach((old) => old.classList.remove("cur"));
+    if (!node) { S.cur = null; return; }
+    node.classList.add("cur");
+    S.cur = node.dataset.id;
+    if (!quiet) node.scrollIntoView({ block: "nearest" });
+  }
+  function moveCursor(step) {
+    const rows = [...document.querySelectorAll("#view .row")];
+    if (!rows.length) return;
+    const at = rows.findIndex((node) => node.classList.contains("cur"));
+    setCursor(rows[Math.max(0, Math.min(rows.length - 1, at < 0 ? (step > 0 ? 0 : rows.length - 1) : at + step))]);
+  }
+  // What an action from the keyboard applies to: the selection, else the item under the cursor.
+  const targets = () => (S.sel.size ? [...S.sel] : S.cur && document.querySelector('.row.cur') ? [S.cur] : []);
+
+  // ---------------------------------------------------------------- home
+
+  function svgBars(values, options) {
+    // Bars drawn from numbers only. options: classes (per bar, or a list of [class, n] stacks), titles.
+    const o = options || {};
+    const width = 300, height = 60, gap = 1.5, bar = (width - gap * (values.length - 1)) / values.length;
+    const totals = values.map((v) => (Array.isArray(v) ? v.reduce((sum, part) => sum + part[1], 0) : v));
+    const top = Math.max(1, ...totals);
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("role", "img");
+    if (o.label) svg.setAttribute("aria-label", o.label);
+    values.forEach((value, index) => {
+      const x = index * (bar + gap);
+      const group = document.createElementNS(NS, "g");
+      if (o.titles) { const title = document.createElementNS(NS, "title"); title.textContent = o.titles[index]; group.append(title); }
+      const rect = (y, hgt, cls) => { const r = document.createElementNS(NS, "rect"); r.setAttribute("x", x.toFixed(2)); r.setAttribute("y", y.toFixed(2)); r.setAttribute("width", bar.toFixed(2)); r.setAttribute("height", Math.max(0, hgt).toFixed(2)); r.setAttribute("rx", "1"); r.setAttribute("class", cls); group.append(r); };
+      rect(0, height, "f-none");
+      group.lastChild.setAttribute("opacity", totals[index] ? "0" : "0.35");
+      if (!totals[index]) { group.lastChild.setAttribute("y", String(height - 2)); group.lastChild.setAttribute("height", "2"); }
+      let y = height;
+      for (const [cls, n] of Array.isArray(value) ? value : [[o.cls || "bar-f", value]]) {
+        const hgt = (n / top) * (height - 2);
+        if (n) { y -= hgt; rect(y, hgt, cls); }
       }
-      entries.append(renderItem(item, marking && !known.has(item.id)));
+      svg.append(group);
+    });
+    return svg;
+  }
+  const figure = (label, big, small, cls) => h("div", { class: "fig" + (cls ? " " + cls : "") }, h("small", null, label), h("b", null, big), small ? h("span", null, small) : null);
+  function dayTitles(days) { return days.map((d) => longDate(d.day) + ": " + plural(d.items, "item", "items") + ", " + plural(d.words, "word", "words")); }
+  function stacks(day) { return ["dictation", "note", "meeting", "clip"].map((k) => ["f-" + k, (day.kinds && day.kinds[k]) || 0]); }
+
+  function notesOrder() { return R.p.order || store.get("notesOrder", "newest"); }
+  function orderSeg(apply) {
+    const now = notesOrder();
+    return h("div", { class: "seg", role: "group", "aria-label": "Order" }, ["newest", "oldest"].map((o) => btn(null, o === "newest" ? "Newest" : "Oldest", () => { store.set("notesOrder", o); apply(o); }, { "aria-pressed": String(now === o), title: o === "oldest" ? "Oldest first: work forward from the back of the list" : "Newest first" })));
+  }
+
+  VIEWS.pair = VIEWS.home = async function () {
+    if (!S.status) await refreshStatus(true);
+    const st = S.status;
+    if (st && !st.items.total && !st.items.removed) {
+      return h("div", { class: "welcome" }, h("h1", null, st.phones.length ? "Nothing here yet." : "Bring your words here."),
+        h("ol", null,
+          h("li", null, st.phones.length ? "Your phone is paired. Open Zone on it, and what you have said starts to arrive." : "Pair your iPhone: press the button, then scan the code in Zone under Settings, Computers."),
+          h("li", null, "Notes you save in Zone become the list on the left of this page. Tick them off as you go."),
+          h("li", null, "Meetings you record get their own column, with who said what."),
+          h("li", null, "No network at all? ", h("a", { class: "textbutton", href: "/flash" }, "Flash"), " sends everything through this computer's camera. Or have zone read a Zone backup folder: ", h("code", null, "zone backup-folder <path>"), ".")),
+        st.phones.length ? null : pairButton());
     }
-    for (const id of seen) known.add(id);
-    state.shown += data.items.length;
-    state.total = data.total;
-    state.cursor = data.next_cursor;
-    $("more").hidden = !data.next_cursor;
-    summarize(data);
-    if (!data.total) {
-      const empty = el("div", "empty");
-      const filtered = state.q || state.kinds.size || state.sources.size || state.from || state.to;
-      if (filtered) {
-        empty.append(el("h2", null, "Nothing matches."), el("p", null, "Try other words, another kind, or a wider range of dates."));
-        const button = el("button", "button", "Show everything");
-        button.type = "button";
-        button.addEventListener("click", clearAll);
-        empty.append(button);
-      } else {
-        empty.append(el("h2", null, "Nothing here yet."), el("p", null, "Pair your iPhone and everything you dictate in Zone will appear here, on this computer only."));
-        const button = el("button", "button primary", "Pair a phone");
-        button.type = "button";
-        button.addEventListener("click", openPair);
-        empty.append(button);
-      }
-      list.append(empty);
+    const order = notesOrder();
+    const [notes, meetings, lately, clips, stats] = await Promise.all([
+      api("/api/items?" + qs({ kinds: "note", done: "open", order, limit: 80 })),
+      api("/api/items?" + qs({ kinds: "meeting", limit: 20 })),
+      api("/api/items?" + qs({ kinds: "dictation", limit: 25 })),
+      api("/api/items?" + qs({ kinds: "clip", limit: 3 })),
+      api("/api/stats?" + qs({})),
+    ]);
+    S.scope = { params: { kinds: "note", done: "open", order }, label: "open notes" };
+    const strip = h("a", { class: "strip", href: href("stats"), title: "Open statistics", "aria-label": "Statistics" },
+      figure("Today", plural(stats.today.items, "item", "items"), plural(stats.today.words, "word", "words")),
+      figure("Last 7 days", plural(stats.week.items, "item", "items"), plural(stats.week.words, "word", "words")),
+      figure("Spoken, 7 days", duration(stats.week.seconds) || "0 s", "recorded time", "opt"),
+      figure("Busiest hour", stats.busiest_hour === null ? "None yet" : hourName(stats.busiest_hour), stats.streak_days ? plural(stats.streak_days, "day", "days") + " in a row" : "of the day", "opt"),
+      h("div", { class: "fig chart" }, h("small", null, "Each day, last 30 days"), svgBars(stats.days.map(stacks), { titles: dayTitles(stats.days), label: "Items per day for the last 30 days" })));
+
+    const notesPanel = h("section", { class: "panel kc-note", "aria-label": "Notes" },
+      h("header", null, h("h2", null, icon("note"), h("a", { href: href("notes"), class: "textbutton", title: "All notes (g n)" }, "Notes")),
+        h("span", { class: "n", "data-open-count": "1" }, plural(notes.counts.open, "open", "open")),
+        h("span", { class: "sp" }, orderSeg(() => route()), btn("iconbtn", icon("out"), () => openExport(S.scope), { title: "Export the open notes as a checklist", "aria-label": "Export notes" }))),
+      h("div", { class: "scroll", "data-scroll": "notes" },
+        notes.items.length ? notes.items.map((item) => row(item, { lines: 6, big: true, kind: false })) : emptyBox(notes.counts.all ? "All done." : "No notes yet.", notes.counts.all ? "Every note is ticked off. New ones land here as you save them in Zone." : "Save a voice note in Zone on your iPhone and it lands here, ready to tick off.", notes.counts.done ? h("a", { class: "button", href: href("notes", "", { show: "done" }) }, "See done notes") : null),
+        notes.next_cursor ? h("div", { class: "loadmore" }, h("a", { class: "button", href: href("notes") }, "All " + plural(notes.counts.open, "open note", "open notes"))) : null));
+
+    const meetingsPanel = h("section", { class: "panel kc-meeting", "aria-label": "Meetings" },
+      h("header", null, h("h2", null, icon("meeting"), h("a", { href: href("meetings"), class: "textbutton", title: "All meetings (g m)" }, "Meetings")), h("span", { class: "n" }, meetings.total.toLocaleString())),
+      h("div", { class: "scroll", "data-scroll": "meetings" },
+        meetings.items.length ? meetings.items.map((item) => row(item, { lines: 2, kind: false })) : emptyBox("No meetings yet.", "Record a meeting in Zone on your iPhone. Its transcript appears here, by speaker."),
+        meetings.next_cursor ? h("div", { class: "loadmore" }, h("a", { class: "button", href: href("meetings") }, "All " + plural(meetings.total, "meeting", "meetings"))) : null));
+
+    const latelyPanel = h("section", { class: "panel lately", "aria-label": "Said lately" },
+      h("header", null, h("h2", null, icon("dictation"), h("a", { href: href("history"), class: "textbutton", title: "The whole history (g a)" }, "Lately")), h("span", { class: "n" }, "dictations and clips")),
+      h("div", { class: "scroll", "data-scroll": "lately" },
+        clips.items.length ? [h("h3", { class: "sub kc-clip" }, icon("clip"), "Latest clip"), row(clips.items[0], { lines: 3, kind: false, more: false })] : null,
+        h("h3", { class: "sub kc-dictation" }, icon("dictation"), "Recent dictations"),
+        lately.items.length ? lately.items.map((item) => row(item, { lines: 2, kind: false, more: false })) : emptyBox("Nothing dictated yet.", "What you say with the Zone keyboard or in the app shows up here."),
+        h("div", { class: "loadmore" }, h("a", { class: "button", href: href("history") }, "Open the whole history"))));
+    return h("div", null, strip, h("div", { class: "home" }, notesPanel, meetingsPanel, latelyPanel));
+  };
+
+  // ---------------------------------------------------------------- notes and meetings
+
+  function pager(list, params, options) {
+    // Adds pages to `list` as its end comes into view.
+    let cursor = null, busy = false;
+    const more = btn("button", "Show more", () => load(), { hidden: true });
+    async function load() {
+      if (busy || !cursor) return;
+      busy = true;
+      try {
+        const data = await api("/api/items?" + qs(Object.assign({}, params, { cursor })));
+        options.add(data.items);
+        cursor = data.next_cursor; more.hidden = !cursor;
+      } finally { busy = false; }
     }
-    state.loading = false;
+    new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) load(); }, { rootMargin: "600px" }).observe(more);
+    return { more: h("div", { class: "loadmore" }, more), start(next) { cursor = next; more.hidden = !cursor; } };
   }
 
-  function clearAll() {
-    state.q = ""; $("q").value = "";
-    state.kinds.clear(); state.sources.clear();
-    pickRange("all");
-  }
-
-  function changed() {
-    if (status) renderStatus();
-    calendar.load();
-    load(true);
-  }
-
-  async function refreshStatus() {
-    let next;
-    try { next = await api("/api/status"); } catch (_) { return; }
-    const first = status === null;
-    const grew = status && next.items.total > status.items.total;
-    status = next;
-    renderStatus();
-    if (first) {
-      state.revision = next.revision;
-      drawWave(12);
-    } else if (next.revision !== state.revision) {
-      state.revision = next.revision;
-      if (grew) {
-        wake(4);
-        const light = $("light");
-        light.classList.remove("ping"); void light.offsetWidth; light.classList.add("ping");
-      }
-      calendar.load(true);
-      if (window.scrollY < 200 && !state.q) { arrivals = true; load(true); } else $("fresh").hidden = false;
+  VIEWS.notes = async function () {
+    const show = R.p.show || "open", order = notesOrder();
+    const params = { kinds: "note", done: show === "all" ? "" : show, order, limit: 100 };
+    const data = await api("/api/items?" + qs(params));
+    S.scope = { params, label: show === "all" ? "all notes" : show + " notes" };
+    document.title = "Notes, Zone";
+    const list = h("div", { class: "one" }, data.items.map((item) => row(item, { lines: 10, big: true, kind: false })));
+    const pages = pager(list, params, { add: (items) => list.append(...items.map((item) => row(item, { lines: 10, big: true, kind: false }))) });
+    pages.start(data.next_cursor);
+    if (!data.items.length) {
+      list.append(show === "open" ? emptyBox(data.counts.all ? "All done." : "No notes yet.", data.counts.all ? "Nothing is open. Notes you tick off move to Done." : "Save a voice note in Zone on your iPhone and it lands here. This is your list: tick things off as you do them.", data.counts.all ? null : (S.status && S.status.phones.length ? null : pairButton()))
+        : emptyBox("Nothing here.", show === "done" ? "Notes you tick off, and ones an agent has worked through, show up here." : "No notes yet."));
     }
-  }
+    return h("div", null,
+      h("div", { class: "vhead" }, h("h1", null, "Notes"), h("span", { class: "sub" }, plural(data.counts.open, "open", "open") + ", " + data.counts.done.toLocaleString() + " done"),
+        h("div", { class: "seg", role: "group", "aria-label": "Show" }, [["open", "Open"], ["done", "Done"], ["all", "All"]].map(([value, name]) => btn(null, name, () => setP({ show: value === "open" ? "" : value }), { "aria-pressed": String(show === value) }))),
+        orderSeg((o) => setP({ order: "" })),
+        h("span", { class: "sp" }), btn("button", [icon("out"), "Export"], () => openExport(S.scope), { title: "Export these notes as a checklist (e)" })),
+      h("p", { class: "note-line" }, "Done is the same mark your AI agents set when they have worked through an item, so they and this page agree."),
+      list, pages.more);
+  };
 
-  // ---------------------------------------------------------------- search
+  VIEWS.meetings = async function () {
+    const params = { kinds: "meeting", limit: 60 };
+    const data = await api("/api/items?" + qs(params));
+    S.scope = { params, label: "meetings" };
+    document.title = "Meetings, Zone";
+    const list = h("div", { class: "cards" }, data.items.map((item) => row(item, { lines: 3, kind: false })));
+    const pages = pager(list, params, { add: (items) => list.append(...items.map((item) => row(item, { lines: 3, kind: false }))) });
+    pages.start(data.next_cursor);
+    return h("div", null,
+      h("div", { class: "vhead" }, h("h1", null, "Meetings"), h("span", { class: "sub" }, plural(data.total, "meeting", "meetings")), h("span", { class: "sp" }), btn("button", [icon("out"), "Export"], () => openExport(S.scope))),
+      data.items.length ? list : emptyBox("No meetings yet.", "Record a meeting in Zone on your iPhone. It appears here with its title, how long it ran and who spoke, and opens to the full transcript.", S.status && S.status.phones.length ? null : pairButton()),
+      pages.more);
+  };
 
-  let typing = 0;
-  $("q").addEventListener("input", (event) => {
-    clearTimeout(typing);
-    typing = setTimeout(() => { state.q = event.target.value.trim(); load(true); }, 180);
-  });
-  $("q").addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && event.target.value) { event.preventDefault(); event.target.value = ""; state.q = ""; load(true); }
-  });
-  document.addEventListener("keydown", (event) => {
-    const typingSomewhere = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
-    if (event.key === "/" && !typingSomewhere && !$("pair").open && !event.metaKey && !event.ctrlKey) { event.preventDefault(); $("q").focus(); }
-  });
+  // ---------------------------------------------------------------- one item
 
-  // ---------------------------------------------------------------- when
+  VIEWS.item = VIEWS.meeting = async function () {
+    let item;
+    try { item = await api("/api/item?id=" + encodeURIComponent(R.arg)); }
+    catch (error) {
+      if (error.message === "locked") throw error;
+      return emptyBox("That item is not here.", "It may have been removed from this computer, or deleted on the phone.", h("a", { class: "button", href: href("history") }, "Open the history"));
+    }
+    S.items.set(item.id, item);
+    S.cur = null;
+    const meeting = item.kind === "meeting";
+    document.title = (item.title || KIND_ONE[item.kind] || "Item") + ", Zone";
+    const facts = [longDate(item.day, true) + " at " + clock(item.rfc3339)];
+    if (duration(item.duration_s) && item.kind !== "clip") facts.push(duration(item.duration_s));
+    if (meeting && item.speakers.length) facts.push(listing(item.speakers));
+    if (item.source && item.kind !== "note") facts.push(SOURCES[item.source] ? SOURCES[item.source][1] : item.source);
+    facts.push(plural(item.words, "word", "words"));
+    if (item.phone) facts.push("from " + item.phone);
+    const done = btn("button", [icon("check"), item.done ? "Done" : "Mark done"], async () => { await setDone([item.id], !item.done, true); route(); }, { "aria-pressed": String(!!item.done) });
+    const tools = h("div", { class: "tools" },
+      btn("button primary", [icon("copy"), meeting ? "Copy transcript" : "Copy"], () => copyItems([item.id])),
+      btn("button", "Copy as Markdown", async () => { await copyText((await api("/api/export?" + new URLSearchParams({ ids: item.id, format: "md" }))).content); toast("Copied as Markdown."); }),
+      btn("button", [icon("out"), "Export"], () => openExport({ ids: [item.id] })), done,
+      btn("button danger", [icon("trash"), "Remove"], () => removeItems([item.id]), { title: "Remove from this computer. Nothing is deleted on your iPhone." }));
+    let body;
+    if (meeting && item.turns && item.turns.length) {
+      const order = item.speakers;
+      body = h("div", null, item.turns.map((turn) => h("div", { class: "turn s" + (Math.max(0, order.indexOf(turn.speaker)) % 5) },
+        h("div", { class: "sp" }, turn.speaker || "", turn.at ? h("small", null, turn.at) : null), h("p", null, turn.text))));
+    } else body = h("p", { class: "body" }, item.text);
+    return h("article", { class: "doc kc-" + item.kind },
+      h("a", { class: "textbutton back", href: meeting ? href("meetings") : href(item.kind === "note" ? "notes" : "history") }, icon("left"), meeting ? "Meetings" : item.kind === "note" ? "Notes" : "History"),
+      h("h1", null, item.title || (meeting ? "Meeting" : KIND_ONE[item.kind] || item.kind)),
+      h("div", { class: "facts" }, h("span", { class: "meta" }, kindTag(item), facts.map((f) => h("span", null, f)))),
+      tools, body);
+  };
 
-  function pickRange(name) {
-    state.range = name;
-    const today = todayIso();
-    if (name === "all") { state.from = ""; state.to = ""; }
-    else if (name === "today") { state.from = today; state.to = today; }
-    else if (name !== "custom") { state.from = addDays(today, -(Number(name) - 1)); state.to = today; }
-    document.querySelectorAll("[data-range]").forEach((node) => node.setAttribute("aria-pressed", node.dataset.range === name ? "true" : "false"));
-    calendar.anchor = "";
-    if (name !== "custom" && state.to) calendar.show(state.to);
-    calendar.render();
-    load(true);
-  }
-  document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => pickRange(button.dataset.range)));
-  $("datesToggle").addEventListener("click", () => {
-    const open = !$("when").classList.contains("open");
-    $("when").classList.toggle("open", open);
-    $("datesToggle").setAttribute("aria-expanded", String(open));
-  });
+  // ---------------------------------------------------------------- history
 
   // A month of days to pick from. Days with something in them carry a dot. Pick one day, then
   // another to make a range; Shift extends from the first.
-  const calendar = {
-    year: new Date().getFullYear(), month: new Date().getMonth(), counts: {}, key: "", anchor: "", focus: "",
+  const cal = { year: new Date().getFullYear(), month: new Date().getMonth(), counts: {}, key: "", anchor: "", focus: "", refocus: false, open: false,
     firstDay: (() => {
       try {
         const locale = new Intl.Locale(navigator.language || "en-US");
@@ -1042,162 +1070,421 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
         if (info && info.firstDay) return info.firstDay % 7;
       } catch (_) { /* fall through */ }
       return /^en-(US|CA)|^ja|^zh-TW|^ko|^he|^pt-BR/.test(navigator.language || "en-US") ? 0 : 1;
-    })(),
-    show(day) { const date = fromIso(day); this.year = date.getFullYear(); this.month = date.getMonth(); this.load(); },
-    async load(force) {
-      const first = iso(new Date(this.year, this.month, 1)), last = iso(new Date(this.year, this.month + 1, 0));
-      const params = new URLSearchParams({ start: first, end: last });
-      if (state.kinds.size) params.set("kinds", [...state.kinds].join(","));
-      if (state.sources.size) params.set("sources", [...state.sources].join(","));
-      const key = params.toString();
-      if (!force && key === this.key) return;
-      this.key = key;
-      try {
-        const data = await api("/api/items?" + key);
-        if (this.key === key) { this.counts = data.day_counts || {}; this.render(); }
-      } catch (_) { /* the dots are optional */ }
-    },
-    render() {
-      const title = new Date(this.year, this.month, 1).toLocaleDateString([], { month: "long", year: "numeric" });
-      $("calTitle").textContent = title;
-      const head = $("calDays");
-      if (!head.childNodes.length) {
-        for (let i = 0; i < 7; i++) {
-          const date = new Date(2026, 10, 1 + ((this.firstDay + i) % 7)); // November 1, 2026 is a Sunday
-          const th = el("th", null, date.toLocaleDateString([], { weekday: "narrow" }));
-          th.scope = "col";
-          th.setAttribute("abbr", date.toLocaleDateString([], { weekday: "long" }));
-          head.append(th);
-        }
-      }
-      const today = todayIso();
-      const now = new Date();
-      $("calNext").disabled = this.year > now.getFullYear() || (this.year === now.getFullYear() && this.month >= now.getMonth());
-      const body = $("calBody");
-      body.textContent = "";
-      const start = new Date(this.year, this.month, 1);
-      const lead = (start.getDay() - this.firstDay + 7) % 7;
-      const days = new Date(this.year, this.month + 1, 0).getDate();
-      const from = state.from, to = state.to || state.from;
-      if (!this.focus || fromIso(this.focus).getMonth() !== this.month || fromIso(this.focus).getFullYear() !== this.year) {
-        this.focus = from && fromIso(from).getMonth() === this.month && fromIso(from).getFullYear() === this.year ? from : iso(new Date(this.year, this.month, Math.min(now.getDate(), days)));
-        if (this.focus > today) this.focus = iso(new Date(this.year, this.month, 1));
-      }
-      let row = el("tr");
-      for (let i = 0; i < lead; i++) row.append(el("td"));
-      for (let d = 1; d <= days; d++) {
-        const day = iso(new Date(this.year, this.month, d));
-        const count = this.counts[day] || 0;
-        const td = el("td");
-        td.setAttribute("role", "gridcell");
-        const inRange = from && day >= from && day <= to;
-        if (inRange && from !== to) {
-          td.className = "in";
-          const column = (lead + d - 1) % 7;
-          if (day === from || column === 0 || d === 1) td.classList.add("first");
-          if (day === to || column === 6 || d === days) td.classList.add("last");
-        }
-        td.setAttribute("aria-selected", inRange ? "true" : "false");
-        const button = el("button", "day-cell" + (count ? " has" : "") + (day === today ? " today" : "") + (day === from || day === to ? (inRange ? " edge" : "") : ""), String(d));
-        button.type = "button";
-        button.dataset.day = day;
-        button.tabIndex = day === this.focus ? 0 : -1;
-        const label = longDate(day) + ", " + (count ? plural(count, "item", "items") : "nothing");
-        button.setAttribute("aria-label", label);
-        if (day === today) button.setAttribute("aria-current", "date");
-        if (day > today) button.disabled = true;
-        td.append(button);
-        row.append(td);
-        if ((lead + d) % 7 === 0) { body.append(row); row = el("tr"); }
-      }
-      if (row.childNodes.length) { while (row.childNodes.length < 7) row.append(el("td")); body.append(row); }
-      const note = $("calNote");
-      note.textContent = "";
-      if (state.range === "custom" && from) {
-        note.append(from === to ? longDate(from) : span(from, to), " · ");
-        const clear = el("button", "textbutton", "Clear");
-        clear.type = "button";
-        clear.addEventListener("click", () => pickRange("all"));
-        note.append(clear);
-      } else if (this.anchor) {
-        note.append("Now pick the last day.");
-      } else {
-        note.append("Pick a day, or two for a range.");
-      }
-    },
-    pick(day, extend) {
-      if (day > todayIso()) return;
-      const anchor = extend ? this.anchor || state.from : this.anchor;
-      if (anchor && anchor !== day) {
-        state.from = anchor < day ? anchor : day;
-        state.to = anchor < day ? day : anchor;
-        this.anchor = "";
-      } else {
-        state.from = day; state.to = day;
-        this.anchor = day;
-      }
-      this.focus = day;
-      state.range = "custom";
-      document.querySelectorAll("[data-range]").forEach((node) => node.setAttribute("aria-pressed", "false"));
-      this.render();
-      const button = $("calBody").querySelector('[data-day="' + day + '"]');
-      if (button) button.focus();
-      load(true);
-    },
-    move(day) {
-      const date = fromIso(day);
-      if (day > todayIso()) return;
-      this.focus = day;
-      if (date.getMonth() !== this.month || date.getFullYear() !== this.year) { this.year = date.getFullYear(); this.month = date.getMonth(); this.load(); }
-      this.render();
-      const button = $("calBody").querySelector('[data-day="' + day + '"]');
-      if (button) button.focus();
-    },
-  };
-  $("calBody").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-day]");
-    if (button && !button.disabled) calendar.pick(button.dataset.day, event.shiftKey);
-  });
-  $("calBody").addEventListener("keydown", (event) => {
-    const button = event.target.closest("[data-day]");
-    if (!button) return;
-    const day = button.dataset.day;
-    const column = (fromIso(day).getDay() - calendar.firstDay + 7) % 7;
-    const moves = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7, Home: -column, End: 6 - column };
-    if (event.key in moves) { event.preventDefault(); calendar.move(addDays(day, moves[event.key])); }
-    else if (event.key === "PageUp" || event.key === "PageDown") {
-      event.preventDefault();
-      const date = fromIso(day);
-      date.setMonth(date.getMonth() + (event.key === "PageUp" ? -1 : 1));
-      calendar.move(iso(date) > todayIso() ? todayIso() : iso(date));
+    })() };
+  function historyFilter() {
+    const p = R.p, today = todayIso();
+    const range = p.range || (p.from ? "custom" : "all");
+    let from = "", to = "";
+    if (range === "today") { from = today; to = today; }
+    else if (range === "7" || range === "30") { from = addDays(today, -(Number(range) - 1)); to = today; }
+    else if (range === "custom") { from = p.from || ""; to = p.to || p.from || ""; }
+    return { q: p.q || "", kinds: (p.kinds || "").split(",").filter(Boolean), sources: (p.sources || "").split(",").filter(Boolean), done: p.done || "", fold: p.fold !== "0", range, from, to };
+  }
+  function choice(label, count, pressed, onclick, glyph, cls, title) {
+    return btn("choice" + (cls ? " " + cls : ""), [glyph ? icon(glyph) : null, h("span", { class: "l" }, label), count === null ? null : h("span", { class: "n" }, count.toLocaleString())], onclick, { "aria-pressed": String(pressed), title });
+  }
+  function toggled(list, value) { return (list.includes(value) ? list.filter((v) => v !== value) : list.concat([value])).join(","); }
+
+  function calendarNode(F) {
+    const today = todayIso(), now = new Date();
+    const title = new Date(cal.year, cal.month, 1).toLocaleDateString([], { month: "long", year: "numeric" });
+    const body = h("tbody", null);
+    const start = new Date(cal.year, cal.month, 1);
+    const lead = (start.getDay() - cal.firstDay + 7) % 7;
+    const days = new Date(cal.year, cal.month + 1, 0).getDate();
+    const from = F.from, to = F.to || F.from;
+    const inMonth = (day) => day && fromIso(day).getMonth() === cal.month && fromIso(day).getFullYear() === cal.year;
+    if (!inMonth(cal.focus)) {
+      cal.focus = inMonth(from) ? from : iso(new Date(cal.year, cal.month, Math.min(now.getDate(), days)));
+      if (cal.focus > today) cal.focus = iso(new Date(cal.year, cal.month, 1));
     }
+    let tr = h("tr", null, Array.from({ length: lead }, () => h("td")));
+    for (let d = 1; d <= days; d++) {
+      const day = iso(new Date(cal.year, cal.month, d));
+      const count = cal.counts[day] || 0;
+      const inRange = from && day >= from && day <= to;
+      const td = h("td", { role: "gridcell", "aria-selected": String(!!inRange) });
+      if (inRange && from !== to) {
+        td.className = "in";
+        const column = (lead + d - 1) % 7;
+        if (day === from || column === 0 || d === 1) td.classList.add("first");
+        if (day === to || column === 6 || d === days) td.classList.add("last");
+      }
+      td.append(h("button", { class: "day-cell" + (count ? " has" : "") + (day === today ? " today" : "") + (inRange && (day === from || day === to) ? " edge" : ""), type: "button", "data-day": day, tabindex: day === cal.focus ? "0" : "-1", "aria-label": longDate(day) + ", " + (count ? plural(count, "item", "items") : "nothing"), "aria-current": day === today ? "date" : null, disabled: day > today }, String(d)));
+      tr.append(td);
+      if ((lead + d) % 7 === 0) { body.append(tr); tr = h("tr"); }
+    }
+    if (tr.childNodes.length) { while (tr.childNodes.length < 7) tr.append(h("td")); body.append(tr); }
+    const heads = Array.from({ length: 7 }, (_, i) => { const date = new Date(2026, 10, 1 + ((cal.firstDay + i) % 7)); return h("th", { scope: "col", abbr: date.toLocaleDateString([], { weekday: "long" }) }, date.toLocaleDateString([], { weekday: "narrow" })); });
+    const step = (n) => { cal.month += n; if (cal.month < 0) { cal.month = 11; cal.year--; } if (cal.month > 11) { cal.month = 0; cal.year++; } cal.key = ""; route(); };
+    const pick = (day, extend) => {
+      if (day > today) return;
+      const anchor = extend ? cal.anchor || F.from : cal.anchor;
+      cal.focus = day; cal.refocus = true;
+      if (anchor && anchor !== day) { cal.anchor = ""; setP({ range: "custom", from: anchor < day ? anchor : day, to: anchor < day ? day : anchor }); }
+      else { cal.anchor = day; setP({ range: "custom", from: day, to: day }); }
+    };
+    const move = (day) => {
+      if (day > today) return;
+      cal.focus = day; cal.refocus = true;
+      const date = fromIso(day);
+      if (date.getMonth() !== cal.month || date.getFullYear() !== cal.year) { cal.year = date.getFullYear(); cal.month = date.getMonth(); cal.key = ""; }
+      route();
+    };
+    body.addEventListener("click", (event) => { const b = event.target.closest("[data-day]"); if (b && !b.disabled) pick(b.dataset.day, event.shiftKey); });
+    body.addEventListener("keydown", (event) => {
+      const b = event.target.closest("[data-day]");
+      if (!b) return;
+      const day = b.dataset.day, column = (fromIso(day).getDay() - cal.firstDay + 7) % 7;
+      const moves = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7, Home: -column, End: 6 - column };
+      if (event.key in moves) { event.preventDefault(); move(addDays(day, moves[event.key])); }
+      else if (event.key === "PageUp" || event.key === "PageDown") {
+        event.preventDefault();
+        const date = fromIso(day); date.setMonth(date.getMonth() + (event.key === "PageUp" ? -1 : 1));
+        move(iso(date) > today ? today : iso(date));
+      }
+    });
+    const note = h("p", { class: "calNote" });
+    if (F.range === "custom" && from) note.append(from === to ? longDate(from) : span(from, to), " · ", btn("textbutton", "Clear", () => { cal.anchor = ""; setP({ range: "", from: "", to: "" }); }));
+    else note.append("Pick a day, or two for a range.");
+    if (cal.anchor && from === to) note.replaceChildren(longDate(from) + ". Pick another day for a range. ", btn("textbutton", "Clear", () => { cal.anchor = ""; setP({ range: "", from: "", to: "" }); }));
+    return h("div", { class: "cal", id: "cal" },
+      h("div", { class: "calHead" }, h("h3", { id: "calTitle" }, title), h("div", null,
+        btn("iconbtn", icon("left"), () => step(-1), { "aria-label": "Previous month" }),
+        btn("iconbtn", icon("right"), () => step(1), { "aria-label": "Next month", disabled: cal.year > now.getFullYear() || (cal.year === now.getFullYear() && cal.month >= now.getMonth()) }))),
+      h("table", { class: "month", role: "grid", "aria-labelledby": "calTitle" }, h("thead", null, h("tr", null, heads)), body), note);
+  }
+
+  VIEWS.history = async function (my) {
+    const F = historyFilter();
+    const st = S.status || (await refreshStatus(true), S.status);
+    const params = { q: F.q, kinds: F.kinds.join(","), sources: F.sources.join(","), start: F.from, end: F.to, done: F.done, fold: F.fold ? "" : "0", days: F.q ? "" : "1" };
+    // The calendar's dots for the month shown, under the same kinds and sources.
+    const first = iso(new Date(cal.year, cal.month, 1)), last = iso(new Date(cal.year, cal.month + 1, 0));
+    const calKey = qs({ start: first, end: last, kinds: params.kinds, sources: params.sources, done: F.done, fold: params.fold, days: "1", limit: 1 });
+    const [data, dots] = await Promise.all([api("/api/items?" + qs(params)), calKey === cal.key ? null : api("/api/items?" + calKey).catch(() => null)]);
+    if (my !== seq) return null;
+    if (dots) { cal.counts = dots.day_counts || {}; cal.key = calKey; }
+    S.scope = { params: Object.assign({}, params, { days: "" }), label: "what this view shows" };
+
+    // The title names what is shown.
+    const names = KINDS.filter((k) => F.kinds.includes(k)).map((k, i) => (i ? KIND_NAMES[k].toLowerCase() : KIND_NAMES[k]));
+    const title = F.q ? "“" + F.q + "”" : names.length ? listing(names) : "History";
+    document.title = title + ", Zone";
+    const parts = [];
+    if (F.q) {
+      parts.push(plural(data.total, "match", "matches"));
+      if (data.total > data.items.length) parts.push("the newest " + data.items.length.toLocaleString() + " shown");
+      if (data.total && data.matched === "prefix") parts.push("found by the beginnings of words");
+    } else parts.push(plural(data.total, "item", "items"));
+    let sentence = parts.join(", ");
+    if (F.sources.length) sentence += " from " + listing(F.sources.map((s) => sourceName(s).toLowerCase()));
+    if (F.done) sentence += F.done === "open" ? ", not done" : ", done";
+    if (F.range === "today") sentence += " today"; else if (F.range === "7" || F.range === "30") sentence += " in the last " + F.range + " days";
+    else if (F.from) sentence += F.from === F.to ? " on " + longDate(F.from) : " from " + span(F.from, F.to);
+
+    const kinds = h("div", { class: "choices", role: "group", "aria-label": "Kind" },
+      choice("Everything", st.items.total, !F.kinds.length, () => setP({ kinds: "", sources: "" })),
+      KINDS.filter((k) => k !== "clip" || st.items.by_kind.clip).map((k) => choice(KIND_NAMES[k], st.items.by_kind[k] || 0, F.kinds.includes(k), () => setP({ kinds: toggled(F.kinds, k), sources: "" }), k, "kc-" + k, KIND_WHAT[k])));
+    const sourceNames = Object.keys(st.items.dictations_by_source);
+    const showSources = (!F.kinds.length || F.kinds.includes("dictation")) && sourceNames.length > 0;
+    const sources = showSources ? h("section", { class: "group" }, h("h2", { class: "eyebrow" }, "Where a dictation was spoken"),
+      h("div", { class: "choices", role: "group", "aria-label": "Where a dictation was spoken" }, sourceNames.map((s) => choice(sourceName(s), st.items.dictations_by_source[s], F.sources.includes(s), () => setP({ sources: toggled(F.sources, s) }), null, null, SOURCES[s] ? SOURCES[s][1] : null))),
+      h("details", { class: "what" }, h("summary", null, "What these mean"), h("ul", { class: "explain" }, sourceNames.map((s) => h("li", null, h("b", null, sourceName(s) + ": "), SOURCES[s] ? SOURCES[s][1] + "." : "")))))
+      : null;
+    const seg = (label, key, options, current) => h("div", { class: "seg", role: "group", "aria-label": label }, options.map(([value, name]) => btn(null, name, () => { cal.anchor = ""; setP(Object.assign({ [key]: value }, key === "range" ? { from: "", to: "" } : {})); }, { "aria-pressed": String(current === value) })));
+    const rail = h("aside", { class: "rail", "aria-label": "Filters" },
+      h("section", { class: "group" }, h("h2", { class: "eyebrow" }, "Kind"), kinds), sources,
+      h("section", { class: "group" }, h("h2", { class: "eyebrow" }, "Done"), seg("Done", "done", [["", "All"], ["open", "Open"], ["done", "Done"]], F.done)),
+      h("section", { class: "group when" + (cal.open ? " open" : "") }, h("h2", { class: "eyebrow" }, "When"),
+        h("div", null, seg("When", "range", [["", "Any time"], ["today", "Today"], ["7", "7 days"], ["30", "30 days"]], F.range === "all" || F.range === "custom" ? "" : F.range), " ",
+          btn("button datesToggle", "Dates", () => { cal.open = !cal.open; route(); }, { "aria-expanded": String(cal.open) })),
+        calendarNode(F)));
+
+    const list = h("div", { id: "list" });
+    let lastDay = null, entries = null;
+    const add = (items) => {
+      for (const item of items) {
+        if (item.day !== lastDay) {
+          lastDay = item.day;
+          const [name, date] = dayName(item.day);
+          const count = data.day_counts && data.day_counts[item.day];
+          entries = h("div");
+          list.append(h("section", { "aria-label": name }, h("div", { class: "dayHead" }, h("h2", null, name), date ? h("span", { class: "date" }, date) : null, count ? h("span", { class: "count" }, plural(count, "item", "items")) : null), entries));
+        }
+        entries.append(row(item, { when: "time", lines: 6 }));
+      }
+    };
+    add(data.items);
+    const pages = pager(list, params, { add });
+    pages.start(data.next_cursor);
+    if (!data.total) {
+      const filtered = F.q || F.kinds.length || F.sources.length || F.from || F.done;
+      list.append(filtered ? emptyBox("Nothing matches.", "Try other words, another kind, or a wider range of dates.", btn("button", "Show everything", () => go("history")))
+        : emptyBox("Nothing here yet.", "Pair your iPhone and everything you dictate in Zone will appear here, on this computer only.", pairButton()));
+    }
+    const fold = data.folded ? h("p", { class: "note-line" }, plural(data.folded, "recording", "recordings") + " behind voice notes " + (data.folded === 1 ? "is" : "are") + " not listed, because the note itself is. ", btn("textbutton", "Show them", () => setP({ fold: "0" })))
+      : !F.fold ? h("p", { class: "note-line" }, "Showing the recordings behind voice notes as well as the notes. ", btn("textbutton", "Fold them away", () => setP({ fold: "" }))) : null;
+    if (cal.refocus) requestAnimationFrame(() => { cal.refocus = false; const b = document.querySelector('[data-day="' + cal.focus + '"]'); if (b) b.focus(); });
+    return h("div", null,
+      h("div", { class: "vhead" }, h("h1", null, title), h("span", { class: "sub", "aria-live": "polite" }, sentence + "."), h("span", { class: "sp" }), btn("button", [icon("out"), "Export"], () => openExport(Object.assign({ title: title === "History" ? "" : title }, S.scope)), { title: "Export what this view shows (e)" })),
+      h("div", { class: "cols" }, rail, h("div", null, fold, list, pages.more)));
+  };
+
+  // ---------------------------------------------------------------- statistics
+
+  VIEWS.stats = async function () {
+    const stats = await api("/api/stats?" + qs({}));
+    document.title = "Statistics, Zone";
+    const who = S.phone && S.status ? (S.status.phones.find((p) => p.id === S.phone) || {}).label : null;
+    const total = Math.max(1, stats.all.items);
+    const kindLine = (kind, sum) => h("div", { class: "line kc-" + kind }, h("div", { class: "l" }, h("b", null, KIND_NAMES[kind] || kind), h("small", null, KIND_WHAT[kind] || ""), h("div", { class: "kbar" }, h("i", { style: null, "data-w": String(Math.round((sum.items / total) * 100)) }))),
+      h("div", { class: "r" }, sum.items.toLocaleString(), h("small", null, plural(sum.words, "word", "words") + (sum.seconds ? ", " + duration(sum.seconds) : ""))));
+    const weekdayNames = Array.from({ length: 7 }, (_, i) => new Date(2026, 10, 2 + i).toLocaleDateString([], { weekday: "short" }));
+    const node = h("div", null,
+      h("div", { class: "vhead" }, h("h1", null, "Statistics"), h("span", { class: "sub" }, (who ? "From " + who + ". " : "") + "Counted on this computer, in " + stats.timezone + ". A voice note counts once.")),
+      h("div", { class: "grid2" },
+        h("section", { class: "box wide" }, h("div", { class: "figs" },
+          figure("Today", stats.today.items.toLocaleString(), plural(stats.today.words, "word", "words")),
+          figure("Last 7 days", stats.week.items.toLocaleString(), plural(stats.week.words, "word", "words")),
+          figure("Last 30 days", stats.month.items.toLocaleString(), plural(stats.month.words, "word", "words")),
+          figure("All time", stats.all.items.toLocaleString(), plural(stats.all.words, "word", "words")),
+          figure("Time spoken", duration(stats.all.seconds) || "0 s", (duration(stats.week.seconds) || "0 s") + " in the last 7 days"),
+          figure("Days in a row", String(stats.streak_days), plural(stats.active_days, "day", "days") + " with something said"))),
+        h("section", { class: "box wide chartbox" }, h("h2", null, "Each day, last 30 days"), svgBars(stats.days.map(stacks), { titles: dayTitles(stats.days), label: "Items per day by kind" }),
+          h("div", { class: "axis" }, h("span", null, shortDate(stats.days[0].day)), h("span", null, "Today")),
+          h("div", { class: "legend" }, ["dictation", "note", "meeting", "clip"].map((k) => h("span", { class: "kc-" + k }, h("i"), KIND_NAMES[k])))),
+        h("section", { class: "box" }, h("h2", null, "By kind"), h("p", null, "Everything in the library."), KINDS.filter((k) => stats.by_kind[k]).map((k) => kindLine(k, stats.by_kind[k])), Object.keys(stats.by_kind).length ? null : h("p", null, "Nothing yet.")),
+        h("section", { class: "box chartbox" }, h("h2", null, "Hour of the day"), h("p", null, stats.busiest_hour === null ? "Nothing yet." : "You say the most around " + hourName(stats.busiest_hour) + "."),
+          svgBars(stats.hours, { titles: stats.hours.map((n, hour) => hourName(hour) + ": " + plural(n, "item", "items")), label: "Items by hour of the day" }),
+          h("div", { class: "axis" }, h("span", null, hourName(0)), h("span", null, hourName(6)), h("span", null, hourName(12)), h("span", null, hourName(18)), h("span", null, hourName(23)))),
+        h("section", { class: "box chartbox" }, h("h2", null, "Day of the week"), h("p", null, stats.busiest_weekday === null ? "Nothing yet." : "Your busiest day is " + new Date(2026, 10, 2 + stats.busiest_weekday).toLocaleDateString([], { weekday: "long" }) + "."),
+          svgBars(stats.weekdays, { titles: stats.weekdays.map((n, i) => weekdayNames[i] + ": " + plural(n, "item", "items")), label: "Items by day of the week" }),
+          h("div", { class: "axis" }, weekdayNames.map((name) => h("span", null, name)))),
+        h("section", { class: "box" }, h("h2", null, "Records"),
+          h("div", { class: "line" }, h("div", { class: "l" }, "Most in one day"), h("div", { class: "r" }, stats.best_day ? plural(stats.best_day.items, "item", "items") + ", " + shortDate(stats.best_day.day) : "None yet")),
+          h("div", { class: "line" }, h("div", { class: "l" }, "First item"), h("div", { class: "r" }, stats.first_day ? longDate(stats.first_day, true) : "None yet")),
+          h("div", { class: "line" }, h("div", { class: "l" }, "Words a day, last 30 days"), h("div", { class: "r" }, Math.round(stats.month.words / 30).toLocaleString())))));
+    node.querySelectorAll("[data-w]").forEach((bar) => { bar.style.width = bar.dataset.w + "%"; });
+    return node;
+  };
+
+  // ---------------------------------------------------------------- phones
+
+  function phoneLine(phone, pick) {
+    const line = h("div", { class: "prow", "aria-current": pick ? String(S.phone === phone.id) : null });
+    const sub = "synced " + ago(phone.last_sync_age_s) + " · " + plural(phone.items, "item", "items") + (phone.nickname && phone.name ? " · calls itself " + phone.name : "");
+    const who = h("span", { class: "who" }, h("b", null, phone.label), h("small", null, sub));
+    const show = () => {
+      line.replaceChildren(pick ? btn("pick", [h("span", { class: "radio" }), who], () => choosePhone(phone.id), { title: "Show only what came from " + phone.label }) : h("span", { class: "pick" }, icon("phone"), who),
+        btn("iconbtn", icon("pen"), rename, { title: "Rename on this computer", "aria-label": "Rename " + phone.label }),
+        btn("iconbtn rm", icon("trash"), ask, { title: "Unpair", "aria-label": "Unpair " + phone.label }));
+    };
+    const rename = () => {
+      const input = h("input", { class: "name", value: phone.nickname || phone.label, "aria-label": "Name for this phone", maxlength: "60", placeholder: phone.name || "iPhone" });
+      const save = async () => { try { await api("/api/phone", { id: phone.id, nickname: input.value.trim() === (phone.name || "") ? "" : input.value }); } catch (error) { toast(error.message); } await refreshStatus(true); renderDevices(); if (R.view === "settings") route(); };
+      input.addEventListener("keydown", (event) => { event.stopPropagation(); if (event.key === "Enter") save(); if (event.key === "Escape") show(); });
+      line.replaceChildren(input, btn("button primary", "Save", save), btn("button", "Cancel", show));
+      input.focus(); input.select();
+    };
+    const ask = () => {
+      line.replaceChildren(h("div", { class: "ask" }, "Unpair " + phone.label + "? It can no longer send to this computer. What it already sent stays.",
+        h("div", null, btn("button danger", "Unpair", async () => { try { await api("/api/unpair", { id: phone.id }); } catch (error) { toast(error.message); } if (S.phone === phone.id) choosePhone(""); await refreshStatus(true); renderDevices(); if (R.view === "settings") route(); }), btn("button", "Keep", show))));
+    };
+    show();
+    return line;
+  }
+  function choosePhone(id) {
+    S.phone = id; store.set("phone", id);
+    closeDevices();
+    cal.key = "";
+    renderStatus();
+    route();
+  }
+  function renderDevices() {
+    const st = S.status, box = $("devices");
+    if (!st) return;
+    const kids = [];
+    if (st.phones.length) {
+      kids.push(h("h2", null, "Show what came from"));
+      const all = h("div", { class: "prow", "aria-current": String(!S.phone) }, btn("pick", [h("span", { class: "radio" }), h("span", { class: "who" }, h("b", null, st.phones.length > 1 ? "All phones" : "Everything"), h("small", null, plural(st.items.total, "item", "items")))], () => choosePhone("")));
+      kids.push(all, ...st.phones.map((phone) => phoneLine(phone, true)));
+      const none = st.items_without_a_phone.none_recorded + st.items_without_a_phone.unpaired;
+      if (none) kids.push(h("div", { class: "prow", "aria-current": String(S.phone === "none") }, btn("pick", [h("span", { class: "radio" }), h("span", { class: "who" }, h("b", null, "No phone on record"), h("small", null, plural(st.items_without_a_phone.none_recorded, "item", "items") + " read from a backup folder or sent before phones were told apart"))], () => choosePhone("none"))));
+    } else kids.push(h("div", { class: "ask" }, "No phone is paired with this computer yet."));
+    kids.push(h("div", { class: "foot" }, h("a", { class: "textbutton", href: href("settings"), onclick: closeDevices }, "Settings"), btn("button primary", st.phones.length ? "Pair another phone" : "Pair a phone", () => { closeDevices(); openPair(); })));
+    box.replaceChildren(...kids);
+  }
+  function closeDevices() { $("devices").hidden = true; $("device").setAttribute("aria-expanded", "false"); }
+  $("device").addEventListener("click", (event) => {
+    event.stopPropagation();
+    const open = $("devices").hidden;
+    if (open) renderDevices();
+    $("devices").hidden = !open;
+    $("device").setAttribute("aria-expanded", String(open));
   });
-  $("calPrev").addEventListener("click", () => { calendar.month--; if (calendar.month < 0) { calendar.month = 11; calendar.year--; } calendar.load(); calendar.render(); });
-  $("calNext").addEventListener("click", () => { calendar.month++; if (calendar.month > 11) { calendar.month = 0; calendar.year++; } calendar.load(); calendar.render(); });
+  document.addEventListener("click", (event) => { if (!event.composedPath().includes($("device").parentNode)) closeDevices(); });
 
-  // ---------------------------------------------------------------- paging
+  function renderStatus() {
+    const st = S.status;
+    if (!st) return;
+    if (S.phone && S.phone !== "none" && !st.phones.some((p) => p.id === S.phone)) { S.phone = ""; store.set("phone", ""); }
+    $("light").classList.toggle("off", !st.phones.length);
+    const text = $("deviceText");
+    if (!st.phones.length) text.replaceChildren("No phone paired");
+    else {
+      const chosen = st.phones.find((p) => p.id === S.phone);
+      const newest = chosen || st.phones.slice().sort((a, b) => (a.last_sync_age_s ?? 1e12) - (b.last_sync_age_s ?? 1e12))[0];
+      const name = S.phone === "none" ? "No phone on record" : chosen || st.phones.length === 1 ? newest.label : "All " + st.phones.length + " phones";
+      text.replaceChildren(h("b", null, name), S.phone === "none" ? "" : h("span", { class: "sync" }, ", synced " + ago(newest.last_sync_age_s)), " ");
+    }
+    text.append(icon("down"));
+    applyLook(st.look);
+    renderTabs();
+    if (!$("devices").hidden && !$("devices").querySelector("input, .ask div")) renderDevices();
+  }
+  function applyLook(look) {
+    if (!look) return;
+    const root = document.documentElement;
+    if (root.dataset.theme !== look.theme) root.dataset.theme = look.theme;
+    if (root.dataset.accent !== look.accent_shown) root.dataset.accent = look.accent_shown;
+  }
 
-  $("more").addEventListener("click", () => load(false));
-  new IntersectionObserver((entries) => {
-    if (entries.some((entry) => entry.isIntersecting) && state.cursor) load(false);
-  }, { rootMargin: "600px" }).observe($("more"));
-  $("fresh").addEventListener("click", () => { $("fresh").hidden = true; window.scrollTo({ top: 0 }); arrivals = true; load(true); });
+  // The page learns of changes by asking for the status every few seconds: new items from a
+  // phone, an agent marking something, a setting changed in another window.
+  async function refreshStatus(quiet) {
+    let next;
+    try { next = await api("/api/status"); } catch (_) { return; }
+    const grew = S.status && next.items.total > S.status.items.total;
+    const first = S.status === null;
+    S.status = next;
+    renderStatus();
+    if (first || quiet === true) { S.revision = next.revision; return; }
+    if (next.revision === S.revision) return;
+    S.revision = next.revision;
+    if (grew) { const light = $("light"); light.classList.remove("ping"); void light.offsetWidth; light.classList.add("ping"); }
+    if (document.querySelector("dialog[open]") || S.sel.size || document.querySelector(".prow input")) return;
+    if (R.view === "settings" || R.view === "item" || R.view === "meeting") return;
+    if (window.scrollY < 200) { S.arrivals = grew; route(); } else $("fresh").hidden = false;
+  }
+  $("fresh").addEventListener("click", () => { window.scrollTo({ top: 0 }); S.arrivals = true; route(); });
+
+  // ---------------------------------------------------------------- settings
+
+  VIEWS.settings = async function (my) {
+    const [set, gone] = await Promise.all([api("/api/settings"), api("/api/removed")]);
+    await refreshStatus(true);
+    document.title = "Settings, Zone";
+    const st = S.status, look = set.look;
+    const change = async (body) => { try { const next = await api("/api/settings", body); applyLook(next.look); } catch (error) { toast(error.message); } route(); };
+    const reports = look.phone && look.phone.appearance;
+    const appearance = h("section", { class: "box" }, h("h2", null, "Appearance"), h("p", null, "How this page is drawn, here and in Zone for Mac."),
+      h("div", { class: "line" }, h("div", { class: "l" }, "Light or dark"), h("div", { class: "seg", role: "group", "aria-label": "Light or dark" },
+        [["system", "This computer"], ["light", "Light"], ["dark", "Dark"]].concat(reports ? [["phone", "My iPhone"]] : []).map(([value, name]) => btn(null, name, () => change({ appearance: value }), { "aria-pressed": String(look.appearance === value), title: value === "phone" ? look.phone.name + " is in " + look.phone.appearance : value === "system" ? "Follow this computer's light or dark setting" : null })))),
+      h("div", { class: "line" }, h("div", { class: "l" }, "Accent", h("small", null, "The same five as Zone on iPhone.")), h("div", { class: "swatches" },
+        (look.phone && look.phone.accent ? [["phone", "My iPhone's", ACCENT_HEX[look.phone.accent]]] : []).concat(look.accents.map((a) => [a, ACCENT_NAMES[a] || a, ACCENT_HEX[a]])).map(([value, name, hex]) => { const b = btn("swatch", [h("i"), name], () => change({ accent: value }), { "aria-pressed": String(look.accent === value) }); b.style.setProperty("--sw", hex); return b; }))),
+      reports || (look.phone && look.phone.accent) ? null : h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Your iPhone has not yet told this computer how Zone looks on it. When a version of Zone that does so syncs, Match my iPhone appears here and the accent follows the phone by itself."))));
+
+    const phones = h("section", { class: "box" }, h("h2", null, "Phones"), h("p", null, "Each phone that may send to this computer. iPhones all call themselves iPhone, so give yours a name here."),
+      st.phones.length ? st.phones.map((p) => h("div", { class: "line" }, h("div", { class: "l" }, phoneLine(p, false), h("small", null, [p.app ? "Zone " + p.app : null, p.last_path ? p.last_path + " connection" : null, "paired " + ago(p.paired_age_s)].filter(Boolean).join(" · "))))) : h("div", { class: "line" }, h("div", { class: "l" }, "No phone is paired yet.")),
+      h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Unpairing never removes what a phone already sent.")), pairButton(st.phones.length ? "Pair another phone" : "Pair a phone")));
+
+    const clip = set.clipboard;
+    const clipboard = h("section", { class: "box" }, h("h2", null, "Clipboard"), h("p", null, "Text you send from Zone on your iPhone can go straight onto this computer's clipboard as it arrives. Only a clip sent in the last " + Math.round(clip.max_age_s / 60) + " minutes, over the network; older ones are kept and left alone."),
+      h("div", { class: "line" }, h("div", { class: "l" }, clip.enabled ? "On" : "Off", h("small", null, clip.available ? "Uses " + clip.tool + "." : clip.fix || "No clipboard tool was found on this computer.")),
+        btn("button" + (clip.enabled ? "" : " primary"), clip.enabled ? "Turn off" : "Turn on", () => change({ clipboard: !clip.enabled }), { "aria-pressed": String(clip.enabled) })));
+
+    const bk = set.backup, bstate = bk.state || {};
+    const backup = h("section", { class: "box" }, h("h2", null, "Backup folder"), h("p", null, "A Zone backup in iCloud Drive, OneDrive or Dropbox that zone reads whenever it changes. It needs nothing from the phone but the backup."),
+      h("div", { class: "line" }, h("div", { class: "l" }, bk.folder ? h("span", { class: "path" }, bk.folder) : "Not set", h("small", null, !bk.folder ? "" : bstate.state === "waiting" ? bstate.message : bstate.state === "error" ? "It cannot be read. Run zone doctor in a terminal." : "Last read " + ago(bk.last_read_age_s) + ".")), null),
+      h("div", { class: "cmd" }, h("code", null, bk.folder ? "zone backup-folder --clear" : "zone backup-folder <path>"), h("small", null, bk.folder ? "stops watching" : "starts watching")));
+
+    const agentsBox = h("section", { class: "box" }, h("h2", null, "AI agents"), h("p", null, "The AI apps on this computer that can read your library through zone. They can mark items done and nothing else: no agent can change or delete your words."), h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Looking…"))));
+    api("/api/agents").then((data) => {
+      if (my !== seq) return;
+      const words = { registered: "Connected", registered_read_only: "Connected, read only", other_copy: "Connected to another copy of zone", not_registered: "Not connected", removed_by_you: "Removed by you", unreadable: "Cannot tell" };
+      const lines = data.clients.map((c) => {
+        const limits = [];
+        if (c.read_only) limits.push("cannot mark items done");
+        if (c.scope && c.scope.limited) limits.push(c.scope.kinds ? "sees only " + listing(c.scope.kinds.map((k) => (KIND_NAMES[k] || k).toLowerCase())) + (c.scope.exclude_sources && c.scope.exclude_sources.length ? ", not " + listing(c.scope.exclude_sources.map((s) => sourceName(s).toLowerCase())) + " dictations" : "") : "has a limited view");
+        else if (c.scope) limits.push("sees everything");
+        return h("div", { class: "line" }, h("div", { class: "l" }, c.label, h("small", null, limits.join(" · ") || (c.state === "not_registered" ? "zone mcp install " + c.client : c.detail || ""))), h("div", { class: "r" }, words[c.state] || c.state));
+      });
+      agentsBox.replaceChildren(agentsBox.children[0], agentsBox.children[1], ...(lines.length ? lines : [h("div", { class: "line" }, h("div", { class: "l" }, "No AI apps were found on this computer."))]),
+        h("div", { class: "cmd" }, h("code", null, "zone mcp install --all"), h("small", null, "connects them; --notes-only and --no-keyboard limit what they see")));
+    }).catch(() => { agentsBox.lastChild.replaceChildren(h("div", { class: "l" }, "Could not read the AI apps' settings.")); });
+
+    const removed = h("section", { class: "box", id: "removed" }, h("h2", null, "Removed from this computer"), h("p", null, "Removing an item here hides it on this computer only: from this page, from agents, from the command line and from exports. Nothing is ever deleted on your iPhone. An item can be put back for " + gone.kept_days + " days; after that its words are erased here. It stays away through later syncs unless you edit it on the phone."),
+      gone.items.length ? gone.items.map((item) => h("div", { class: "line kc-" + item.kind }, h("div", { class: "l" }, h("span", { class: "meta" }, h("span", { class: "kind k-" + item.kind }, KIND_ONE[item.kind] || item.kind), h("span", null, item.day_label), h("span", null, "removed " + ago(item.removed_age_s)), h("span", null, plural(item.days_left, "day", "days") + " left")), h("div", { class: "text clamp l2" }, item.title ? item.title + ": " + item.preview : item.preview)),
+        btn("button", "Put back", async () => { await api("/api/restore", { ids: [item.id] }); toast("Put back."); await quietStatus(); route(); }))) : h("div", { class: "line" }, h("div", { class: "l" }, "Nothing is removed.")),
+      gone.items.length > 1 ? h("div", { class: "line" }, h("div", { class: "l" }), btn("button", "Put all " + gone.items.length + " back", async () => { await api("/api/restore", { ids: gone.items.map((i) => i.id) }); await quietStatus(); route(); })) : null);
+
+    const versionLine = h("div", { class: "r" }, "Checking…");
+    const how = h("div", { class: "cmd", hidden: true });
+    const about = h("section", { class: "box" }, h("h2", null, "About"),
+      h("div", { class: "line" }, h("div", { class: "l" }, "zone " + set.computer.version, h("small", null, "on " + set.computer.name)), versionLine), how,
+      h("div", { class: "line" }, h("div", { class: "l" }, "Your library", h("small", { class: "path" }, set.data.library))),
+      h("div", { class: "line" }, h("div", { class: "l" }, "Log", h("small", { class: "path" }, set.data.log))),
+      h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Everything is kept in that folder on this computer. This page loads nothing from the internet. Opening Settings lets zone ask GitHub, at most twice a day, whether a newer zone is out."))));
+    api("/api/update").then((u) => {
+      if (my !== seq) return;
+      versionLine.textContent = u.words;
+      if (u.newer) {
+        how.hidden = false;
+        how.replaceChildren(h("code", null, u.update_with), btn("button", "Copy", async () => { await copyText(u.update_with); toast("Copied. Run it in a terminal."); }));
+      }
+    }).catch(() => { versionLine.textContent = "Could not check"; });
+
+    return h("div", null, h("div", { class: "vhead" }, h("h1", null, "Settings")), h("div", { class: "grid2" }, appearance, phones, clipboard, backup, agentsBox, about, removed));
+  };
+
+  // ---------------------------------------------------------------- export
+
+  const ex = { scope: null, format: store.get("exportFormat", "md"), order: "", data: null };
+  async function loadExport() {
+    const scope = ex.scope;
+    const order = ex.order || (scope.params && scope.params.order) || "oldest";
+    const seg = (box, options, current, pick) => box.replaceChildren(...options.map(([value, name]) => btn(null, name, () => pick(value), { "aria-pressed": String(current === value) })));
+    seg($("exportFormat"), [["md", "Markdown"], ["txt", "Plain text"], ["csv", "CSV"], ["json", "JSON"]], ex.format, (value) => { ex.format = value; store.set("exportFormat", value); loadExport(); });
+    seg($("exportOrder"), [["oldest", "Oldest first"], ["newest", "Newest first"]], order, (value) => { ex.order = value; loadExport(); });
+    const params = scope.ids ? new URLSearchParams({ ids: scope.ids.join(","), format: ex.format, order }).toString() : qs(Object.assign({}, scope.params, { format: ex.format, order, limit: "", title: scope.title || "" }));
+    $("exportPreview").textContent = "";
+    try {
+      ex.data = await api("/api/export?" + params);
+      const shapes = { checklist: "a checklist: open notes unticked, done ones ticked", meeting: "a transcript under a header", dated: "a document by day, grouped by kind" };
+      $("exportWhat").textContent = plural(ex.data.items, "item", "items") + (ex.format === "md" || ex.format === "txt" ? ", as " + shapes[ex.data.shape] : "") + ". Removed items are never included.";
+      $("exportPreview").textContent = ex.data.content.length > 6000 ? ex.data.content.slice(0, 6000) + "\n…" : ex.data.content;
+    } catch (error) { ex.data = null; $("exportWhat").textContent = "Could not export. " + error.message; }
+  }
+  function openExport(scope) {
+    if (!scope) return;
+    ex.scope = scope; ex.order = "";
+    if (!$("export").open) $("export").showModal();
+    loadExport();
+  }
+  $("exportClose").addEventListener("click", () => $("export").close());
+  $("exportCopy").addEventListener("click", async () => { if (!ex.data) return; await copyText(ex.data.content); $("export").close(); toast(plural(ex.data.items, "item", "items") + " copied."); });
+  $("exportSave").addEventListener("click", () => {
+    if (!ex.data) return;
+    const types = { md: "text/markdown", txt: "text/plain", csv: "text/csv", json: "application/json" };
+    const url = URL.createObjectURL(new Blob([ex.data.content], { type: (types[ex.data.format] || "text/plain") + ";charset=utf-8" }));
+    const link = h("a", { href: url, download: ex.data.filename });
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast("Saved as " + ex.data.filename + ".");
+  });
 
   // ---------------------------------------------------------------- pairing
 
   let countdown = 0;
   async function newCode() {
     clearInterval(countdown);
-    $("pairErr").hidden = true;
-    $("pairBody").hidden = false;
-    $("qr").textContent = "";
-    $("expires").textContent = "";
+    $("pairErr").hidden = true; $("pairBody").hidden = false;
+    $("qr").textContent = ""; $("expires").textContent = "";
     let offer;
-    try {
-      offer = await api("/api/pair", { method: "POST" });
-    } catch (_) {
-      $("pairBody").hidden = true;
-      $("pairErr").hidden = false;
+    try { offer = await api("/api/pair", {}); }
+    catch (_) {
+      $("pairBody").hidden = true; $("pairErr").hidden = false;
       $("pairErr").textContent = "Could not make a pairing code. Check that zone is still running, then try again.";
       return;
     }
@@ -1208,36 +1495,64 @@ dialog::backdrop { background: rgba(20, 20, 20, 0.6); }
     const ends = Date.now() + offer.expires_in_s * 1000;
     const tick = () => {
       const left = Math.max(0, Math.round((ends - Date.now()) / 1000));
-      const expires = $("expires");
-      expires.textContent = "";
-      if (left) expires.append("Valid for ", el("b", null, Math.floor(left / 60) + ":" + pad(left % 60)));
-      else expires.append("This code has expired. Make a new one.");
-      if (!left) { clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; }
+      if (left) $("expires").replaceChildren("Valid for ", h("b", null, Math.floor(left / 60) + ":" + pad(left % 60)));
+      else { $("expires").textContent = "This code has expired. Make a new one."; clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; }
     };
     tick();
     countdown = setInterval(tick, 1000);
   }
-  function openPair() {
-    $("pair").showModal();
-    newCode();
-  }
-  $("pairOpen").addEventListener("click", openPair);
-  $("device").addEventListener("click", openPair);
+  function openPair() { if ($("pair").open) return; $("pair").showModal(); newCode(); }
   $("pairNew").addEventListener("click", newCode);
   $("pairClose").addEventListener("click", () => $("pair").close());
-  $("pair").addEventListener("close", () => { clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; refreshStatus(); });
-  $("pair").addEventListener("click", (event) => { if (event.target === $("pair")) $("pair").close(); });
-  $("pairCopy").addEventListener("click", async () => {
-    const field = $("pairUrl");
-    try { await navigator.clipboard.writeText(field.value); } catch (_) { field.select(); document.execCommand("copy"); }
-    $("pairCopy").textContent = "Copied";
-    setTimeout(() => { $("pairCopy").textContent = "Copy"; }, 1400);
+  $("pair").addEventListener("close", () => { clearInterval(countdown); $("qr").textContent = ""; $("pairUrl").value = ""; if (R.view === "pair") go("home", "", {}, true); else refreshStatus(); });
+  $("pairCopy").addEventListener("click", async () => { await copyText($("pairUrl").value); $("pairCopy").textContent = "Copied"; setTimeout(() => { $("pairCopy").textContent = "Copy"; }, 1400); });
+  document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); }));
+
+  // ---------------------------------------------------------------- search and keys
+
+  let typing = 0;
+  $("q").addEventListener("input", (event) => {
+    clearTimeout(typing);
+    typing = setTimeout(() => {
+      const q = event.target.value.trim();
+      if (R.view === "history") setP({ q }, true); else if (q) go("history", "", { q });
+    }, 180);
+  });
+  $("q").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.preventDefault(); if (event.target.value) { event.target.value = ""; if (R.view === "history") setP({ q: "" }, true); } else event.target.blur(); }
+    if (event.key === "Enter" || event.key === "ArrowDown") { event.preventDefault(); event.target.blur(); moveCursor(1); }
+  });
+  const KEYS = [["/", "Search"], ["g h", "Home"], ["g n", "Notes"], ["g m", "Meetings"], ["g a", "History, everything"], ["g s", "Statistics"], ["g ,", "Settings"], ["j  k", "Next and previous item"], ["Enter", "Open the item"], ["x", "Done, or not done"], ["c", "Copy"], ["e", "Export the item, the selection, or the view"], ["s", "Select, to act on several"], ["Esc", "Clear the selection, close"], ["?", "This list"]];
+  $("keysList").append(...KEYS.flatMap(([keys, what]) => [h("dt", null, keys.split(" ").filter(Boolean).map((k) => [h("kbd", null, k), " "])), h("dd", null, what)]));
+  $("keysOpen").addEventListener("click", () => $("keys").showModal());
+  $("keysClose").addEventListener("click", () => $("keys").close());
+  let chord = 0;
+  document.addEventListener("keydown", (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || document.querySelector("dialog[open]")) return;
+    const key = event.key;
+    if (chord) {
+      const to = { h: "home", n: "notes", m: "meetings", a: "history", s: "stats", ",": "settings" }[key];
+      chord = 0;
+      if (to) { event.preventDefault(); go(to); }
+      return;
+    }
+    const ids = targets();
+    const done = () => event.preventDefault();
+    if (key === "/") { done(); $("q").focus(); $("q").select(); }
+    else if (key === "?") { done(); $("keys").showModal(); }
+    else if (key === "g") { chord = 1; setTimeout(() => { chord = 0; }, 1200); }
+    else if (key === "j" || key === "k") { done(); moveCursor(key === "j" ? 1 : -1); }
+    else if (key === "Escape") { if (!$("devices").hidden) closeDevices(); else if (S.sel.size) clearSelection(); else setCursor(null); }
+    else if (key === "Enter" && S.cur && document.activeElement === document.body) { const item = S.items.get(S.cur); if (item && document.querySelector(".row.cur")) { done(); location.hash = item.kind === "meeting" ? href("meeting", item.id) : href("item", item.id); } }
+    else if (key === "x" && (ids.length || R.view === "meeting" || R.view === "item")) { done(); const list = ids.length ? ids : [R.arg.toUpperCase()]; const first = S.items.get(list[0]) || S.items.get(R.arg); setDone(list, !(first && first.done)).then(() => { if (!ids.length) route(); }); }
+    else if (key === "c" && (ids.length || R.view === "meeting" || R.view === "item")) { done(); copyItems(ids.length ? ids : [[...S.items.keys()].find((id) => id.toLowerCase() === R.arg.toLowerCase()) || R.arg]); }
+    else if (key === "e") { done(); if (ids.length) openExport({ ids }); else if (R.view === "meeting" || R.view === "item") openExport({ ids: [R.arg] }); else openExport(S.scope); }
+    else if (key === "s" && S.cur && document.querySelector(".row.cur")) { done(); toggleSelect(S.cur); }
   });
 
-  calendar.render();
-  calendar.load();
-  refreshStatus().then(() => load(true));
-  setInterval(refreshStatus, 8000);
+  refreshStatus(true).then(route);
+  setInterval(refreshStatus, 5000);
 })();
 </script>
 </body>
