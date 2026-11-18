@@ -821,7 +821,15 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       });
     }
     await quietStatus();
-    document.querySelectorAll("[data-open-count]").forEach((node) => { if (!S.phone) node.textContent = plural(S.status.items.notes_open, "open", "open"); });
+    // The counts of open and done notes on screen, from the phone chosen: asked again, so
+    // the heading, the panel and the tab never disagree after a tick.
+    const counted = document.querySelectorAll("[data-open-count], [data-note-counts]");
+    if (counted.length) {
+      try {
+        const counts = (await api("/api/items?" + qs({ kinds: "note", limit: 1 }))).counts;
+        counted.forEach((node) => { node.textContent = plural(counts.open, "open", "open") + (node.dataset.noteCounts ? ", " + counts.done.toLocaleString() + " done" : ""); });
+      } catch (_) { /* the next look puts it right */ }
+    }
     if (!quiet) toast(done ? plural(ids.length, "item", "items") + " marked done." : plural(ids.length, "item", "items") + " open again.", () => setDone(ids, !done, true));
   }
   async function copyItems(ids, markdown) {
@@ -1006,7 +1014,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
         : emptyBox("Nothing here.", show === "done" ? "Notes you tick off, and ones an agent has worked through, show up here." : "No notes yet."));
     }
     return h("div", null,
-      h("div", { class: "vhead" }, h("h1", null, "Notes"), h("span", { class: "sub" }, plural(data.counts.open, "open", "open") + ", " + data.counts.done.toLocaleString() + " done"),
+      h("div", { class: "vhead" }, h("h1", null, "Notes"), h("span", { class: "sub", "data-note-counts": "1" }, plural(data.counts.open, "open", "open") + ", " + data.counts.done.toLocaleString() + " done"),
         h("div", { class: "seg", role: "group", "aria-label": "Show" }, [["open", "Open"], ["done", "Done"], ["all", "All"]].map(([value, name]) => btn(null, name, () => setP({ show: value === "open" ? "" : value }), { "aria-pressed": String(show === value) }))),
         orderSeg((o) => setP({ order: "" })),
         h("span", { class: "sp" }), btn("button", [icon("out"), "Export"], () => openExport(S.scope), { title: "Export these notes as a checklist (e)" })),
