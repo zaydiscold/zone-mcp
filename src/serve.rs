@@ -1,7 +1,7 @@
 //! `zone serve`: the daemon. It accepts paired phones over iroh, watches the backup folder,
 //! and serves the local web page.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +21,10 @@ use crate::{events, info, paths, warn};
 const SETTING_POLL: Duration = Duration::from_secs(5);
 /// How often the daemon refreshes what it says about itself in `daemon.json`.
 const INFO_POLL: Duration = Duration::from_secs(5);
+/// How often a running zone looks at its own program file, to see whether an update replaced
+/// it. `ZONE_SELF_CHECK_SECONDS` shortens it for tests.
+#[cfg_attr(not(unix), allow(dead_code))]
+const SELF_POLL: Duration = Duration::from_secs(10);
 
 pub struct Options {
     /// Port for the local web page. Falls back to a free port when taken.
@@ -43,6 +47,14 @@ pub enum Stop {
     // Only Unix delivers these; on Windows a console close ends the process without telling it.
     #[cfg_attr(not(unix), allow(dead_code))]
     Signal(i32),
+    /// The program file was replaced by another version of zone (`zone update`, the install
+    /// script, a package manager). The zone that is running ends and starts the one that is
+    /// now on disk, in its place: same process, same arguments. Without this an update that
+    /// nothing restarts (a `zone serve` in a terminal, a zone started by Zone for Mac) would
+    /// leave the old version running until the next login.
+    // Only on Unix can a running program be replaced by another in the same process.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Replaced,
 }
 
 impl Stop {
@@ -50,13 +62,18 @@ impl Stop {
         match self {
             Stop::Interrupt => std::process::ExitCode::SUCCESS,
             Stop::Signal(number) => std::process::ExitCode::from((128 + number).clamp(1, 255) as u8),
+            // Only reached when the new program could not be started: not a success, so a
+            // login item starts zone again.
+            Stop::Replaced => std::process::ExitCode::from(75),
         }
     }
 }
 
 pub async fn run(options: Options) -> Result<std::process::ExitCode> {
+    // Where this program is, as it was started: asked now, before anything can replace it.
+    let program = std::env::current_exe().ok();
     let dir = paths::ensure_data_dir()?;
-    let Some(_lock) = daemon_info::acquire(&dir)? else {
+    let Some(lock) = daemon_info::acquire(&dir)? else {
         bail!("zone is already running for {} (see `zone status`).", dir.display());
     };
     crate::log::init(&paths::log_file(&dir), !options.quiet);
@@ -136,13 +153,19 @@ pub async fn run(options: Options) -> Result<std::process::ExitCode> {
         }
     });
 
-    let stop = wait_for_stop().await;
+    let stop = tokio::select! {
+        stop = wait_for_stop() => stop,
+        _ = program_replaced(program.clone()) => Stop::Replaced,
+    };
     match stop {
         Stop::Interrupt => info!("zone is stopping"),
         Stop::Signal(number) => info!("zone is stopping (signal {number})"),
+        Stop::Replaced => info!("zone is stopping, to start the version that replaced it"),
     }
     for task in [web_task, link_task, info_task, backup_task, erase_task] {
         task.abort();
+        // Until the task is gone its port is still held, and the next zone needs it.
+        let _ = task.await;
     }
     // Lets open sessions finish their last frame and tells peers the endpoint is gone.
     let _ = tokio::time::timeout(Duration::from_secs(5), endpoint.close()).await;
@@ -150,7 +173,73 @@ pub async fn run(options: Options) -> Result<std::process::ExitCode> {
         events::record(&db, "daemon_stopped", json!({ "uptime_s": started.elapsed().as_secs_f64().round() }));
     }
     let _ = std::fs::remove_file(paths::daemon_info(&dir));
+    drop(lock);
+    #[cfg(unix)]
+    if stop == Stop::Replaced
+        && let Some(program) = program
+    {
+        use std::os::unix::process::CommandExt;
+        // Returns only when the new program could not be started.
+        let error = std::process::Command::new(&program).args(std::env::args_os().skip(1)).exec();
+        warn!("could not start {}: {error}", program.display());
+    }
     Ok(stop.exit_code())
+}
+
+/// What `program --version` says its version is.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn version_of(program: &Path) -> Option<String> {
+    let output = std::process::Command::new(program).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Some(text.trim().strip_prefix("zone ")?.trim().to_string()).filter(|version| !version.is_empty())
+}
+
+/// Returns once the program file has been replaced by another version of zone that runs.
+/// The same version put there again (a reinstall, a rebuild) changes nothing.
+#[cfg(unix)]
+async fn program_replaced(program: Option<PathBuf>) {
+    use std::os::unix::fs::MetadataExt;
+    let Some(program) = program else { return std::future::pending().await };
+    let poll = std::env::var("ZONE_SELF_CHECK_SECONDS").ok().and_then(|v| v.trim().parse::<f64>().ok()).filter(|s| *s > 0.0).map(Duration::from_secs_f64).unwrap_or(SELF_POLL);
+    let look = |path: &Path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino(), m.size(), m.mtime(), m.mtime_nsec()));
+    let Some(mut seen) = look(&program) else { return std::future::pending().await };
+    loop {
+        tokio::time::sleep(poll).await;
+        // Gone for a moment (an installer that removes before it moves) is not replaced yet.
+        let Some(now) = look(&program) else { continue };
+        if now == seen {
+            continue;
+        }
+        // Look twice, so a file still being written is not started half made.
+        tokio::time::sleep(poll.min(Duration::from_secs(2))).await;
+        if look(&program) != Some(now) {
+            continue;
+        }
+        seen = now;
+        let asked = tokio::task::spawn_blocking({
+            let program = program.clone();
+            move || version_of(&program)
+        })
+        .await;
+        match asked {
+            Ok(Some(version)) if version != env!("CARGO_PKG_VERSION") => {
+                info!("zone {version} replaced this zone {} at {}", env!("CARGO_PKG_VERSION"), program.display());
+                return;
+            }
+            Ok(Some(_)) => {}
+            _ => warn!("the program at {} changed and does not run as zone. This zone {} keeps running.", program.display(), env!("CARGO_PKG_VERSION")),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn program_replaced(_program: Option<PathBuf>) {
+    // Windows cannot replace a running program: the installer stops zone, swaps the file and
+    // starts it again (install.ps1).
+    std::future::pending().await
 }
 
 fn env_port() -> Option<u16> {

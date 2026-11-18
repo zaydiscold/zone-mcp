@@ -116,7 +116,11 @@ zone update --check    # only say
 zone never looks for updates by itself. `zone update` and `zone doctor` ask GitHub once, when you
 run them, which release is the latest (`ZONE_NO_UPDATE_CHECK=1` turns even that off). An update is
 the install script run again: same download, same checksum, and a zone that starts at login is
-restarted so the new one is the one running. A copy that came from Homebrew, from `cargo install`
+restarted so the new one is the one running. On macOS and Linux a zone that is running also looks
+at its own program file every few seconds, and when another version has taken its place it stops
+and starts that one, so a `zone serve` in a terminal does not go on running the old version
+(zone 0.1.3 and earlier did, until they were stopped and started). `zone status` names the version
+that is running whenever it is not the one on disk. A copy that came from Homebrew, from `cargo install`
 or inside Zone for Mac is left alone, and `zone update` says how that copy is updated instead.
 
 If you download an archive from the releases page with a browser on a Mac, macOS will refuse to

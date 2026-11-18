@@ -497,6 +497,71 @@ fn a_signal_stop_is_not_a_successful_exit() {
     }
 }
 
+/// An update that nothing restarts (a `zone serve` in a terminal, a zone Zone for Mac started)
+/// must not leave the old version running: zone notices its program file was replaced and
+/// starts the new one in its place.
+#[cfg(unix)]
+#[test]
+fn a_running_zone_starts_the_version_that_replaced_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new();
+    let bin = sandbox.home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let program = bin.join("zone");
+    std::fs::copy(ZONE, &program).unwrap();
+    let marker = sandbox.home.join("started-as");
+    // The sandbox's environment, with the copy as the program.
+    let template = sandbox.zone();
+    let mut command = Command::new(&program);
+    for (key, value) in template.get_envs() {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
+    command
+        .env("ZONE_SELF_CHECK_SECONDS", "0.2")
+        .args(["serve", "--port", "0", "--quiet"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = Daemon { child: command.spawn().unwrap() };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sandbox.daemon_info().is_none() {
+        assert!(Instant::now() < deadline, "zone serve did not start within 30 seconds");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let pid = daemon.child.id();
+
+    // Another program that says it is zone, but not a different version: nothing happens.
+    let stand_in = |version: &str| {
+        let script = format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"zone {version}\"; exit 0; fi\necho \"$@\" > '{}'\nexec sleep 60\n", marker.display());
+        let fresh = bin.join("zone.new");
+        std::fs::write(&fresh, script).unwrap();
+        std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&fresh, &program).unwrap();
+    };
+    stand_in(env!("CARGO_PKG_VERSION"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!marker.exists(), "the same version put there again restarted zone");
+    assert!(sandbox.daemon_info().is_some());
+
+    // A different version: zone cleans up and that program runs in its place, with the same
+    // arguments, as the same process.
+    stand_in("9.9.9");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the new version was not started within 30 seconds");
+        assert!(daemon.child.try_wait().unwrap().is_none(), "zone ended and did not start the new version");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "serve --port 0 --quiet");
+    assert!(sandbox.daemon_info().is_none(), "the old zone left daemon.json behind");
+    assert_eq!(daemon.child.id(), pid);
+    assert!(daemon.child.try_wait().unwrap().is_none(), "the new program is not running");
+}
+
 #[cfg(unix)]
 mod libc_signal {
     pub const HUP: i32 = 1;

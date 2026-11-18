@@ -134,7 +134,8 @@ main() {
     if [ -n "$restarted" ]; then
         say "Restarted zone, so the new version is the one running."
     elif [ -n "$updating" ]; then
-        say "If zone is running (\`zone status\` says), stop it and start it again to run the new version."
+        say "A zone that is running switches to the new version by itself within a minute (\`zone status\` names the version that is running)."
+        say "If it is still the old one after that, stop it and start it again."
     fi
 
     # Is the folder somewhere the shell looks for programs? (`zone update` was found there.)
