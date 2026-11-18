@@ -365,7 +365,13 @@ final class StateTests: XCTestCase {
     func testUpdateAnswers() {
         let body = Data(#"{"tag_name": "v0.2.0", "html_url": "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.2.0"}"#.utf8)
         let page = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.2.0")!
-        XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.1.0"), .newer(version: "0.2.0", page: page))
+        XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.1.0"), .newer(version: "0.2.0", page: page, diskImage: nil))
+        // A release that carries the app says where its disk image is. Only GitHub's own
+        // https address counts, whatever a release's file list claims.
+        let image = "https://github.com/zaydiscold/zone-mcp/releases/download/v0.2.0/Zone.dmg"
+        let files = #"[{"name": "SHA256SUMS", "browser_download_url": "https://github.com/x/SHA256SUMS"}, {"name": "Elsewhere.dmg", "browser_download_url": "http://example.com/Zone.dmg"}, {"name": "Zone.dmg", "browser_download_url": "\#(image)"}]"#
+        let withApp = Data(#"{"tag_name": "v0.2.0", "html_url": "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.2.0", "assets": \#(files)}"#.utf8)
+        XCTAssertEqual(UpdateCheck.answer(status: 200, body: withApp, current: "0.1.0"), .newer(version: "0.2.0", page: page, diskImage: URL(string: image)))
         XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.2.0"), .upToDate(latest: "0.2.0"))
         // A build made before its release was published is not behind.
         XCTAssertEqual(UpdateCheck.answer(status: 200, body: body, current: "0.2.1"), .upToDate(latest: "0.2.0"))
@@ -377,17 +383,25 @@ final class StateTests: XCTestCase {
     func testTheWebsiteAnswersWhenTheAPIWillNot() {
         let tag = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.1.1")!
         XCTAssertEqual(UpdateCheck.answer(redirectedTo: tag, current: "0.1.2"), .upToDate(latest: "0.1.1"))
-        XCTAssertEqual(UpdateCheck.answer(redirectedTo: tag, current: "0.1.0"), .newer(version: "0.1.1", page: tag))
+        XCTAssertEqual(UpdateCheck.answer(redirectedTo: tag, current: "0.1.0"), .newer(version: "0.1.1", page: tag, diskImage: nil))
+        XCTAssertEqual(UpdateCheck.answer(redirectedTo: tag, current: "0.1.0", hasDiskImage: true), .newer(version: "0.1.1", page: tag, diskImage: URL(string: "https://github.com/zaydiscold/zone-mcp/releases/download/v0.1.1/Zone.dmg")))
         XCTAssertEqual(UpdateCheck.answer(redirectedTo: URL(string: "https://github.com/zaydiscold/zone-mcp/releases"), current: "0.1.0"), .upToDate(latest: nil))
         XCTAssertEqual(UpdateCheck.answer(redirectedTo: nil, current: "0.1.0"), .unknown("GitHub did not say which release is the latest"))
     }
 
     func testTheUpdateLineSaysOneThingWithAtMostOneAction() {
         let page = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.1.3")!
-        let newer = UpdateLine(answer: .newer(version: "0.1.3", page: page), checking: false, current: "0.1.2")
+        let image = URL(string: "https://github.com/zaydiscold/zone-mcp/releases/download/v0.1.3/Zone.dmg")!
+        let newer = UpdateLine(answer: .newer(version: "0.1.3", page: page, diskImage: image), checking: false, current: "0.1.2")
         XCTAssertEqual(newer.text, "0.1.3 is available")
-        XCTAssertEqual(newer.action, .update(page))
+        XCTAssertEqual(newer.action, .update(image), "Update downloads the app, it does not open a page of files")
         XCTAssertEqual(newer.button, "Update")
+
+        // A release without the app (0.1.3 was published that way): no Update that leads
+        // to a page with nothing for the app on it.
+        let noApp = UpdateLine(answer: .newer(version: "0.1.3", page: page, diskImage: nil), checking: false, current: "0.1.2")
+        XCTAssertEqual(noApp.text, "0.1.3 is not out as an app yet")
+        XCTAssertEqual(noApp.button, "Try again")
 
         let same = UpdateLine(answer: .upToDate(latest: "0.1.2"), checking: false, current: "0.1.2")
         XCTAssertEqual(same.text, "Up to date")

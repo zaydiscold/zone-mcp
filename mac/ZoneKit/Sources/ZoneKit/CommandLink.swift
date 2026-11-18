@@ -99,8 +99,11 @@ public enum LoginShell {
 
 public enum UpdateCheck {
     public enum Answer: Equatable, Sendable {
-        /// A later version is out. `page` is where to get it.
-        case newer(version: String, page: URL)
+        /// A later version is out. `page` is its release page. `diskImage` is the download
+        /// of Zone for Mac itself, when that release carries one: a release is published
+        /// with the command line's files first, and the app's disk image may follow later
+        /// or not at all.
+        case newer(version: String, page: URL, diskImage: URL?)
         /// This is the latest release, or later than it (a build made before its release
         /// was published). `latest` is the newest published one, when there is one.
         case upToDate(latest: String?)
@@ -130,21 +133,45 @@ public enum UpdateCheck {
             return .unknown("GitHub did not answer (status \(status))")
         }
         let page = (object["html_url"] as? String).flatMap(URL.init(string:)) ?? releasesPage
-        return compare(tag: tag, page: page, current: current)
+        return compare(tag: tag, page: page, diskImage: diskImage(inAssets: object["assets"]), current: current)
+    }
+
+    /// The download of the app among a release's files: the first whose name ends in `.dmg`,
+    /// served by GitHub over https.
+    static func diskImage(inAssets assets: Any?) -> URL? {
+        guard let assets = assets as? [[String: Any]] else { return nil }
+        for asset in assets {
+            guard let name = asset["name"] as? String, name.lowercased().hasSuffix(".dmg"),
+                  let text = asset["browser_download_url"] as? String, let url = URL(string: text),
+                  url.scheme == "https", url.host == "github.com"
+            else { continue }
+            return url
+        }
+        return nil
+    }
+
+    /// Where a release's disk image is when it has one, for the website's answer, which
+    /// does not list files.
+    static func diskImageAddress(tag: String) -> URL? {
+        guard let escaped = tag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
+        return URL(string: "https://github.com/zaydiscold/zone-mcp/releases/download/\(escaped)/Zone.dmg")
     }
 
     /// Reads where the website's "latest release" link led: `.../releases/tag/v0.1.3`.
-    public static func answer(redirectedTo url: URL?, current: String) -> Answer {
+    /// The website does not say which files a release has: `hasDiskImage` is what asking
+    /// for the disk image itself came to.
+    public static func answer(redirectedTo url: URL?, current: String, hasDiskImage: Bool = false) -> Answer {
         guard let url, let tagIndex = url.pathComponents.firstIndex(of: "tag"), tagIndex + 1 < url.pathComponents.count else {
             // No release at all sends the visitor to the plain list of releases.
             if url?.path.hasSuffix("/releases") == true { return .upToDate(latest: nil) }
             return .unknown("GitHub did not say which release is the latest")
         }
-        return compare(tag: url.pathComponents[tagIndex + 1], page: url, current: current)
+        let tag = url.pathComponents[tagIndex + 1]
+        return compare(tag: tag, page: url, diskImage: hasDiskImage ? diskImageAddress(tag: tag) : nil, current: current)
     }
 
-    static func compare(tag: String, page: URL, current: String) -> Answer {
-        Versions.isNewer(tag, than: current) ? .newer(version: Versions.plain(tag), page: page) : .upToDate(latest: Versions.plain(tag))
+    static func compare(tag: String, page: URL, diskImage: URL?, current: String) -> Answer {
+        Versions.isNewer(tag, than: current) ? .newer(version: Versions.plain(tag), page: page, diskImage: diskImage) : .upToDate(latest: Versions.plain(tag))
     }
 
     /// Why a request did not get through, in a few words.
@@ -177,14 +204,19 @@ public enum UpdateCheck {
         guard let (_, response) = try? await URLSession.shared.data(for: page), (response as? HTTPURLResponse)?.statusCode == 200 else { return first }
         let second = answer(redirectedTo: response.url, current: current)
         if case .unknown = second { return first }
-        return second
+        guard case let .newer(_, tagPage, _) = second, let image = diskImageAddress(tag: tagPage.lastPathComponent) else { return second }
+        // Is the app there to download? Asked of the file itself.
+        var ask = URLRequest(url: image, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+        ask.httpMethod = "HEAD"
+        let has = ((try? await URLSession.shared.data(for: ask))?.1 as? HTTPURLResponse)?.statusCode == 200
+        return answer(redirectedTo: response.url, current: current, hasDiskImage: has)
     }
 }
 
 /// The one line about updates in Settings, and the one thing to click, if any.
 public struct UpdateLine: Equatable, Sendable {
     public enum Action: Equatable, Sendable {
-        /// Opens the page the newer version is downloaded from.
+        /// Downloads the newer app: the address of its disk image.
         case update(URL)
         case checkAgain
     }
@@ -208,10 +240,15 @@ public struct UpdateLine: Equatable, Sendable {
             return
         }
         switch answer {
-        case let .newer(version, page):
+        case let .newer(version, _, diskImage?):
             text = "\(version) is available"
-            action = .update(page)
-            detail = "You have \(Versions.plain(current)). Update opens the page to download \(version) from."
+            action = .update(diskImage)
+            detail = "You have \(Versions.plain(current)). Update downloads Zone \(version). Open the download and drag Zone to Applications."
+        case let .newer(version, _, nil):
+            // Only what can be delivered is offered: this release has no app to download.
+            text = "\(version) is not out as an app yet"
+            action = .checkAgain
+            detail = "You have \(Versions.plain(current)). zone \(version) is published for the command line, and the app for it is not there to download yet."
         case let .upToDate(latest):
             text = "Up to date"
             if let latest, Versions.isNewer(current, than: latest) {
