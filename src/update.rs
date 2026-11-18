@@ -14,6 +14,7 @@
 //!
 //! - `ZONE_NO_UPDATE_CHECK=1` turns the question off everywhere.
 //! - `ZONE_UPDATE_URL` asks another address (a mirror, or a test server) for the latest release.
+//! - `ZONE_UPDATE_WEB_URL` is the address asked when that one refuses to say (see [`check`]).
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -27,6 +28,7 @@ use crate::paths;
 pub const REPO: &str = "zaydiscold/zone-mcp";
 const ENV_OFF: &str = "ZONE_NO_UPDATE_CHECK";
 const ENV_URL: &str = "ZONE_UPDATE_URL";
+const ENV_WEB_URL: &str = "ZONE_UPDATE_WEB_URL";
 /// The longest the question may take.
 const PATIENCE_SECONDS: u32 = 6;
 
@@ -82,12 +84,51 @@ fn read_release(body: &str) -> Result<(String, String), String> {
     Ok((version, page))
 }
 
+/// The release a `/releases/latest` address led to: GitHub sends it on to
+/// `/releases/tag/v<version>`, and only ever to a published release that is neither a draft
+/// nor a prerelease.
+fn release_of_address(address: &str) -> Option<(String, String)> {
+    let address = address.trim();
+    let tag = address.rsplit_once("/releases/tag/")?.1.trim_end_matches('/');
+    if tag.is_empty() || tag.contains('/') || !tag.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((tag.trim_start_matches(['v', 'V']).to_string(), address.to_string()))
+}
+
+/// Asks the website, not the API, which release is the latest, the way the install script
+/// does. GitHub's API answers an address only sixty times an hour (an office or a campus
+/// shares one address), and then says nothing useful, while the website and the download
+/// itself still work.
+fn latest_from_website(asked_elsewhere: bool) -> Option<(String, String)> {
+    let url = match std::env::var(ENV_WEB_URL).ok().filter(|url| !url.trim().is_empty()) {
+        Some(url) => url,
+        // Whoever pointed zone at another address for releases did not mean GitHub.
+        None if asked_elsewhere => return None,
+        None => format!("https://github.com/{REPO}/releases/latest"),
+    };
+    let output = Command::new("curl")
+        .args(["--silent", "--fail", "--location", "--max-time", &PATIENCE_SECONDS.to_string()])
+        .args(["--output", if cfg!(windows) { "NUL" } else { "/dev/null" }, "--write-out", "%{url_effective}"])
+        .args(["--user-agent", &format!("zone/{}", current_version())])
+        .arg(&url)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    release_of_address(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Asks once which release is the latest. Never fails and never takes long.
 pub fn check() -> Check {
     if std::env::var(ENV_OFF).is_ok_and(|value| !value.trim().is_empty() && value.trim() != "0") {
         return Check::Off;
     }
-    let url = std::env::var(ENV_URL).ok().filter(|url| !url.trim().is_empty()).unwrap_or_else(|| format!("https://api.github.com/repos/{REPO}/releases/latest"));
+    let elsewhere = std::env::var(ENV_URL).ok().filter(|url| !url.trim().is_empty());
+    let asked_elsewhere = elsewhere.is_some();
+    let url = elsewhere.unwrap_or_else(|| format!("https://api.github.com/repos/{REPO}/releases/latest"));
     let asked = Command::new("curl")
         .args(["--silent", "--show-error", "--location", "--max-time", &PATIENCE_SECONDS.to_string()])
         .args(["--header", "Accept: application/vnd.github+json", "--user-agent", &format!("zone/{}", current_version())])
@@ -102,7 +143,11 @@ pub fn check() -> Check {
         // No network, a name that does not resolve, a server that does not answer.
         return Check::Unknown("no answer from GitHub (is this computer online?)".to_string());
     }
-    match read_release(&String::from_utf8_lossy(&output.stdout)) {
+    let answer = read_release(&String::from_utf8_lossy(&output.stdout)).or_else(|why| {
+        // The API answered, but not with a release: most often its hourly limit.
+        if why.starts_with("GitHub answered") { latest_from_website(asked_elsewhere).ok_or(why) } else { Err(why) }
+    });
+    match answer {
         Ok((latest, page)) if is_newer(&latest, current_version()) => Check::Newer { latest, page },
         Ok((latest, _)) => Check::Latest { latest },
         Err(why) => Check::Unknown(why),
@@ -310,6 +355,18 @@ mod tests {
         assert!(read_release(&json!({ "message": "API rate limit exceeded" }).to_string()).unwrap_err().contains("rate limit"));
         assert_eq!(read_release("{}"), Err("no release has been published yet".to_string()));
         assert!(read_release("<html>").is_err());
+    }
+
+    #[test]
+    fn the_website_says_which_release_is_latest_when_the_api_will_not() {
+        let page = "https://github.com/zaydiscold/zone-mcp/releases/tag/v0.4.2";
+        assert_eq!(release_of_address(page), Some(("0.4.2".to_string(), page.to_string())));
+        assert_eq!(release_of_address(&format!("{page}\n")).unwrap().0, "0.4.2");
+        // No release yet: GitHub leaves /releases/latest at /releases. And nothing odd is a version.
+        assert_eq!(release_of_address("https://github.com/zaydiscold/zone-mcp/releases"), None);
+        assert_eq!(release_of_address("https://github.com/zaydiscold/zone-mcp/releases/tag/"), None);
+        assert_eq!(release_of_address("https://github.com/zaydiscold/zone-mcp/releases/tag/nightly"), None);
+        assert_eq!(release_of_address("https://example.com/releases/tag/v1/../../x"), None);
     }
 
     #[test]

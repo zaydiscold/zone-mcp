@@ -1878,6 +1878,23 @@ fn zone_update_asks_once_and_installs_the_newer_release() {
     let off = sandbox.zone().args(["update", "--check"]).output().unwrap();
     assert!(text(&off).contains("turned off"), "{}", text(&off));
 
+    // GitHub's API at its hourly limit: the website still says which release is the latest.
+    let limit = sandbox.home.join("limit.json");
+    std::fs::write(&limit, json!({ "message": "API rate limit exceeded for 203.0.113.7.", "documentation_url": "https://docs.github.com/rest" }).to_string()).unwrap();
+    let tag = sandbox.home.join("site").join("releases").join("tag");
+    std::fs::create_dir_all(&tag).unwrap();
+    std::fs::write(tag.join("v99.1.0"), "the release page").unwrap();
+    let mut limited = zone(&installed, "");
+    limited.env("ZONE_UPDATE_URL", format!("file://{}", limit.display()));
+    let refused = limited.args(["update", "--check"]).output().unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(text(&refused).contains("API rate limit exceeded"), "{}", text(&refused));
+    let mut limited = zone(&installed, "");
+    limited.env("ZONE_UPDATE_URL", format!("file://{}", limit.display())).env("ZONE_UPDATE_WEB_URL", format!("file://{}", tag.join("v99.1.0").display()));
+    let value: Value = serde_json::from_slice(&limited.args(["update", "--check", "--json"]).output().unwrap().stdout).unwrap();
+    assert_eq!((value["latest"].as_str(), value["newer"].as_bool(), value["checked"].as_bool()), (Some("99.1.0"), Some(true), Some(true)), "{value}");
+    assert!(value["page"].as_str().unwrap().ends_with("/releases/tag/v99.1.0"), "{value}");
+
     // A build in a checkout is not replaced: it is told how it updates.
     let checkout = zone(Path::new(ZONE), "/api/newer").arg("update").output().unwrap();
     assert_eq!(checkout.status.code(), Some(1));
