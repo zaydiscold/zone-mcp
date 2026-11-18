@@ -3,6 +3,8 @@
 Checked on 2026-11-18 by running each path, with the published 0.1.1 and 0.1.3 programs (and
 the 0.1.2 that Zone for Mac carried), each with `ZONE_HOME` and the install folder pointed at
 throwaway folders and the page on ports other than 47813. Nothing here touched a real install.
+Where a path needed a version newer than this checkout, a copy of the checkout built as "0.1.4"
+stood in for it.
 
 The short version: every way of installing zone ends with the newest release on disk, checked
 against that release's `SHA256SUMS`. What was weak was everything after the file is on disk: a
@@ -19,9 +21,9 @@ looking. The fixes are listed at the end with their commits.
 | `install.sh` one-liner | Fetched from `raw.githubusercontent.com/.../main/`, which GitHub caches for 5 minutes (`cache-control: max-age=300`). Finds the latest by following `github.com/.../releases/latest`, which only ever leads to a published release that is not a draft or a prerelease. Downloads, checks the SHA-256, runs `zone --version` on the download before replacing anything. | As soon as they run it. The script itself can be up to 5 minutes behind `main`; the version it installs is worked out when it runs, so it is never behind. | Re-run over an install: the script restarts zone only when the login item (`zone install`) points at this very file. A `zone serve` in a terminal, or one Zone for Mac started, kept running the old program: fixed, a running zone now starts the version that replaced it. See "After the file is replaced". The script also removed the old `zone` before moving the new one in, leaving a moment with nothing at the path: fixed (abc93b5), one move. |
 | `install.ps1` one-liner | The same on Windows. A running `zone.exe` is moved aside (Windows allows a rename, not an overwrite), the new one takes its name, the background zone is stopped and started again through its launcher. | As soon as they run it. | Read and covered by the Windows CI job only. Not run by hand for this review (no Windows machine in the loop). |
 | Homebrew | There is no tap. `zaydiscold/homebrew-zone` does not exist (404). Each release carries a `zone.rb` with that release's version and checksums (0.1.1 and 0.1.3 checked against `SHA256SUMS`: they match). | Never, until a tap is published and its `Formula/zone.rb` is replaced at each release. | README says "soon", which is true. `brew upgrade` will lag every release by however long the tap's copy takes to be replaced: that step is by hand today. |
-| `cargo install --git` | Builds `main` at the moment it is run, not the latest release. `zone update` refuses to replace it and prints the command to run again (with `--force`). | When they run it again. | README gives the first-install line; the update line needs `--force`, which `zone update` prints. |
-| Zone for Mac | The app carries a zone inside and copies it to `~/Library/Application Support/Zone/bin/zone` at launch when the two differ. Agents and the `zone` command point at that copy. The app checks GitHub when its Settings come into view (at most every 15 minutes) and shows "0.1.x is available" with an Update button. | When they download a new `Zone.dmg` and replace the app. | Three, below. |
-| The page in a browser | Every answer is `cache-control: no-store`, fonts included, so nothing is cached across versions. | A reload after zone restarts. | An open tab never noticed that zone had been replaced: it kept running the old page's script against the new zone until someone reloaded. Fixed: the page reloads itself. |
+| `cargo install --git` | Builds `main` at the moment it is run, not the latest release. `zone update` refuses to replace it and prints the command to run again (with `--force`). | When they run it again. | README gave only the first-install line. Fixed: its Updating section has the line with `--force`. |
+| Zone for Mac | The app carries a zone inside and copies it to `~/Library/Application Support/Zone/bin/zone` at launch when the two differ. Agents and the `zone` command point at that copy. The app checks GitHub when its Settings come into view (at most every 15 minutes) and shows "0.1.x is available" with an Update button. | When they download a new `Zone.dmg` and replace the app. The zone inside can be had sooner: `zone update` through the app's `zone` command (the page's Settings shows the line to copy), and that zone then runs within seconds. | Three, below, all fixed in the app's source. One left: the app says nothing about a newer release unless its Settings are opened. |
+| The page in a browser, and in Zone for Mac's History window | Every answer is `cache-control: no-store`, the font included, so nothing is cached across versions. | A few seconds after zone restarts. | An open tab never noticed that zone had been replaced: it kept running the old page's script against the new zone until someone reloaded. Fixed (b50b2b7): the page loads the new one by itself, on the route it was on. |
 | MCP (`zone mcp` started by an agent) | The agent's settings name a path. Every way of updating replaces the file at the same path, so the next session starts the new version. | The agent's next session. | A session that is already open keeps its old `zone mcp` until it ends. That is safe: see "Old and new on one library". |
 
 ## After the file is replaced
@@ -72,10 +74,13 @@ the page's home view and their agents since would never hear of 0.1.3.
 
 - The page asks through zone itself, and zone keeps the answer for 12 hours. So for up to 12
   hours after a release, Settings can say "Up to date". Restarting zone empties that memory.
-- Now: the page asks when it is opened (the same question, the same 12 hours, still off with
-  `ZONE_NO_UPDATE_CHECK=1`), and says once per version that a newer one is out. This widens
-  what README promised ("Opening its Settings lets zone ask GitHub"): it is now "having the
-  page open". The owner should confirm that is wanted; it is one small commit to take back.
+- Now (73aa116): the page asks when it is opened and every six hours after (the same question,
+  the same 12 hours, still off with `ZONE_NO_UPDATE_CHECK=1`), and says once per version that a
+  newer one is out: "zone 0.1.9 is available. How to update / Later". It stays until one of the
+  two is pressed, and How to update leads to Settings, where the line to run can be copied. This
+  widens what README promised ("Opening its Settings lets zone ask GitHub"): it is now "while
+  the page is open", and README says so. The owner should confirm that is wanted; it is one
+  small commit to take back.
 - zone still never asks while nobody has the page open, and the command line still asks only
   when `zone update` or `zone doctor` is run.
 
@@ -84,21 +89,24 @@ the page's home view and their agents since would never hear of 0.1.3.
 1. **The Update button led to a page with nothing for the app on it.** It opens the release's
    page. v0.1.3 has four command line archives and no `Zone.dmg` (neither did 0.1.0 or 0.1.1),
    so a person pressing Update gets a list of files none of which is the app. Fixed in the
-   app's source: the button is offered only when the release carries a `.dmg`, and then it
-   downloads that file. Without one the line says the app for that version is not out yet.
-   This reaches people only with the next app build. For today: attach `mac/build/Zone.dmg`
-   (0.1.3, signed and notarized) to the v0.1.3 release.
+   app's source (ac2a9f5): the button is offered only when the release carries a `.dmg`, and
+   then it downloads that file. Without one the line says "0.1.x is not out as an app yet".
+   Both seen in the app's sandbox with stand-in releases. This reaches people only with the
+   next app build. For today: attach `mac/build/Zone.dmg` (0.1.3, signed and notarized) to the
+   v0.1.3 release.
 2. **Two copies of zone can disagree.** Seen on the owner's Mac during this review: the zone
    running was `~/.local/bin/zone` 0.1.3 (started at login by `zone install`), while the app's
    own copy was 0.1.2. The app then reads the library through its 0.1.2 program while 0.1.3
    runs it. That works (see the next section), but the app showed its own copy's version and
-   gave no sign that another version was running. Fixed: the foot of Settings names the
-   version that is running when it differs.
+   gave no sign that another version was running. Fixed (8206944): the foot of Settings names
+   the version that is running when it differs ("Zone 0.1.3. Running: zone 0.1.4").
 3. **Opening the app could put an older zone back.** `zone update` run through the app's
    `zone` command replaces the app's copy (the path is not inside the app, so zone treats it
    as an install by script). The next time the app opened, it saw a copy that differed from
-   the one inside it and replaced it, with the older one. Fixed: the app leaves a newer copy
-   alone.
+   the one inside it and replaced it, with the older one. Fixed (102dcf0): the app leaves a
+   newer copy alone. Seen in the sandbox: the copy replaced by a 0.1.4, the zone the app had
+   started became 0.1.4 by itself (same process), the app reopened, the copy was still 0.1.4
+   and the foot of Settings said "Zone 0.1.3, with zone 0.1.4 inside".
 
 The app does not update itself, and nothing in this pass changes that: a new app is a new
 `Zone.dmg`, downloaded and dragged to Applications.
@@ -107,7 +115,14 @@ The app does not update itself, and nothing in this pass changes that: a new app
 
 A long agent session keeps its old `zone mcp` after an update, and the Mac case above has a
 0.1.2 command line reading what 0.1.3 runs. Both were tried, with libraries made by the real
-0.1.1 and 0.1.2 programs and then opened by a 0.1.3 zone:
+0.1.1 and 0.1.2 programs and then opened by a 0.1.3 zone. After the fixes of this pass (which
+add one column, `removed.with_note`) it was all tried again with this checkout's build as the
+new side and the released 0.1.1, 0.1.2 and 0.1.3 as the old: the old programs' `status`,
+`list`, `search` and `zone mcp` (`list_items`, `mark_processed`) beside the new zone, the
+released 0.1.3 and 0.1.1 running the library the new build had written (removing, putting
+back, the phone sending everything again), and the new build opening it afterwards. Nothing
+was lost, `PRAGMA integrity_check` said ok, and what the old zone had brought back was removed
+again.
 
 | | 0.1.1 | 0.1.2 |
 |---|---|---|
@@ -118,10 +133,11 @@ A long agent session keeps its old `zone mcp` after an update, and the Mac case 
 
 ## What was fixed, and where
 
-See `docs/reviews/2026-11-18-logic-pass.md` for the commits. In short: the running version is
-said out loud, the page reloads itself, the page tells of a newer release, `zone update`
-survives the API limit, the install script never leaves a moment without a `zone` at its path,
-the Mac app offers only what it can deliver and never puts an older zone back.
+See `docs/reviews/2026-11-18-logic-pass.md` for the commits. In short: a running zone starts
+the version that replaced it, the running version is said out loud, the page loads the new page
+by itself, the page tells of a newer release, `zone update` survives the API limit, the install
+script never leaves a moment without a `zone` at its path, the Mac app offers only what it can
+deliver and never puts an older zone back.
 
 ## Still open
 
@@ -131,9 +147,18 @@ the Mac app offers only what it can deliver and never puts an older zone back.
   `Formula/zone.rb` with the release's `zone.rb` at every release (worth a step in the release
   workflow, which would need a token for the tap).
 - **Everyone on 0.1.1 to 0.1.3 keeps those versions' behaviour** until they update once: their
-  `zone update` runs the script built into the program they have, their page does not reload
-  itself, and their zone does not mention a newer release outside Settings. Only a release
-  note, or the phone app saying so, reaches them.
+  `zone update` runs the script built into the program they have, their zone keeps running
+  after the file is replaced unless a login item restarts it, their page does not load the new
+  one, and their zone does not mention a newer release outside Settings. Only a release note,
+  or the phone app saying so, reaches them. The release notes of the next version should say:
+  "after this update, stop zone and start it again once (`zone status` names the version that
+  is running)".
+- **Zone for Mac tells of a newer release only in its Settings.** Someone who never opens them
+  hears of it from the History window (the page's line) and not from the menu. A line in the
+  popover would be new interface, left to the design pass.
+- **Windows was read, not run**: `install.ps1` moves the running `zone.exe` aside and copies
+  the new one in, which leaves an instant with no `zone.exe` at the path (the fault fixed in
+  `install.sh`). Not changed without a Windows machine to try it on.
 - **The download is checked against a checksum that comes from the same release.** That
   catches a broken or swapped file, not a release that was replaced whole. Signing the
   checksums would close that; not done here.
