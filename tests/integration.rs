@@ -534,6 +534,74 @@ fn page_cookie(sandbox: &Sandbox, port: u16) -> String {
     line.split_once(':').unwrap().1.trim().split(';').next().unwrap().to_string()
 }
 
+/// The page's own writes against a real daemon, with a phone syncing over real iroh: an item
+/// marked done on the page is processed for the command line, an item removed on the page
+/// stays removed when the phone sends everything again, and the phone's look reaches the page.
+#[test]
+fn the_page_marks_removes_and_follows_the_phone() {
+    let sandbox = Sandbox::new();
+    let _daemon = Daemon::start(&sandbox);
+    let port = sandbox.daemon_info().unwrap()["http_port"].as_u64().unwrap() as u16;
+    let identity = sandbox.home.join("phone.json");
+    let addr = loopback_addr(&sandbox);
+    let sent = phone(&sandbox, &["--url", &pair_url(&sandbox), "--identity", identity.to_str().unwrap(), "--addr", &addr, "--count", "30", "--appearance", "light", "--accent", "ember"]);
+    assert_eq!(sent["result"], "welcome", "{sent}");
+    assert_eq!(total_items(&sandbox), 30);
+
+    let cookie = page_cookie(&sandbox, port);
+    let get = |path: &str| -> Value {
+        let (status, response) = http(port, &format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"));
+        assert_eq!(status, 200, "{path}: {response}");
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    // What the phone said about its look is on the page, and the page is drawn with its accent.
+    let status = get("/api/status");
+    assert_eq!((status["phones"][0]["appearance"].as_str(), status["phones"][0]["accent"].as_str()), (Some("light"), Some("ember")));
+    assert_eq!(status["look"]["accent_shown"], "ember");
+    let (_, page) = http(port, &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"));
+    assert!(page.contains("data-theme=\"auto\" data-accent=\"ember\""));
+    assert_eq!(get(&format!("/api/items?device={}", status["phones"][0]["id"].as_str().unwrap()))["total"], 30);
+
+    let items = get("/api/items?limit=3");
+    let ids: Vec<&str> = items["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap()).collect();
+    // Done on the page is processed on the command line.
+    let (code, reply) = http_post(port, "/api/done", &cookie, json!({ "ids": [ids[0]], "done": true }).to_string().as_bytes());
+    assert_eq!((code, reply["ids"].as_array().map(Vec::len)), (200, Some(1)), "{reply}");
+    let done = sandbox.json(&["list", "--done", "--json"]);
+    assert_eq!((done["total"].as_i64(), done["items"][0]["id"].as_str()), (Some(1), Some(ids[0])));
+    assert_eq!(sandbox.json(&["list", "--unprocessed", "--json"])["total"], 29);
+
+    // Removed on the page: gone from the command line and from an export.
+    let (code, reply) = http_post(port, "/api/remove", &cookie, json!({ "ids": [ids[1], ids[2]] }).to_string().as_bytes());
+    assert_eq!((code, reply["removed"].as_array().map(Vec::len)), (200, Some(2)), "{reply}");
+    assert_eq!(total_items(&sandbox), 28);
+    assert!(!sandbox.ok(&["export", "--format", "jsonl"]).contains(ids[1]));
+    assert!(!sandbox.run(&["export", "--id", ids[1]]).status.success());
+    // The phone is asked for everything again and sends it: the two stay away.
+    sandbox.ok(&["resync"]);
+    let again = phone(&sandbox, &["--identity", identity.to_str().unwrap(), "--addr", &addr, "--count", "30"]);
+    assert_eq!(again["resend_all"], true, "{again}");
+    assert_eq!(total_items(&sandbox), 28);
+    assert_eq!(get("/api/removed")["items"].as_array().unwrap().len(), 2);
+    // Put back from the page, they are on the command line again, and the done mark is still there.
+    let (code, reply) = http_post(port, "/api/restore", &cookie, json!({ "ids": [ids[1], ids[2]] }).to_string().as_bytes());
+    assert_eq!((code, reply["restored"].as_array().map(Vec::len)), (200, Some(2)), "{reply}");
+    assert_eq!(total_items(&sandbox), 30);
+    assert_eq!(sandbox.json(&["list", "--done", "--json"])["total"], 1);
+
+    // Another site, or no session, cannot do any of it.
+    let (code, _) = http_post(port, "/api/remove", "zone_session_0=nope", json!({ "ids": [ids[0]] }).to_string().as_bytes());
+    assert_eq!(code, 401);
+    let body = json!({ "ids": [ids[0]] }).to_string();
+    let (code, _) = http(port, &format!("POST /api/remove HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://evil.example\r\nCookie: {cookie}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()));
+    assert_eq!(code, 403);
+    assert_eq!(total_items(&sandbox), 30);
+    // A name for the phone, given on the page, is what `zone unpair` and `--phone` know it by.
+    let (code, reply) = http_post(port, "/api/phone", &cookie, json!({ "id": status["phones"][0]["id"], "nickname": "Pocket" }).to_string().as_bytes());
+    assert_eq!((code, reply["label"].as_str()), (200, Some("Pocket")), "{reply}");
+    assert_eq!(sandbox.json(&["list", "--phone", "pocket", "--json"])["total"], 30);
+}
+
 /// A grayscale PNG as written by `zone dev flash-encode`: width, height, one byte per pixel.
 fn read_gray_png(path: &Path) -> (usize, usize, Vec<u8>) {
     let decoder = png::Decoder::new(BufReader::new(std::fs::File::open(path).unwrap()));
@@ -867,7 +935,36 @@ fn import_then_query_from_the_command_line() {
     assert_eq!(lines.len(), 2);
     assert!(lines[0]["created_at"].as_f64().unwrap() < lines[1]["created_at"].as_f64().unwrap(), "oldest first");
     let markdown = sandbox.ok(&["export", "--format", "md", "--kind", "meeting", "--tz", "America/Los_Angeles"]);
-    assert!(markdown.contains("## Wednesday, November 11, 2026") && markdown.contains("### 14:00 meeting: Synthetic standup"));
+    // One meeting is written as its transcript under a header.
+    assert!(markdown.starts_with("# Synthetic standup\n\nWednesday, November 11, 2026 at 14:00"), "{markdown}");
+    assert!(markdown.contains("**Me**") && markdown.contains("the lighthouse survey is done") && markdown.contains("**Grace**"), "{markdown}");
+    // Notes alone are a checklist: open ones unticked, and ticked once flagged as processed.
+    let first_note = lines[0]["id"].as_str().unwrap().to_string();
+    let checklist = sandbox.ok(&["export", "--format", "md", "--kind", "note", "--order", "newest"]);
+    assert!(checklist.starts_with("# Notes\n\n2 notes, 2 open."), "{checklist}");
+    assert_eq!(checklist.matches("- [ ] ").count(), 2);
+    // Everything together is a document by day, grouped by kind, and plain text has no markup.
+    let all = sandbox.ok(&["export", "--format", "md", "--tz", "America/Los_Angeles"]);
+    assert!(all.starts_with("# Zone library\n\n43 items.") && all.contains("\n### Notes\n") && all.contains("\n### Dictations\n") && all.contains("\n#### Synthetic standup\n"), "{}", &all[..all.len().min(600)]);
+    let text = sandbox.ok(&["export", "--format", "txt", "--kind", "note"]);
+    assert!(text.starts_with("NOTES\n=====\n") && text.contains("\n[ ] ") && !text.contains('#'), "{text}");
+    // CSV has a header and a line per item; JSON is one array; one item can be named by its id.
+    let csv = sandbox.ok(&["export", "--format", "csv", "--kind", "dictation", "--source", "app"]);
+    assert!(csv.starts_with("id,kind,source,created,done,duration_s,words,title,text\r\n"));
+    assert_eq!(csv.matches("\r\n").count(), 9, "{csv}");
+    let array: Value = serde_json::from_str(&sandbox.ok(&["export", "--format", "json", "--kind", "note"])).unwrap();
+    assert_eq!(array.as_array().unwrap().len(), 2);
+    let one = sandbox.ok(&["export", "--format", "jsonl", "--id", &first_note]);
+    assert_eq!((one.lines().count(), serde_json::from_str::<Value>(one.trim()).unwrap()["id"].as_str()), (1, Some(first_note.as_str())));
+    let file = sandbox.home.join("notes.md");
+    sandbox.ok(&["export", "--format", "md", "--kind", "note", "--output", file.to_str().unwrap()]);
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("# Notes\n"));
+    assert!(!sandbox.run(&["export", "--format", "pdf"]).status.success());
+    // --done and --unprocessed are the two sides of the same flag.
+    assert_eq!(sandbox.json(&["list", "--done", "--json"])["total"], 0);
+    assert_eq!(sandbox.json(&["list", "--unprocessed", "--json"])["total"], 43);
+    assert!(!sandbox.run(&["list", "--done", "--unprocessed"]).status.success());
+    assert!(!sandbox.run(&["list", "--phone", "nobody"]).status.success());
 
     // A watched folder is remembered, and cleared.
     let parent = package.parent().unwrap();

@@ -263,7 +263,7 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
         "/api/stats" if get => guarded(head, state, |db| stats(db, &head.query)),
         "/api/export" if get => guarded(head, state, |db| export(db, &head.query)),
         "/api/settings" if get => guarded(head, state, |db| settings(db, state)),
-        "/api/removed" if get => guarded(head, state, |db| removed(db)),
+        "/api/removed" if get => guarded(head, state, removed),
         // These two touch no item: which AI clients have zone, and whether a newer zone is out.
         "/api/agents" if get => unguarded(head, state, agents),
         "/api/update" if get => unguarded(head, state, || Ok(update_answer(head.query.contains_key("again")))),
@@ -1474,4 +1474,309 @@ mod tests {
 
         assert_eq!(route(&with_cookie(head(Method::GET, "/nope"), &state), &state, "n").status(), StatusCode::NOT_FOUND);
     }
+    fn post_json(state: &WebState, target: &str, body: Value) -> Reply {
+        let mut h = with_cookie(head(Method::POST, target), state);
+        h.origin = Some(format!("http://127.0.0.1:{PORT}"));
+        h.fetch_site = Some("same-origin".to_string());
+        h.body = Bytes::from(body.to_string());
+        route(&h, state, "n")
+    }
+
+    fn get_json(state: &WebState, target: &str) -> Value {
+        json_body(route(&with_cookie(head(Method::GET, target), state), state, "n"))
+    }
+
+    const WRITES: [&str; 6] = ["/api/done", "/api/remove", "/api/restore", "/api/settings", "/api/phone", "/api/unpair"];
+
+    #[test]
+    fn every_write_needs_the_session_and_refuses_other_sites() {
+        let state = state();
+        let id = get_json(&state, "/api/items")["items"][0]["id"].as_str().unwrap().to_string();
+        for path in WRITES {
+            let body = json!({ "ids": [id], "done": true, "appearance": "dark", "id": "nobody" }).to_string();
+            // No session: locked, whatever the body.
+            let mut h = head(Method::POST, path);
+            h.body = Bytes::from(body.clone());
+            assert_eq!(route(&h, &state, "n").status(), StatusCode::UNAUTHORIZED, "{path}");
+            // A page on another site, even with the cookie: refused before anything is read.
+            for (origin, site) in [(Some("https://evil.example"), None), (None, Some("cross-site")), (None, Some("same-site")), (Some("http://localhost:1"), Some("same-origin"))] {
+                let mut h = with_cookie(head(Method::POST, path), &state);
+                h.origin = origin.map(str::to_string);
+                h.fetch_site = site.map(str::to_string);
+                h.body = Bytes::from(body.clone());
+                assert_eq!(route(&h, &state, "n").status(), StatusCode::FORBIDDEN, "{path} {origin:?} {site:?}");
+            }
+            // The wrong Host (DNS rebinding) is refused too.
+            let mut h = with_cookie(head(Method::POST, path), &state);
+            h.host = Some("evil.example:47813".to_string());
+            assert_eq!(route(&h, &state, "n").status(), StatusCode::FORBIDDEN, "{path}");
+            // A write is never a link: only /api/settings can be read with GET, and that changes nothing.
+            if path != "/api/settings" {
+                assert_eq!(route(&with_cookie(head(Method::GET, path), &state), &state, "n").status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
+            }
+            // A body that is not a JSON object is an error, not a guess.
+            for bad in ["", "[1]", "ids=1"] {
+                let mut h = with_cookie(head(Method::POST, path), &state);
+                h.body = Bytes::from(bad);
+                assert_eq!(route(&h, &state, "n").status(), StatusCode::BAD_REQUEST, "{path} {bad:?}");
+            }
+        }
+        // Nothing above changed anything.
+        let db = state.db.lock().unwrap();
+        assert_eq!((db.total_items().unwrap(), db.unprocessed_items().unwrap(), db.removed_count().unwrap()), (130, 130, 0));
+        assert_eq!(db.meta_get(SETTING_APPEARANCE).unwrap(), None);
+        drop(db);
+        // The reads the page added are locked like the rest.
+        for path in ["/api/stats", "/api/export", "/api/settings", "/api/removed", "/api/agents", "/api/update"] {
+            assert_eq!(route(&head(Method::GET, path), &state, "n").status(), StatusCode::UNAUTHORIZED, "{path}");
+            let mut h = with_cookie(head(Method::GET, path), &state);
+            h.fetch_site = Some("cross-site".to_string());
+            assert_eq!(route(&h, &state, "n").status(), StatusCode::FORBIDDEN, "{path}");
+        }
+    }
+
+    #[test]
+    fn done_on_the_page_is_what_agents_call_processed() {
+        let state = state();
+        let agent = |name: &str, args: Value| {
+            let access = crate::tools::Access::default();
+            crate::tools::call(&mut state.db.lock().unwrap(), name, args.as_object().unwrap(), &access).unwrap()
+        };
+        let notes = get_json(&state, "/api/items?kinds=note&done=open");
+        assert_eq!((notes["total"].as_i64(), notes["counts"]["open"].as_i64(), notes["counts"]["done"].as_i64()), (Some(11), Some(11), Some(0)));
+        let ids: Vec<String> = notes["items"].as_array().unwrap().iter().take(3).map(|i| i["id"].as_str().unwrap().to_string()).collect();
+        assert_eq!(notes["items"][0]["done"], false);
+
+        // Ticked on the page: the agent's unprocessed_only no longer lists them.
+        let reply = json_body(post_json(&state, "/api/done", json!({ "ids": ids, "done": true })));
+        assert_eq!((reply["ids"].as_array().unwrap().len(), reply["missing"].as_array().unwrap().len()), (3, 0));
+        let left = agent("list_items", json!({ "kinds": ["note"], "unprocessed_only": true, "limit": 50 }));
+        assert_eq!(left["total"], 8);
+        assert!(left["items"].as_array().unwrap().iter().all(|card| !ids.contains(&card["id"].as_str().unwrap().to_string())));
+        assert_eq!(agent("get_items", json!({ "ids": [ids[0]] }))["items"][0]["processed"], true);
+
+        // Marked by an agent: the page shows it done, and its Open list drops it.
+        let fourth = notes["items"][3]["id"].as_str().unwrap().to_string();
+        agent("mark_processed", json!({ "ids": [fourth] }));
+        let open = get_json(&state, "/api/items?kinds=note&done=open");
+        assert_eq!((open["total"].as_i64(), open["counts"]["done"].as_i64()), (Some(7), Some(4)));
+        let done = get_json(&state, "/api/items?kinds=note&done=done&order=oldest");
+        assert_eq!(done["total"], 4);
+        assert!(done["items"].as_array().unwrap().iter().all(|i| i["done"] == true));
+        assert!(done["items"].as_array().unwrap().iter().any(|i| i["id"] == fourth.as_str()));
+        assert_eq!(get_json(&state, "/api/status")["items"]["notes_open"], 7);
+
+        // Undone on the page: open again for the agent. The revision moved each time.
+        let before = get_json(&state, "/api/status")["revision"].clone();
+        post_json(&state, "/api/done", json!({ "ids": [fourth], "done": false }));
+        assert_eq!(agent("list_items", json!({ "kinds": ["note"], "unprocessed_only": true }))["total"], 8);
+        assert_ne!(get_json(&state, "/api/status")["revision"], before);
+        assert_eq!(post_json(&state, "/api/done", json!({ "ids": [fourth] })).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(route(&with_cookie(head(Method::GET, "/api/items?done=maybe"), &state), &state, "n").status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn removing_hides_from_everyone_and_can_be_put_back() {
+        let state = state();
+        let first = get_json(&state, "/api/items?limit=2");
+        let ids: Vec<String> = first["items"].as_array().unwrap().iter().map(|i| i["id"].as_str().unwrap().to_string()).collect();
+        let word = first["items"][0]["text"].as_str().unwrap().split(' ').next().unwrap().to_string();
+        let reply = json_body(post_json(&state, "/api/remove", json!({ "ids": ids })));
+        assert_eq!((reply["removed"].as_array().unwrap().len(), reply["kept_days"].as_f64()), (2, Some(30.0)));
+
+        // Gone from the page, from an export, from one item's own address, and from agents.
+        assert_eq!(get_json(&state, "/api/items")["total"], 128);
+        assert_eq!(get_json(&state, "/api/status")["items"]["removed"], 2);
+        assert_eq!(route(&with_cookie(head(Method::GET, &format!("/api/item?id={}", ids[0])), &state), &state, "n").status(), StatusCode::BAD_REQUEST);
+        let exported = get_json(&state, &format!("/api/export?format=jsonl&ids={}", ids.join(",")));
+        assert_eq!((exported["items"].as_i64(), exported["content"].as_str()), (Some(0), Some("")));
+        assert_eq!(get_json(&state, "/api/export?format=csv")["items"], 128);
+        let access = crate::tools::Access::default();
+        let got = crate::tools::call(&mut state.db.lock().unwrap(), "get_items", json!({ "ids": [ids[0]] }).as_object().unwrap(), &access).unwrap();
+        assert!(!got.to_string().contains(&word) || got["items"].as_array().is_none_or(|items| items.is_empty()), "{got}");
+        assert_eq!(crate::tools::call(&mut state.db.lock().unwrap(), "list_items", json!({}).as_object().unwrap(), &access).unwrap()["total"], 128);
+
+        // The phone sends everything again: they stay away.
+        let items: Vec<Item> = crate::fakephone::synthetic_items(0, 130).iter().map(|v| Item::from_json(v).unwrap()).collect();
+        state.db.lock().unwrap().apply_items(&items, &Delivery { carrier: Carrier::Link, device_id: None, received_at: 9.0 }).unwrap();
+        assert_eq!(get_json(&state, "/api/items")["total"], 128);
+
+        // Listed in Settings with what they said, and put back from there.
+        let gone = get_json(&state, "/api/removed");
+        assert_eq!(gone["items"].as_array().unwrap().len(), 2);
+        assert!(gone["items"].as_array().unwrap().iter().all(|i| i["days_left"] == 30.0 && !i["preview"].as_str().unwrap().is_empty()));
+        let back = json_body(post_json(&state, "/api/restore", json!({ "ids": [ids[0], "NOT-AN-ITEM"] })));
+        assert_eq!(back["restored"], json!([ids[0]]));
+        assert_eq!(get_json(&state, "/api/items")["total"], 129);
+        assert_eq!(get_json(&state, &format!("/api/item?id={}", ids[0]))["text"], first["items"][0]["text"]);
+        assert_eq!(get_json(&state, "/api/removed")["items"].as_array().unwrap().len(), 1);
+        assert_eq!(post_json(&state, "/api/remove", json!({ "ids": [] })).status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn exports_stats_and_one_item_through_the_routes() {
+        let state = state();
+        // Notes alone are a checklist, with the done ones ticked.
+        let notes = get_json(&state, "/api/items?kinds=note&order=oldest");
+        let oldest = notes["items"][0]["id"].as_str().unwrap().to_string();
+        post_json(&state, "/api/done", json!({ "ids": [oldest], "done": true }));
+        let list = get_json(&state, "/api/export?format=md&kinds=note&order=oldest");
+        assert_eq!((list["shape"].as_str(), list["items"].as_i64(), list["format"].as_str()), (Some("checklist"), Some(11), Some("md")));
+        let content = list["content"].as_str().unwrap();
+        assert!(content.starts_with("# Notes\n\n11 notes, 10 open."), "{content}");
+        assert_eq!((content.matches("- [x] ").count(), content.matches("- [ ] ").count()), (1, 10));
+        assert!(content.find("- [x] ").unwrap() < content.find("- [ ] ").unwrap(), "oldest first, and the oldest is the done one");
+        assert!(list["filename"].as_str().unwrap().starts_with("zone-notes-") && list["filename"].as_str().unwrap().ends_with(".md"));
+        assert_eq!(get_json(&state, "/api/export?format=md&kinds=note&done=open")["items"], 10);
+
+        // One meeting is a transcript, and its own page has the turns.
+        let meeting = get_json(&state, "/api/items?kinds=meeting&limit=1")["items"][0].clone();
+        assert_eq!((meeting["speakers"].clone(), meeting["turn_count"].as_i64()), (json!(["Ada", "Grace"]), Some(2)));
+        assert!(!meeting["first_line"].as_str().unwrap().is_empty());
+        let id = meeting["id"].as_str().unwrap();
+        let transcript = get_json(&state, &format!("/api/export?format=md&ids={id}"));
+        assert_eq!(transcript["shape"], "meeting");
+        assert!(transcript["content"].as_str().unwrap().starts_with("# Synthetic meeting ") && transcript["content"].as_str().unwrap().contains("**Ada** (0:00)\n"));
+        assert!(transcript["filename"].as_str().unwrap().starts_with("zone-meeting-synthetic-meeting-"));
+        let whole = get_json(&state, &format!("/api/item?id={id}"));
+        assert_eq!((whole["turns"][1]["speaker"].as_str(), whole["turns"][1]["at"].as_str()), (Some("Grace"), Some("0:06")));
+
+        // Anything else is a document by day, in every format.
+        let dated = get_json(&state, "/api/export?format=txt&title=Everything");
+        assert_eq!((dated["shape"].as_str(), dated["items"].as_i64()), (Some("dated"), Some(130)));
+        assert!(dated["content"].as_str().unwrap().starts_with("EVERYTHING\n"));
+        let csv = get_json(&state, "/api/export?format=csv&kinds=dictation");
+        assert_eq!(csv["content"].as_str().unwrap().lines().count() as i64, csv["items"].as_i64().unwrap() + 1);
+        let json_export = get_json(&state, "/api/export?format=json&kinds=meeting");
+        assert_eq!(serde_json::from_str::<Value>(json_export["content"].as_str().unwrap()).unwrap().as_array().unwrap().len(), 2);
+        let found = get_json(&state, "/api/export?format=jsonl&q=harbor+amber");
+        assert!(found["items"].as_i64().unwrap() > 0);
+        assert_eq!(route(&with_cookie(head(Method::GET, "/api/export?format=pdf"), &state), &state, "n").status(), StatusCode::BAD_REQUEST);
+
+        // Statistics: everything is counted, and a filter narrows it.
+        let stats = get_json(&state, "/api/stats");
+        assert_eq!((stats["all"]["items"].as_i64(), stats["days"].as_array().unwrap().len(), stats["hours"].as_array().unwrap().len()), (Some(130), 30, 24));
+        assert_eq!(stats["by_kind"]["note"]["items"], 11);
+        assert_eq!(stats["day_counts"].as_object().unwrap().values().map(|v| v.as_i64().unwrap()).sum::<i64>(), 130);
+        assert_eq!(get_json(&state, "/api/stats?kinds=meeting")["all"]["items"], 2);
+        // A page of a chosen size, oldest first.
+        let page = get_json(&state, "/api/items?limit=7&order=oldest");
+        assert_eq!(page["items"].as_array().unwrap().len(), 7);
+        assert!(page["items"][0]["rfc3339"].as_str().unwrap() < page["items"][6]["rfc3339"].as_str().unwrap());
+        assert_eq!(page["day_counts"], json!({}));
+    }
+
+    #[test]
+    fn settings_phones_and_the_look_of_the_page() {
+        let state = state();
+        // Two phones, both calling themselves iPhone. One says how Zone looks on it.
+        {
+            let mut db = state.db.lock().unwrap();
+            for (n, endpoint) in ["aa11", "bb22"].into_iter().enumerate() {
+                let secret = paths::hex(&[n as u8 + 7; 32]);
+                db.create_offer(&secret, paths::now_unix(), 600.0).unwrap();
+                let phone = crate::db::PhoneInfo {
+                    id: Some(format!("PHONE-{n}")),
+                    name: Some("iPhone".into()),
+                    appearance: (n == 1).then(|| "light".to_string()),
+                    accent: (n == 1).then(|| "mint".to_string()),
+                    ..Default::default()
+                };
+                db.admit(endpoint, Some(&secret), &phone, paths::now_unix() - 50.0 + n as f64).unwrap();
+            }
+            let items: Vec<Item> = crate::fakephone::synthetic_items(500, 20).iter().map(|v| Item::from_json(v).unwrap()).collect();
+            db.apply_items(&items[..15], &Delivery { carrier: Carrier::Link, device_id: Some("PHONE-0"), received_at: 6.0 }).unwrap();
+            db.apply_items(&items[15..], &Delivery { carrier: Carrier::Link, device_id: Some("PHONE-1"), received_at: 6.0 }).unwrap();
+        }
+        let status = get_json(&state, "/api/status");
+        let phones = status["phones"].as_array().unwrap();
+        assert_eq!((phones.len(), phones[0]["id"].as_str(), phones[0]["label"].as_str(), phones[0]["items"].as_i64(), phones[1]["items"].as_i64()), (2, Some("aa11"), Some("iPhone"), Some(15), Some(5)));
+        // The 130 items of the test library came with no phone on record.
+        assert_eq!(status["items_without_a_phone"], json!({ "none_recorded": 130, "unpaired": 0 }));
+
+        // Each phone's items, the ones with no phone, and all of them.
+        assert_eq!(get_json(&state, "/api/items?device=aa11")["total"], 15);
+        assert_eq!(get_json(&state, "/api/items?device=bb22")["total"], 5);
+        assert_eq!(get_json(&state, "/api/items?device=none")["total"], 130);
+        assert_eq!(get_json(&state, "/api/items?device=all")["total"], 150);
+        assert_eq!(get_json(&state, "/api/stats?device=bb22")["all"]["items"], 5);
+        assert_eq!(get_json(&state, "/api/export?format=jsonl&device=bb22")["items"], 5);
+        assert_eq!(route(&with_cookie(head(Method::GET, "/api/items?device=cc33"), &state), &state, "n").status(), StatusCode::BAD_REQUEST);
+
+        // A name given on this computer, shown on the phone's items; cleared, the phone's own returns.
+        let renamed = json_body(post_json(&state, "/api/phone", json!({ "id": "bb22", "nickname": "Work phone" })));
+        assert_eq!((renamed["label"].as_str(), renamed["name"].as_str()), (Some("Work phone"), Some("iPhone")));
+        assert_eq!(get_json(&state, "/api/items?device=bb22&limit=1")["items"][0]["phone"], "Work phone");
+        assert_eq!(get_json(&state, "/api/status")["phones"][1]["label"], "Work phone");
+        assert_eq!(json_body(post_json(&state, "/api/phone", json!({ "id": "bb22", "nickname": "" })))["label"], "iPhone");
+        assert_eq!(post_json(&state, "/api/phone", json!({ "id": "zz", "nickname": "x" })).status(), StatusCode::BAD_REQUEST);
+
+        // The look: the computer's until chosen, with the iPhone's accent once it is known.
+        let page_with = |theme: &str, accent: &str| {
+            let page = body(route(&with_cookie(head(Method::GET, "/"), &state), &state, "n"));
+            assert!(page.contains(&format!("<html lang=\"en\" data-theme=\"{theme}\" data-accent=\"{accent}\">")), "wanted {theme} {accent}");
+            assert!(!page.contains("__THEME__") && !page.contains("__ACCENT__"));
+        };
+        let look = get_json(&state, "/api/settings")["look"].clone();
+        assert_eq!((look["appearance"].as_str(), look["accent"].as_str(), look["theme"].as_str(), look["accent_shown"].as_str()), (Some("system"), Some("phone"), Some("auto"), Some("mint")));
+        assert_eq!(look["phone"], json!({ "name": "iPhone", "appearance": "light", "accent": "mint" }));
+        page_with("auto", "mint");
+        let changed = json_body(post_json(&state, "/api/settings", json!({ "appearance": "phone" })));
+        assert_eq!(changed["look"]["theme"], "light");
+        page_with("light", "mint");
+        post_json(&state, "/api/settings", json!({ "appearance": "dark", "accent": "rose" }));
+        page_with("dark", "rose");
+        assert_eq!(get_json(&state, "/api/status")["look"]["accent_shown"], "rose");
+        for bad in [json!({ "appearance": "sepia" }), json!({ "accent": "#ff0000" }), json!({ "clipboard": "yes" }), json!({ "backup_folder": "/tmp" })] {
+            assert_eq!(post_json(&state, "/api/settings", bad.clone()).status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
+        page_with("dark", "rose");
+
+        // The clipboard setting is the one `zone clipboard` changes.
+        assert_eq!(get_json(&state, "/api/settings")["clipboard"]["enabled"], false);
+        assert_eq!(json_body(post_json(&state, "/api/settings", json!({ "clipboard": true })))["clipboard"]["enabled"], true);
+        assert!(crate::clip::enabled(&state.db.lock().unwrap()));
+        post_json(&state, "/api/settings", json!({ "clipboard": false }));
+        assert!(!crate::clip::enabled(&state.db.lock().unwrap()));
+        let settings = get_json(&state, "/api/settings");
+        assert_eq!((settings["computer"]["name"].as_str(), settings["computer"]["version"].as_str(), settings["removed"].as_i64()), (Some("desk"), Some(env!("CARGO_PKG_VERSION")), Some(0)));
+        assert!(settings["data"]["library"].as_str().unwrap().ends_with("zone.db"));
+
+        // Unpairing forgets the phone and keeps its items, now with no paired phone.
+        let gone = json_body(post_json(&state, "/api/unpair", json!({ "id": "bb22" })));
+        assert_eq!(gone["unpaired"], "bb22");
+        let status = get_json(&state, "/api/status");
+        assert_eq!((status["phones"].as_array().unwrap().len(), status["items"]["total"].as_i64()), (1, Some(150)));
+        assert_eq!(status["items_without_a_phone"], json!({ "none_recorded": 130, "unpaired": 5 }));
+        assert_eq!(post_json(&state, "/api/unpair", json!({ "id": "bb22" })).status(), StatusCode::BAD_REQUEST);
+        // With the phone that said how it looks gone, following it falls back to violet.
+        post_json(&state, "/api/settings", json!({ "accent": "phone", "appearance": "phone" }));
+        page_with("auto", "violet");
+    }
+
+    #[test]
+    fn the_version_is_said_once_with_what_to_do() {
+        use crate::update::{Check, Origin};
+        let newer = update_view(&Check::Newer { latest: "9.9.9".into(), page: "p".into() }, Origin::Homebrew);
+        assert_eq!((newer["words"].as_str(), newer["newer"].as_bool(), newer["update_with"].as_str()), (Some("9.9.9 is available"), Some(true), Some("brew upgrade zone")));
+        assert_eq!(newer["current"], env!("CARGO_PKG_VERSION"));
+        let latest = update_view(&Check::Latest { latest: "0.1.2".into() }, Origin::Script);
+        assert_eq!((latest["words"].as_str(), latest["newer"].as_bool()), (Some("Up to date"), Some(false)));
+        assert!(update_view(&Check::Unknown("no answer".into()), Origin::Script)["words"].as_str().unwrap().starts_with("Could not check"));
+        assert_eq!(update_view(&Check::Off, Origin::Script)["checked"], false);
+    }
+
+    #[test]
+    fn the_page_has_its_views_keys_and_no_decoration() {
+        // The wave that meant nothing is gone, and the page knows every route and key.
+        assert!(!PAGE.contains("<canvas") && !PAGE.contains("drawWave"));
+        for needle in ["VIEWS.home", "VIEWS.notes", "VIEWS.meetings", "VIEWS.meeting", "VIEWS.history", "VIEWS.stats", "VIEWS.settings", "\"/api/done\"", "\"/api/remove\"", "\"/api/restore\"", "/api/export?", "\"/api/phone\"", "\"/api/unpair\"", "Pair another phone", "Still on your iPhone", "prefers-reduced-motion", ":focus-visible", "data-theme=\"__THEME__\""] {
+            assert!(PAGE.contains(needle), "{needle}");
+        }
+        for accent in ACCENTS {
+            assert!(accent == "violet" || PAGE.contains(&format!(":root[data-accent=\"{accent}\"]")), "{accent}");
+        }
+        assert!(!PAGE.contains(" style=\"") && !PAGE.contains("onclick="), "nothing the policy would block");
+    }
+
 }

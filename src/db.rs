@@ -541,6 +541,9 @@ pub struct ScopedCounts {
     pub span: Option<(f64, f64)>,
 }
 
+/// `(quarter hour, kind, items, words, recorded seconds)`: see [`Db::stat_buckets`].
+pub type StatBucket = (i64, String, i64, i64, f64);
+
 /// One row of the numbers behind `stats`.
 #[derive(Clone, Debug)]
 pub struct StatRow {
@@ -1555,7 +1558,7 @@ impl Db {
     /// seconds)` for the items a filter selects, where the quarter hour is the item's created
     /// time divided by 900. Every time zone's days and hours begin on a quarter hour, so the
     /// caller can sort these into local days and hours exactly, and SQLite does the counting.
-    pub fn stat_buckets(&self, filter: &Filter) -> Result<Vec<(i64, String, i64, i64, f64)>> {
+    pub fn stat_buckets(&self, filter: &Filter) -> Result<Vec<StatBucket>> {
         let (clause, args) = filter_sql(filter);
         let sql = format!(
             "SELECT CAST(i.created_at / 900.0 AS INTEGER) AS q, i.kind, count(*), coalesce(sum(i.words), 0), \
@@ -2529,4 +2532,229 @@ mod tests {
         assert_eq!(second.meta_get("backup_folder").unwrap(), None);
         assert!(second.integrity_ok().unwrap());
     }
+    #[test]
+    fn a_removed_item_stays_away_until_the_phone_edits_it() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.apply_items(&[item("A", 10.0, "buy cedar boards"), item("B", 10.0, "call the dentist")], &link(1.0)).unwrap();
+        db.mark_processed(&["A".to_string()], true, 2.0).unwrap();
+        assert_eq!(db.remove_items(&["a".to_string(), "MISSING".to_string()], 100.0).unwrap(), ["A"]);
+        // Gone for every reader: the row is a deleted one without its words.
+        assert_eq!(db.total_items().unwrap(), 1);
+        assert_eq!(db.count(&Filter::default()).unwrap(), 1);
+        assert!(db.list(&Filter::default(), Order::Newest, 10, None).unwrap().iter().all(|row| row.id == "B"));
+        assert_eq!(db.search("cedar", &Filter::default(), None, 10).unwrap().total, 0);
+        let row = db.get("A").unwrap().unwrap();
+        assert!(row.deleted && row.text.is_empty() && row.words == 0);
+        assert!(db.is_removed("a") && !db.is_removed("B"));
+        // It is not one of the items deleted on the phone.
+        assert_eq!(db.counts_in(&Scope::default()).unwrap().deleted, 0);
+        let kept = db.removed_items().unwrap();
+        assert_eq!((kept.len(), kept[0].text.as_str(), kept[0].words), (1, "buy cedar boards", 3));
+        // Removing it again changes nothing.
+        assert!(db.remove_items(&["A".to_string()], 101.0).unwrap().is_empty());
+
+        // The phone sends it again as it was, by Link and by Flash; a backup holds it too.
+        for delivery in [link(110.0), flash(111.0), backup(112.0)] {
+            let applied = db.apply_items(&[item("A", 10.0, "buy cedar boards")], &delivery).unwrap();
+            assert_eq!((applied.changed(), applied.kept_newer), (0, 1), "{:?}", delivery.carrier);
+        }
+        // An older version does not bring it back either.
+        db.apply_items(&[item("A", 5.0, "buy boards")], &link(113.0)).unwrap();
+        assert!(db.get("A").unwrap().unwrap().deleted);
+
+        // Put back: as it was, with its done mark.
+        assert_eq!(db.restore_items(&["A".to_string(), "B".to_string()]).unwrap(), ["A"]);
+        let row = db.get("A").unwrap().unwrap();
+        assert_eq!((row.deleted, row.text.as_str(), row.words, row.updated_at, row.processed_at), (false, "buy cedar boards", 3, 10.0, Some(2.0)));
+        assert_eq!(db.search("cedar", &Filter::default(), None, 10).unwrap().total, 1);
+        assert!(!db.is_removed("A") && db.removed_count().unwrap() == 0);
+
+        // Removed again, then edited on the phone: the newer version is back, from either
+        // the phone or a backup of it.
+        for (n, delivery) in [link(200.0), backup(300.0)].into_iter().enumerate() {
+            let version = 20.0 + n as f64 * 10.0;
+            db.remove_items(&["A".to_string()], 150.0 + n as f64 * 100.0).unwrap();
+            let applied = db.apply_items(&[item("A", version, "buy cedar boards, twelve")], &delivery).unwrap();
+            assert_eq!(applied.replaced, 1);
+            let row = db.get("A").unwrap().unwrap();
+            assert_eq!((row.deleted, row.text.as_str(), row.updated_at), (false, "buy cedar boards, twelve", version));
+            assert!(!db.is_removed("A"));
+        }
+
+        // Removed, then deleted on the phone: it is deleted, and there is nothing to put back.
+        db.remove_items(&["A".to_string()], 400.0).unwrap();
+        db.apply_items(&[deletion("A", 40.0)], &link(401.0)).unwrap();
+        assert!(!db.is_removed("A") && db.get("A").unwrap().unwrap().deleted);
+        assert!(db.restore_items(&["A".to_string()]).unwrap().is_empty());
+        assert_eq!(db.counts_in(&Scope::default()).unwrap().deleted, 1);
+    }
+
+    #[test]
+    fn removed_words_are_erased_after_thirty_days() {
+        let mut db = Db::open_in_memory().unwrap();
+        db.apply_items(&[item("A", 10.0, "an old thought"), item("B", 10.0, "a newer one")], &link(1.0)).unwrap();
+        db.remove_items(&["A".to_string()], 1000.0).unwrap();
+        db.remove_items(&["B".to_string()], 1000.0 + 86400.0).unwrap();
+        assert_eq!(db.erase_old_removed(1000.0 + REMOVED_KEPT_SECONDS - 1.0).unwrap(), 0);
+        assert_eq!(db.erase_old_removed(1000.0 + REMOVED_KEPT_SECONDS).unwrap(), 1);
+        assert_eq!(db.erase_old_removed(1000.0 + REMOVED_KEPT_SECONDS + 5.0).unwrap(), 0);
+        let kept = db.removed_items().unwrap();
+        assert_eq!((kept.len(), kept[0].id.as_str()), (1, "B"));
+        let words: String = db.conn.query_row("SELECT text FROM removed WHERE id = 'A'", [], |row| row.get(0)).unwrap();
+        assert!(words.is_empty());
+        // It cannot be put back, and it still stays away.
+        assert!(db.restore_items(&["A".to_string()]).unwrap().is_empty());
+        assert!(db.is_removed("A"));
+        db.apply_items(&[item("A", 10.0, "an old thought")], &link(5.0e6)).unwrap();
+        assert_eq!(db.total_items().unwrap(), 0);
+        // Only a newer edit on the phone brings it back.
+        db.apply_items(&[item("A", 11.0, "an old thought, said again")], &link(5.0e6)).unwrap();
+        assert_eq!(db.total_items().unwrap(), 1);
+    }
+
+    #[test]
+    fn phones_have_names_looks_and_their_own_items() {
+        let mut db = Db::open_in_memory().unwrap();
+        let secret = |n: u8| paths::hex(&[n; 32]);
+        for (n, endpoint) in ["ep-one", "ep-two"].into_iter().enumerate() {
+            db.create_offer(&secret(n as u8 + 1), 100.0, 600.0).unwrap();
+            let phone = PhoneInfo {
+                id: Some(format!("PHONE-{n}")),
+                name: Some("iPhone".into()),
+                app: None,
+                appearance: (n == 0).then(|| "Light".to_string()),
+                accent: (n == 0).then(|| "ember".to_string()),
+            };
+            assert_eq!(db.admit(endpoint, Some(&secret(n as u8 + 1)), &phone, 101.0).unwrap(), Admission::Paired);
+        }
+        let one = db.device("ep-one").unwrap().unwrap();
+        assert_eq!((one.label().as_str(), one.appearance.as_deref(), one.accent.as_deref()), ("iPhone", Some("light"), Some("ember")));
+        assert_eq!(db.device("ep-two").unwrap().unwrap().appearance, None);
+
+        // A name given here wins over the phone's own, which is still kept and still updated.
+        assert!(db.set_device_nickname("ep-two", Some("  Work phone ")).unwrap());
+        assert!(!db.set_device_nickname("ep-nobody", Some("x")).unwrap());
+        let renamed = PhoneInfo { id: Some("PHONE-1".into()), name: Some("Zone phone".into()), accent: Some("chartreuse".into()), ..Default::default() };
+        assert_eq!(db.admit("ep-two", None, &renamed, 102.0).unwrap(), Admission::Known);
+        let two = db.device("ep-two").unwrap().unwrap();
+        assert_eq!((two.label().as_str(), two.name.as_deref(), two.accent.as_deref()), ("Work phone", Some("Zone phone"), None));
+        assert_eq!(db.find_device("work").unwrap().endpoint_id, "ep-two");
+        // Without a name here, the phone's own is shown, as it now is.
+        db.set_device_nickname("ep-two", Some(" ")).unwrap();
+        assert_eq!(db.device("ep-two").unwrap().unwrap().label(), "Zone phone");
+        // A phone that stops saying how it looks keeps what it said, and a later hello changes it.
+        db.admit("ep-one", None, &PhoneInfo { id: Some("PHONE-0".into()), ..Default::default() }, 103.0).unwrap();
+        assert_eq!(db.device("ep-one").unwrap().unwrap().accent.as_deref(), Some("ember"));
+        db.touch_device("ep-one", &PhoneInfo { appearance: Some("dark".into()), accent: Some("mint".into()), ..Default::default() }, 104.0).unwrap();
+        let one = db.device("ep-one").unwrap().unwrap();
+        assert_eq!((one.appearance.as_deref(), one.accent.as_deref()), (Some("dark"), Some("mint")));
+
+        // Items say which phone delivered them. One read from a backup has none, until its
+        // phone sends it.
+        let from = |phone: &'static str| Delivery { carrier: Carrier::Link, device_id: Some(phone), received_at: 5.0 };
+        db.apply_items(&[item("A", 10.0, "from the first")], &from("PHONE-0")).unwrap();
+        db.apply_items(&[item("B", 10.0, "from the second")], &from("PHONE-1")).unwrap();
+        db.apply_items(&[item("C", 10.0, "from a backup")], &backup(6.0)).unwrap();
+        let of = |db: &Db, phone: FromPhone| -> Vec<String> {
+            db.list(&Filter { phone: Some(phone), ..Default::default() }, Order::Oldest, 10, None).unwrap().into_iter().map(|row| row.id).collect()
+        };
+        assert_eq!(of(&db, FromPhone::Id("PHONE-0".into())), ["A"]);
+        assert_eq!(of(&db, FromPhone::Id("PHONE-1".into())), ["B"]);
+        assert_eq!(of(&db, FromPhone::Unknown), ["C"]);
+        let mut counts = db.counts_by_phone().unwrap();
+        counts.sort();
+        assert_eq!(counts, [(None, 1), (Some("PHONE-0".to_string()), 1), (Some("PHONE-1".to_string()), 1)]);
+        db.apply_items(&[item("C", 10.0, "from a backup")], &from("PHONE-1")).unwrap();
+        assert_eq!(of(&db, FromPhone::Id("PHONE-1".into())), ["B", "C"]);
+        assert!(of(&db, FromPhone::Unknown).is_empty());
+    }
+
+    #[test]
+    fn done_filters_and_the_recording_behind_a_note() {
+        let mut db = Db::open_in_memory().unwrap();
+        let recording = |id: &str, created_at: f64| Item { source: Some("note".into()), created_at, duration_s: Some(20.0), ..item(id, created_at, "pick up the saffron") };
+        let note = |id: &str, created_at: f64| Item { kind: "note".into(), source: None, created_at, duration_s: None, ..item(id, created_at, "pick up the saffron") };
+        // A voice note: the recording, then the note saved when it ended. A recording whose
+        // note was never saved (or was deleted) stands by itself.
+        db.apply_items(&[recording("R1", 1000.0), note("N1", 1021.0), recording("R2", 5000.0), Item { created_at: 10.0, ..item("K1", 10.0, "typed by voice") }, note("N2", 9000.0)], &link(1.0)).unwrap();
+        let ids = |db: &Db, filter: &Filter| -> Vec<String> { db.list(filter, Order::Oldest, 10, None).unwrap().into_iter().map(|row| row.id).collect() };
+        assert_eq!(ids(&db, &Filter::default()), ["K1", "R1", "N1", "R2", "N2"]);
+        let folded = Filter { fold_note_recordings: true, ..Default::default() };
+        assert_eq!(ids(&db, &folded), ["K1", "N1", "R2", "N2"]);
+        assert_eq!((db.count(&folded).unwrap(), db.count_folded(&folded).unwrap()), (4, 1));
+        // With the note gone, its recording is listed again.
+        db.apply_items(&[deletion("N1", 2000.0)], &link(2.0)).unwrap();
+        assert_eq!(ids(&db, &folded), ["K1", "R1", "R2", "N2"]);
+
+        db.mark_processed(&["K1".to_string(), "N2".to_string()], true, 50.0).unwrap();
+        assert_eq!(ids(&db, &Filter { processed_only: true, ..Default::default() }), ["K1", "N2"]);
+        assert_eq!(ids(&db, &Filter { unprocessed_only: true, ..Default::default() }), ["R1", "R2"]);
+        assert_eq!(db.count_processed(&Filter::default()).unwrap(), 2);
+        assert_eq!(db.count_processed(&Filter { kinds: vec!["note".into()], ..Default::default() }).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_library_from_zone_0_1_2_is_upgraded_in_place() {
+        // A library exactly as zone 0.1.2 made it, with a phone, items, a used offer, settings
+        // and a stored flash in it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zone.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(include_str!("../tests/fixtures/schema-0.1.2.sql")).unwrap();
+            old.pragma_update(None, "user_version", 1).unwrap();
+            old.execute_batch(
+                "INSERT INTO meta (key, value) VALUES ('database_id', 'DB-0-1-2'), ('created_at', '100'), ('clipboard', 'on'), ('backup_folder', '/somewhere');
+                 INSERT INTO devices (endpoint_id, phone_id, name, app, paired_at, last_seen, last_sync, items_received, last_path, resend_all, flash_key)
+                   VALUES ('ep-old', 'PHONE-OLD', 'iPhone', '1.0.4 (1602)', 100.0, 200.0, 200.0, 3, 'direct', 0, 'aa');
+                 INSERT INTO items (id, kind, source, created_at, updated_at, text, title, duration_s, engine, status, extra, rev, deleted, processed_at, device_id, carrier, received_at, words)
+                   VALUES ('OLD-1', 'dictation', 'keyboard', 150.0, 151.0, 'amber harbor lantern', NULL, 3.0, 'fluidMini', 'inserted', '{}', 'r1', 0, NULL, 'PHONE-OLD', 'link', 160.0, 3),
+                          ('OLD-2', 'note', NULL, 152.0, 152.0, 'buy cedar boards', NULL, NULL, NULL, NULL, '{}', 'r2', 0, 170.0, 'PHONE-OLD', 'link', 160.0, 3),
+                          ('OLD-3', 'meeting', NULL, 153.0, 153.0, '', NULL, NULL, NULL, NULL, '{}', 'r3', 1, NULL, NULL, 'backup', 160.0, 0);
+                 INSERT INTO pairing_offers (secret_hash, created_at, expires_at, used_at, used_by, flash_key) VALUES ('hash', 90.0, 690.0, 100.0, 'ep-old', 'aa');
+                 INSERT INTO events (at, event, data) VALUES (100.0, 'paired', '{}');
+                 INSERT INTO flashes (session, total_len, k, chunk, digest, device_id, phone_name, items, stored_at) VALUES (1, 2, 3, 4, 'd', 'ep-old', 'iPhone', 3, 120.0);",
+            )
+            .unwrap();
+        }
+        let before = std::fs::metadata(&path).unwrap().len();
+        // Opened twice: the second time there is nothing left to add.
+        for _ in 0..2 {
+            let mut db = Db::open(&path).unwrap();
+            assert_eq!(db.database_id().unwrap(), "DB-0-1-2");
+            assert_eq!(db.conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(), 1, "an older zone can still open it");
+            assert_eq!((db.total_items().unwrap(), db.deleted_items().unwrap(), db.unprocessed_items().unwrap()), (2, 1, 1));
+            let row = db.get("OLD-1").unwrap().unwrap();
+            assert_eq!((row.text.as_str(), row.device_id.as_deref(), row.rev.as_deref(), row.words), ("amber harbor lantern", Some("PHONE-OLD"), Some("r1"), 3));
+            assert_eq!(db.get("OLD-2").unwrap().unwrap().processed_at, Some(170.0));
+            assert_eq!(db.search("lantern", &Filter::default(), None, 5).unwrap().total, 1);
+            let device = db.device("ep-old").unwrap().unwrap();
+            assert_eq!((device.label().as_str(), device.items_received, device.nickname.clone(), device.appearance.clone()), ("iPhone", 3, None, None));
+            assert_eq!(db.meta_get("clipboard").unwrap().as_deref(), Some("on"));
+            assert_eq!(db.meta_get("backup_folder").unwrap().as_deref(), Some("/somewhere"));
+            assert_eq!((db.stored_flashes().unwrap().len(), db.last_event_seq().unwrap()), (1, 1));
+            assert!(db.integrity_ok().unwrap());
+            // Everything new works on it.
+            assert!(db.set_device_nickname("ep-old", Some("My phone")).unwrap());
+            assert_eq!(db.device("ep-old").unwrap().unwrap().label(), "My phone");
+            assert!(db.set_device_nickname("ep-old", None).unwrap());
+            assert_eq!(db.remove_items(&["OLD-1".to_string()], 500.0).unwrap(), ["OLD-1"]);
+            assert_eq!(db.restore_items(&["OLD-1".to_string()]).unwrap(), ["OLD-1"]);
+            assert_eq!(db.admit("ep-old", None, &PhoneInfo { accent: Some("rose".into()), ..Default::default() }, 600.0).unwrap(), Admission::Known);
+            assert_eq!(db.device("ep-old").unwrap().unwrap().accent.as_deref(), Some("rose"));
+        }
+        assert!(std::fs::metadata(&path).unwrap().len() >= before);
+        // What zone 0.1.2 reads and writes still works on the upgraded library: it names its columns.
+        let old = Connection::open(&path).unwrap();
+        old.execute(
+            "INSERT INTO devices (endpoint_id, phone_id, name, app, paired_at, last_seen, flash_key) VALUES ('ep-new', 'P2', 'iPhone', NULL, 1.0, 1.0, NULL)",
+            [],
+        )
+        .unwrap();
+        let read: i64 = old
+            .query_row("SELECT count(*) FROM (SELECT endpoint_id, phone_id, name, app, paired_at, last_seen, last_sync, items_received, last_path, resend_all FROM devices)", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(read, 2);
+    }
+
 }
