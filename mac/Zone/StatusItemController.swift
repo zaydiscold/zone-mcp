@@ -189,6 +189,11 @@ final class StatusItemController: NSObject {
     /// Hangs the window under the icon, kept on the screen.
     private func place(_ panel: NSPanel) {
         let width = PopoverView.width
+        if let screen = item.button?.window?.screen ?? NSScreen.main {
+            // The page keeps to this: its list gives way before the buttons under it would.
+            let room = screen.visibleFrame.height - 16
+            if abs(navigation.maxHeight - room) > 0.5 { navigation.maxHeight = room }
+        }
         if parked {
             let size = NSSize(width: width, height: height)
             panel.setFrame(NSRect(origin: Self.parkedOrigin(for: size), size: size), display: true)

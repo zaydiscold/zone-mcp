@@ -15,6 +15,17 @@ enum PairingState: Equatable {
     case failed(String)
 }
 
+/// A check that an agent's entry really starts a zone that answers.
+enum AgentTest: Equatable {
+    case running
+    case done(MCPProbe.Outcome)
+
+    var outcome: MCPProbe.Outcome? {
+        if case let .done(outcome) = self { return outcome }
+        return nil
+    }
+}
+
 /// Where zone's background service stands.
 enum DaemonState: Equatable {
     /// The app just opened and has not looked yet.
@@ -45,7 +56,19 @@ final class AppModel {
     private(set) var feed = ActivityFeed()
     private(set) var recent: [ZoneItem] = []
     private(set) var todayCount = 0
+    /// The newest meeting, however long ago it was.
+    private(set) var latestMeeting: ZoneItem?
+    /// The newest notes no agent has flagged as handled, and how many such notes there are.
+    private(set) var openNotes: [ZoneItem] = []
+    private(set) var openNotesTotal = 0
+    /// The newest items of one kind, read when the menu's list is narrowed to it.
+    private(set) var kindLists: [String: [ZoneItem]] = [:]
     private(set) var agents: [Agent] = []
+    /// The zone program the agents were asked about (see `agentsBinary`).
+    private(set) var agentsZone: String?
+    /// The last check of each place an agent starts zone from, by its settings file. The
+    /// check of zone itself is under "zone".
+    private(set) var agentTests: [String: AgentTest] = [:]
     private(set) var agentsLoaded = false
     private(set) var busyAgents: Set<String> = []
     var agentError: String?
@@ -92,6 +115,8 @@ final class AppModel {
     @ObservationIgnored var showPopoverPage: (PopoverNavigation.Page) -> Void = { _ in }
     @ObservationIgnored var closePopover: () -> Void = {}
     @ObservationIgnored var showFlash: () -> Void = {}
+    /// Opens the history page in a Zone window, at a place in it.
+    @ObservationIgnored var showHistory: (PageRoute) -> Void = { _ in }
     /// Opens a page of System Settings with the card that says what to switch on.
     @ObservationIgnored var showGuide: (GuideRequest) -> Void = { _ in }
 
@@ -126,6 +151,9 @@ final class AppModel {
     @ObservationIgnored private var lookingAtLocalNetwork = false
     @ObservationIgnored private var readingBackupFolder = false
     @ObservationIgnored private var backupFolderReadable = false
+    @ObservationIgnored private var lastUpdateCheck = Date.distantPast
+    /// The kind the menu's list is narrowed to, so it is read again when the library changes.
+    @ObservationIgnored private var watchedKind: String?
 
     init(env: ZoneEnvironment, bundledBinary: URL?) {
         self.env = env
@@ -164,7 +192,8 @@ final class AppModel {
         }
     }
 
-    /// One short line about the service, for the top of the popover.
+    /// One short line for the top of the popover: which phone synced last and when, or
+    /// what zone is doing instead.
     var headline: String {
         switch daemon {
         case .checking: return "Looking"
@@ -174,43 +203,24 @@ final class AppModel {
         case .running:
             if isSyncing { return "Receiving" }
             guard let status else { return "Running" }
-            if status.phones.isEmpty { return "Ready to pair" }
-            if status.daemon.relayConnected == false { return "This network only" }
-            return lastSyncLine
+            return MenuContent.syncLine(status)
         }
     }
 
-    /// When anything last arrived, by any route ("Synced 5 min ago").
-    var lastSyncLine: String {
-        guard let status else { return "Running" }
-        let ages = [status.lastSync.link?.age, status.lastSync.flash?.age, status.lastSync.backupFolder?.age].compactMap { $0 }
-        guard let newest = ages.min() else { return "Waiting for the first sync" }
-        return "Synced \(Formats.ago(newest))"
-    }
-
-    /// The longer story behind the headline, for its tooltip.
-    var statusDetail: String {
+    /// What the headline leaves out, a line each: the phones, how the last sync travelled,
+    /// what the library holds.
+    var statusDetails: [String] {
         guard isRunning, let status else {
-            return loginItemStalled
+            return [loginItemStalled
                 ? "zone is not running, so your iPhone cannot reach this Mac."
-                : "zone is starting. Your iPhone reaches this Mac once it runs."
+                : "zone is starting. Your iPhone reaches this Mac once it runs."]
         }
-        var lines: [String] = []
-        for phone in status.phones {
-            let items = "\(Formats.number(phone.itemsReceived)) \(phone.itemsReceived == 1 ? "item" : "items")"
-            if let age = phone.lastSyncAge {
-                var line = "\(phone.name): synced \(Formats.ago(age)), \(items)"
-                if let route = ActivityWords.route(phone.lastPath) { line += ", \(route)" }
-                lines.append(line)
-            } else {
-                lines.append("\(phone.name): paired, waiting for its first sync")
-            }
-        }
-        lines.append(status.daemon.relayConnected == false
-            ? "Reachable on this network only while zone reconnects to the relay."
-            : "Reachable from any network, end to end encrypted.")
-        lines.append("\(Formats.number(status.items.total)) items in your library, \(Formats.number(todayCount)) today.")
-        return lines.joined(separator: "\n")
+        return MenuContent.syncDetails(status, today: todayCount)
+    }
+
+    /// "Zone 0.1.2". The zone inside is named only when it is another version.
+    var versionLine: String {
+        Versions.line(app: appVersion, zone: zoneVersion)
     }
 
     // MARK: Starting up
@@ -346,6 +356,7 @@ final class AppModel {
                     nameKinds()
                 }
                 await readLatestClip()
+                await readPinned()
             }
             if let today = try? await client.today() {
                 todayCount = today.items
@@ -556,6 +567,44 @@ final class AppModel {
         }
     }
 
+    // MARK: The last meeting, the open notes, a list of one kind
+
+    /// What has a place of its own above the list: the newest meeting and the newest notes
+    /// that nobody has handled yet. Read with `zone list --kind`, which every zone has.
+    private func readPinned() async {
+        if let meetings = try? await client.list(kinds: ["meeting"], limit: 1) {
+            latestMeeting = meetings.items.first
+        }
+        if let notes = try? await client.list(kinds: ["note"], limit: 3, openOnly: true) {
+            openNotes = notes.items
+            openNotesTotal = notes.total
+        }
+        kindLists = [:]
+        if let watchedKind { await loadKind(watchedKind) }
+    }
+
+    /// The menu's list was narrowed to a kind: read that kind's newest items. The latest
+    /// hundred of everything rarely hold more than a few notes or meetings.
+    func showKind(_ kind: String?) {
+        watchedKind = kind
+        guard let kind, kindLists[kind] == nil else { return }
+        Task { await loadKind(kind) }
+    }
+
+    private func loadKind(_ kind: String) async {
+        if let list = try? await client.list(kinds: [kind], limit: 60) {
+            kindLists[kind] = list.items
+        }
+    }
+
+    /// What is shown above the menu's list, so "All" does not list it a second time.
+    var shownAboveList: Set<String> {
+        var ids = Set(openNotes.map(\.id))
+        if let latestMeeting { ids.insert(latestMeeting.id) }
+        if let leadingClip { ids.insert(leadingClip.id) }
+        return ids
+    }
+
     // MARK: Clips
 
     /// The newest clip: from `zone clip`, or out of the latest items when that says nothing.
@@ -601,6 +650,12 @@ final class AppModel {
 
     /// True when clips go on this Mac's clipboard as they arrive.
     var clipboardCopyOn: Bool { clipboardCopy?.enabled ?? false }
+
+    /// The newest clip zone itself tried to put on the clipboard, and whether it could.
+    var lastClipCopy: (copied: Bool, date: Date)? {
+        guard let event = feed.events.first(where: { $0.kind == .clip && ($0.copied == true || $0.notCopied == "failed") }) else { return nil }
+        return (event.copied == true, event.date)
+    }
 
     func setClipboardCopy(_ on: Bool) {
         guard hasClips else { return }
@@ -659,11 +714,86 @@ final class AppModel {
 
     // MARK: AI agents
 
+    /// The zone the agents are asked about and registered with: the one that runs on this
+    /// Mac. That is this app's own copy, unless a login item from the command line runs
+    /// zone, in which case it is that program (so the panel says what `zone mcp status`
+    /// says in the terminal, and "Use this one" points an agent at the zone that runs).
+    var agentsBinary: URL {
+        guard !env.isSandbox, owner == .loginItem || daemon == .waitingForLoginItem,
+              let legacyProgram, FileManager.default.isExecutableFile(atPath: legacyProgram)
+        else { return env.stableBinary }
+        return URL(fileURLWithPath: legacyProgram)
+    }
+
+    private var agentsClient: ZoneClient {
+        ZoneClient(runner: ZoneProcessRunner(binary: agentsBinary, environment: env.childEnvironment()))
+    }
+
     func loadAgents() async {
-        if let survey = try? await client.agents() {
+        var survey = try? await agentsClient.agents()
+        if survey == nil, agentsBinary != env.stableBinary {
+            // The other zone is too old to answer: this app's own can.
+            survey = try? await client.agents()
+        }
+        if let survey {
             agents = Agent.list(from: survey, knowsClips: hasClips)
+            agentsZone = survey.zone ?? agentsBinary.path
         }
         agentsLoaded = true
+    }
+
+    // MARK: Checking that an agent reaches the library
+
+    /// What a program started by an AI client gets from its surroundings: the person's
+    /// home and PATH, and nothing of zone's. Where the library is must come from the
+    /// client's own entry, as it does when the client starts zone.
+    private var probeEnvironment: [String: String] {
+        env.childEnvironment().filter { !$0.key.hasPrefix("ZONE_") }
+    }
+
+    /// Starts zone exactly as each place of this agent would (the program and arguments in
+    /// its settings file) and asks it what an MCP client asks first.
+    func test(_ agent: Agent) {
+        for place in agent.connectedPlaces {
+            test(place: place.path) { AgentConfig.launch(client: place.client, path: place.path) }
+        }
+    }
+
+    /// The same check of the zone that runs on this Mac, with no agent in between.
+    func testZone() {
+        let launch = AgentLaunch(command: agentsBinary.path, arguments: ["mcp"], environment: env.zoneHome.map { ["ZONE_HOME": $0.path] } ?? [:])
+        test(place: "zone") { .success(launch) }
+    }
+
+    private func test(place: String, _ read: @escaping @Sendable () -> Result<AgentLaunch, AgentConfigError>) {
+        guard agentTests[place] != .running else { return }
+        agentTests[place] = .running
+        let base = probeEnvironment, version = appVersion
+        Task {
+            let outcome = await Task.detached { () -> MCPProbe.Outcome in
+                switch read() {
+                case let .success(launch): return MCPProbe.run(launch, baseEnvironment: base, clientVersion: version)
+                case let .failure(error): return .failed(error.localizedDescription)
+                }
+            }.value
+            agentTests[place] = .done(outcome)
+        }
+    }
+
+    /// The checks of an agent's places, in one line: "Answers: 6 tools", or what went
+    /// wrong and in how many. Nil before any check.
+    func testSummary(_ agent: Agent) -> (text: String, good: Bool, running: Bool)? {
+        let places = agent.connectedPlaces
+        let tests = places.compactMap { agentTests[$0.path] }
+        guard !tests.isEmpty else { return nil }
+        if tests.contains(.running) { return ("Asking", true, true) }
+        let outcomes = tests.compactMap(\.outcome)
+        let failed = outcomes.filter { !$0.answered }
+        if failed.isEmpty, let first = outcomes.first {
+            return (places.count > 1 ? "\(first.words) in all \(places.count) profiles" : first.words, true, false)
+        }
+        if places.count == 1, let only = failed.first { return (only.words, false, false) }
+        return ("\(failed.count) of \(places.count) profiles gave no answer", false, false)
     }
 
     /// Connects or disconnects an agent. Connecting one that is already connected (to point
@@ -672,8 +802,8 @@ final class AppModel {
         // zone cannot say what an entry that starts another copy of zone may read, so the
         // app cannot carry a limit over. It says so instead of widening it silently.
         var unknownView = false
-        if connected, case .otherCopy = agent.standing, agent.view == nil { unknownView = true }
-        await changeAgent(agent) { [client] in
+        if connected, !agent.otherCopyPlaces.isEmpty, !agent.otherCopyKeepsView { unknownView = true }
+        await changeAgent(agent) { [client = agentsClient] in
             if connected {
                 try await client.connect(agent)
             } else {
@@ -681,14 +811,14 @@ final class AppModel {
             }
         }
         if unknownView, agentError == nil {
-            agentNotice = "\(agent.title) now starts this app's zone and can read everything. If it was limited before, limit it again under its name."
+            agentNotice = "\(agent.title) now starts the zone that runs on this Mac and can read everything. If it was limited before, limit it again under its name."
         }
     }
 
     /// Changes what a connected agent may read (in every profile it has).
     func setAgentView(_ agent: Agent, _ view: AgentView) async {
         guard agent.isOn, agent.view != view || agent.viewsDiffer else { return }
-        await changeAgent(agent) { [client] in
+        await changeAgent(agent) { [client = agentsClient] in
             try await client.connect(agent, view: view)
         }
     }
@@ -704,6 +834,8 @@ final class AppModel {
             agentError = "\(agent.title): \(error.localizedDescription)"
         }
         await loadAgents()
+        // What was checked before the change says nothing about the entry as it is now.
+        for place in agent.places { agentTests[place.path] = nil }
         busyAgents.remove(agent.id)
     }
 
@@ -739,19 +871,22 @@ final class AppModel {
         }
     }
 
-    func openHistory() {
+    /// The history page in a Zone window, at a place in it: a meeting, the notes, or the
+    /// page as it opens by itself. The window opens at once; while zone starts, it says so.
+    func openHistory(_ route: PageRoute = .home) {
+        showHistory(route)
+    }
+
+    /// The history page's address with its key, pointed at a place in the page.
+    func historyLink(_ route: PageRoute) async throws -> URL {
+        guard await waitUntilRunning() else { throw ZoneError.failed("zone did not start, so the history page cannot open.") }
+        return PageRoutes.url(page: try await client.historyLink(), route: route)
+    }
+
+    /// The history page in the web browser, as before the Zone window.
+    func openHistoryInBrowser(_ route: PageRoute = .home) {
         act("history") { [self] in
-            // The popover has closed by now: a failure opens it again to say why.
-            guard await waitUntilRunning() else {
-                showPopover()
-                throw ZoneError.failed("zone did not start, so the history page cannot open.")
-            }
-            do {
-                try await client.openHistory()
-            } catch {
-                showPopover()
-                throw error
-            }
+            open(try await historyLink(route))
         }
     }
 
@@ -970,16 +1105,33 @@ final class AppModel {
 
     // MARK: Updates
 
-    func checkForUpdates(openPage: Bool) async {
+    /// Asks GitHub which release is the latest. A test run can be pointed at a file or a
+    /// local server that stands in for GitHub.
+    func checkForUpdates() async {
+        guard !checkingUpdate else { return }
         checkingUpdate = true
-        let answer = await UpdateCheck.check(current: appVersion)
-        update = answer
+        lastUpdateCheck = Date()
+        let feed = env.isSandbox ? ProcessInfo.processInfo.environment["ZONE_MAC_UPDATE_FEED"].flatMap(URL.init(string:)) : nil
+        update = await UpdateCheck.check(current: appVersion, feed: feed)
         checkingUpdate = false
-        guard openPage else { return }
-        switch answer {
-        case let .newer(_, page): open(page)
-        case .unknown: open(UpdateCheck.releasesPage)
-        case .upToDate: break
+    }
+
+    /// Settings came into view: check, unless that was done a little while ago.
+    func checkForUpdatesIfStale() async {
+        guard Date().timeIntervalSince(lastUpdateCheck) > 15 * 60 else { return }
+        await checkForUpdates()
+    }
+
+    /// The one line about updates and the one thing to click.
+    var updateLine: UpdateLine {
+        UpdateLine(answer: update, checking: checkingUpdate, current: appVersion)
+    }
+
+    func followUpdateLine() {
+        switch updateLine.action {
+        case let .update(page): open(page)
+        case .checkAgain: Task { await checkForUpdates() }
+        case nil: break
         }
     }
 

@@ -12,8 +12,10 @@ import UniformTypeIdentifiers
 enum WindowSnapshot {
     private typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
 
-    static func capture(_ window: NSWindow, to file: URL, shadow: Bool = true) -> Bool {
-        guard let image = serverImage(of: window, shadow: shadow) ?? drawnImage(of: window) else { return false }
+    /// `drawn` skips the window server and draws the views: behind the lock screen, or with
+    /// the display asleep, the window server hands back an empty picture.
+    static func capture(_ window: NSWindow, to file: URL, shadow: Bool = true, drawn: Bool = false) -> Bool {
+        guard let image = (drawn ? nil : serverImage(of: window, shadow: shadow)) ?? drawnImage(of: window) else { return false }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { return false }
         CGImageDestinationAddImage(destination, image, nil)

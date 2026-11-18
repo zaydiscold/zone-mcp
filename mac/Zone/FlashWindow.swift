@@ -448,7 +448,8 @@ private struct FlashView: View {
     }
 }
 
-private struct WebViewHost: NSViewRepresentable {
+/// A web view the app made, placed in a SwiftUI window (Flash and History share it).
+struct WebViewHost: NSViewRepresentable {
     let webView: WKWebView
 
     func makeNSView(context: Context) -> WKWebView { webView }

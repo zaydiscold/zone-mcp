@@ -83,7 +83,7 @@ struct WelcomeView: View {
                     onDone(false)
                 }
                 .buttonStyle(ZoneLinkButtonStyle())
-                .help("You can open this guide again from the menu bar, under More.")
+                .help("You can open this guide again from the menu bar, under Settings.")
                 .padding(.trailing, 6)
             }
             if step > 0 {
@@ -244,7 +244,7 @@ private struct PhoneStep: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Zone.accentText(scheme))
                         .padding(.top, 1)
-                    Text("Pairing with a computer arrives with Zone's next update, under Settings > Computers. Until then, the backup folder works with the Zone on the App Store today: choose it under More in the menu bar.")
+                    Text("Pairing with a computer arrives with Zone's next update, under Settings > Computers. Until then, the backup folder works with the Zone on the App Store today: choose it under Settings in the menu bar.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(Zone.ink(scheme))
                         .lineSpacing(2.5)
@@ -381,7 +381,7 @@ private struct DoneStep: View {
         switch model.commandLink {
         case .linked: return "Already there."
         case let .foreign(existing):
-            return "Another zone is at \(Formats.tilde(existing.path, home: model.env.home.path)). Change it under More."
+            return "Another zone is at \(Formats.tilde(existing.path, home: model.env.home.path)). Change it under Settings."
         case let .absent(_, needsAdmin):
             return needsAdmin ? "For zone list, zone search and the rest. Asks for your password." : "For zone list, zone search and the rest."
         case nil: return "For zone list, zone search and the rest."

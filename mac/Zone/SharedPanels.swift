@@ -198,14 +198,21 @@ struct PairPanel: View {
     }
 }
 
-/// Every AI client on this Mac with a switch, and one sentence on what a connected one can read.
+/// The AI apps on this Mac, each once however many profiles it has: whether zone is in
+/// it (as `zone mcp status` says, place by place), what it may read, and a check that
+/// starts zone the way that app would and asks it what an agent asks first.
 struct AgentsPanel: View {
     let model: AppModel
+    /// The popover's own, so a page keeps what was opened. The guide has none.
+    var navigation: PopoverNavigation?
     var wide = false
+    @State private var own = PopoverNavigation()
     @Environment(\.colorScheme) private var scheme
 
+    private var state: PopoverNavigation { navigation ?? own }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             if !model.agentsLoaded {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -243,44 +250,160 @@ struct AgentsPanel: View {
                     .foregroundStyle(Zone.ink(scheme))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "eye")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Zone.muted(scheme))
-                    .padding(.top, 1)
-                Text("A connected agent can read your Zone library and mark items as handled. It cannot change or delete your words. To show one less, click the line under its name.")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Zone.muted(scheme))
-                    .fixedSize(horizontal: false, vertical: true)
+            if model.agentsLoaded {
+                zoneItself
             }
         }
     }
 
     private var list: some View {
-        let rows = model.agents
-        return ScrollView {
-            VStack(spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, agent in
-                    AgentRow(model: model, agent: agent)
-                    if index < rows.count - 1 {
-                        Hairline().padding(.leading, 44)
+        let sections = AgentSections(model.agents)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Eyebrow(sections.summary).padding(.leading, 6)
+                Spacer()
+                if sections.on.contains(where: \.isOn) {
+                    Button("Test all") {
+                        model.testZone()
+                        for agent in sections.on where agent.isOn { model.test(agent) }
+                    }
+                    .buttonStyle(ZoneLinkButtonStyle(size: 11))
+                    .help("Starts zone the way each app would and asks it for its tools")
+                }
+            }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(sections.on.enumerated()), id: \.element.id) { index, agent in
+                        AgentRow(model: model, agent: agent, state: state)
+                        if index < sections.on.count - 1 || !sections.off.isEmpty {
+                            Hairline().padding(.leading, index < sections.on.count - 1 ? 44 : 0)
+                        }
+                    }
+                    if !sections.off.isEmpty, sections.on.isEmpty {
+                        // Nothing is connected yet: the apps are the list, with nothing to fold.
+                        ForEach(Array(sections.off.enumerated()), id: \.element.id) { index, agent in
+                            AgentRow(model: model, agent: agent, state: state)
+                            if index < sections.off.count - 1 {
+                                Hairline().padding(.leading, 44)
+                            }
+                        }
+                    } else if !sections.off.isEmpty {
+                        Button {
+                            withAnimation(Zone.motion) { state.offAgentsOpen.toggle() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .rotationEffect(.degrees(state.offAgentsOpen ? 90 : 0))
+                                    .frame(width: 26)
+                                Text(sections.offTitle)
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer()
+                            }
+                            .foregroundStyle(Zone.muted(scheme))
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(sections.offTitle). \(state.offAgentsOpen ? "Hide them" : "Show them")")
+                        if state.offAgentsOpen {
+                            ForEach(sections.off) { agent in
+                                Hairline().padding(.leading, 44)
+                                AgentRow(model: model, agent: agent, state: state)
+                            }
+                        }
                     }
                 }
             }
+            .scrollIndicators(.automatic)
+            .frame(maxHeight: min(wide ? 300 : 520, max(160, state.maxHeight - 250)))
+            .fixedSize(horizontal: false, vertical: rowCount(sections) <= (wide ? 5 : 6) && state.openAgent == nil)
+            .zoneCard(padding: 4, shadow: wide)
         }
-        .scrollIndicators(.never)
-        .frame(maxHeight: wide ? 410 : 380)
-        .fixedSize(horizontal: false, vertical: rows.count <= (wide ? 5 : 6))
-        .zoneCard(padding: 4, shadow: wide)
+    }
+
+    private func rowCount(_ sections: AgentSections) -> Int {
+        if sections.on.isEmpty { return sections.off.count }
+        return sections.on.count + (sections.off.isEmpty ? 0 : 1) + (state.offAgentsOpen ? sections.off.count : 0)
+    }
+
+    /// The zone the apps are pointed at, with the same check and no app in between, and
+    /// one sentence on what a connected agent can do.
+    private var zoneItself: some View {
+        let test = model.agentTests["zone"]
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("zone on this Mac")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Zone.ink(scheme))
+                    Text(Formats.tilde(model.agentsZone ?? model.agentsBinary.path, home: model.env.home.path))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Zone.muted(scheme))
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                    if let test {
+                        TestLine(test: test)
+                    }
+                }
+                Spacer(minLength: 6)
+                Button("Test") { model.testZone() }
+                    .buttonStyle(ZonePillButtonStyle())
+                    .disabled(test == .running)
+                    .help("Starts this zone as an MCP server and asks it for its tools")
+            }
+            .padding(.horizontal, 6)
+            Text("A connected agent can read your library and mark items as handled. It cannot change or delete your words. To show one less, click the line under its name.")
+                .font(.system(size: 11))
+                .foregroundStyle(Zone.muted(scheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 6)
+        }
+    }
+}
+
+/// What a check found, in one line: a tick and "Answers: 6 tools", or what went wrong.
+private struct TestLine: View {
+    let test: AgentTest
+    var text: String?
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            switch test {
+            case .running:
+                ProgressView().controlSize(.mini)
+                Text("Asking")
+            case let .done(outcome):
+                Image(systemName: outcome.answered ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 9.5))
+                Text(text ?? outcome.words)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+        .foregroundStyle(color)
+    }
+
+    private var color: Color {
+        switch test {
+        case .running: return Zone.muted(scheme)
+        case let .done(outcome): return outcome.answered ? Zone.accentText(scheme) : Zone.alarm
+        }
     }
 }
 
 private struct AgentRow: View {
     let model: AppModel
     let agent: Agent
+    let state: PopoverNavigation
     @Environment(\.colorScheme) private var scheme
     /// True while the choices of what this agent may read are showing.
     @State private var choosing = false
+
+    private var open: Bool { state.openAgent == agent.id }
+    private var home: String { model.env.home.path }
 
     var body: some View {
         let busy = model.busyAgents.contains(agent.id)
@@ -288,15 +411,32 @@ private struct AgentRow: View {
             HStack(spacing: 10) {
                 AgentBadge(id: agent.id)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(agent.title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Zone.ink(scheme))
+                    Button {
+                        withAnimation(Zone.motion) { state.openAgent = open ? nil : agent.id }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(agent.title)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Zone.ink(scheme))
+                            if agent.isOn {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                    .foregroundStyle(Zone.muted(scheme))
+                                    .rotationEffect(.degrees(open ? 90 : 0))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .allowsHitTesting(agent.isOn)
+                    .help(agent.places.count > 1 ? "Show its \(agent.places.count) profiles" : "Show where its settings are")
                     if agent.canLimitView, !busy {
                         Button {
                             withAnimation(Zone.motion) { choosing.toggle() }
                         } label: {
                             HStack(spacing: 3) {
                                 Text(agent.note)
+                                    .multilineTextAlignment(.leading)
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 7.5, weight: .bold))
                                     .rotationEffect(.degrees(choosing ? 180 : 0))
@@ -311,23 +451,15 @@ private struct AgentRow: View {
                             .font(.system(size: 11))
                             .foregroundStyle(Zone.muted(scheme))
                     }
+                    if let summary = model.testSummary(agent), !open {
+                        TestLine(test: summary.running ? .running : .done(summary.good ? .answers(.init(tools: [])) : .failed("")), text: summary.text)
+                    }
                 }
                 Spacer(minLength: 6)
-                if case .otherCopy = agent.standing, !busy, !agent.viewsDiffer {
-                    Button("Use this app's") {
-                        Task { await model.setAgent(agent, connected: true) }
-                    }
-                    .buttonStyle(ZonePillButtonStyle())
-                    .help(agent.view == nil
-                        ? "This agent starts a zone that was installed from the command line. Point it at the one this app keeps up to date. It will be able to read everything until you limit it here."
-                        : "This agent starts a zone that was installed from the command line. Point it at the one this app keeps up to date. What it may read stays the same.")
-                }
-                if case let .partly(places, total) = agent.standing, !busy, !agent.viewsDiffer {
-                    Button("Connect all \(total)") {
-                        Task { await model.setAgent(agent, connected: true) }
-                    }
-                    .buttonStyle(ZonePillButtonStyle())
-                    .help("Connected in \(places) of \(total) profiles.")
+                if agent.isOn, !busy {
+                    Button("Test") { model.test(agent) }
+                        .buttonStyle(ZonePillButtonStyle())
+                        .help("Starts zone the way \(agent.title) would, from its own settings, and asks it for its tools")
                 }
                 if busy {
                     ProgressView().controlSize(.small).frame(width: 34)
@@ -342,8 +474,19 @@ private struct AgentRow: View {
                     .accessibilityLabel("Connect \(agent.title)")
                 }
             }
+            if !busy, !agent.viewsDiffer, needsFix {
+                fix
+                    .padding(.leading, 36)
+                    .padding(.top, 6)
+            }
             if choosing, agent.canLimitView, !busy {
                 choices
+                    .padding(.leading, 36)
+                    .padding(.top, 6)
+                    .transition(.opacity)
+            }
+            if open, agent.isOn {
+                places
                     .padding(.leading, 36)
                     .padding(.top, 6)
                     .transition(.opacity)
@@ -354,6 +497,67 @@ private struct AgentRow: View {
         .onChange(of: agent.isOn) { _, on in
             if !on { choosing = false }
         }
+    }
+
+    private var needsFix: Bool {
+        if !agent.otherCopyPlaces.isEmpty { return true }
+        if case .partly = agent.standing { return true }
+        return false
+    }
+
+    /// An entry that starts another copy of zone, or a profile without zone: what that
+    /// means in a sentence, and the one click that puts it right.
+    private var fix: some View {
+        let other = !agent.otherCopyPlaces.isEmpty
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(other ? agent.otherCopyExplanation(home: home) : "zone is not in every profile of \(agent.title).")
+                .font(.system(size: 11))
+                .foregroundStyle(Zone.ink(scheme))
+                .fixedSize(horizontal: false, vertical: true)
+            Button(other ? "Use this one" : "Connect all \(agent.places.count)") {
+                Task { await model.setAgent(agent, connected: true) }
+            }
+            .buttonStyle(ZonePillButtonStyle(filled: true))
+            .help(other
+                ? "Points \(agent.title) at the zone that runs on this Mac (zone mcp install \(agent.id)). " + (agent.otherCopyKeepsView ? "What it may read stays the same." : "It will be able to read everything until you limit it again.")
+                : "Adds zone to the rest (zone mcp install \(agent.id)), with the same view.")
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Zone.accentGraphic(scheme).opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    /// Every place this app keeps its settings in: its name, how zone stands there, what
+    /// an agent there may read, and what the last check found.
+    private var places: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(agent.places, id: \.path) { place in
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Image(systemName: place.hasZone ? "circle.fill" : "circle")
+                            .font(.system(size: 5))
+                            .foregroundStyle(place.hasZone ? Zone.accentGraphic(scheme) : Zone.faint(scheme))
+                            .offset(y: -2)
+                        Text(agent.places.count > 1 ? place.name : Formats.tilde(place.path, home: home))
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Zone.ink(scheme))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Text(([place.words(home: home)] + [place.limit(knowsClips: agent.knowsClips)].compactMap { $0 }).joined(separator: ", "))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Zone.muted(scheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, 10)
+                    if let test = model.agentTests[place.path] {
+                        TestLine(test: test)
+                            .padding(.leading, 10)
+                    }
+                }
+                .help(Formats.tilde(place.path, home: home))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// The views on offer, with the one in force marked. A view set from the command line

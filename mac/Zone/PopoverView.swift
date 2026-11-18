@@ -11,6 +11,16 @@ final class PopoverNavigation {
     }
 
     var page: Page = .main
+    /// The kind the main page's list is narrowed to.
+    var segment: ListSegment = .all
+    /// True while what the line at the top leaves out is showing under it.
+    var detailsOpen = false
+    /// The app on the Agents page whose profiles are showing.
+    var openAgent: String?
+    /// True while the apps that are not connected are listed on the Agents page.
+    var offAgentsOpen = false
+    /// The tallest the window may be on this screen. The list gives way first.
+    var maxHeight: CGFloat = 900
 }
 
 /// What opens when the Z in the menu bar is clicked.
@@ -21,7 +31,7 @@ struct PopoverView: View {
     var onHeight: (CGFloat) -> Void = { _ in }
     @Environment(\.colorScheme) private var scheme
 
-    static let width: CGFloat = 372
+    static let width: CGFloat = 412
 
     var body: some View {
         VStack(spacing: 0) {
@@ -56,19 +66,27 @@ private struct HeightKey: PreferenceKey {
 
 // MARK: Main page
 
-/// The menu: how syncing stands in one line, a clip that just arrived, the latest things
-/// said, and four buttons. Everything else (each phone, pairing another, the backup folder,
-/// who runs zone, quitting) is under More, and the history page has the rest of the library.
+/// The menu, a working surface: one line on how syncing stands (the rest on a click), a
+/// clip that just arrived, the last meeting, the newest open notes, a list of the latest
+/// things said that can be narrowed to one kind, and four ways further in. Every fact is
+/// here once: what has a place above the list is not repeated in "All".
 private struct MainPage: View {
     let model: AppModel
     let navigation: PopoverNavigation
     @Environment(\.colorScheme) private var scheme
 
+    /// One row of the list, and of the notes above it.
+    static let rowHeight: CGFloat = 30
+
     var body: some View {
         VStack(spacing: 0) {
             header
+            if navigation.detailsOpen {
+                details
+                    .transition(.opacity)
+            }
             Hairline()
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 if model.loginItemStalled {
                     stalledBanner
                 }
@@ -85,12 +103,15 @@ private struct MainPage: View {
                     ClipCard(model: model, clip: clip)
                         .transition(.opacity.combined(with: .offset(y: -6)))
                 }
-                recent
+                if model.latestMeeting != nil || !model.openNotes.isEmpty {
+                    pinned
+                }
+                list
             }
             .animation(Zone.settle, value: model.leadingClip?.id)
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
             if let notice = model.notice {
                 Text(notice)
                     .font(.system(size: 11.5))
@@ -105,36 +126,95 @@ private struct MainPage: View {
             actions
         }
         .animation(Zone.motion, value: model.notice)
+        .animation(Zone.motion, value: navigation.detailsOpen)
     }
 
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 6) {
             Wordmark(size: 24)
-            Spacer()
-            HStack(spacing: 7) {
-                stateLight
-                Text(model.headline)
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
-                    .foregroundStyle(isProblem ? Zone.alarm : Zone.ink(scheme))
-                    .lineLimit(1)
+            Spacer(minLength: 8)
+            Button {
+                navigation.detailsOpen.toggle()
+            } label: {
+                HoverRow(radius: 7) { _ in
+                    HStack(spacing: 7) {
+                        stateLight
+                        Text(model.headline)
+                            .font(.system(size: 12, weight: .medium).monospacedDigit())
+                            .foregroundStyle(isProblem ? Zone.alarm : Zone.ink(scheme))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(Zone.muted(scheme))
+                            .rotationEffect(.degrees(navigation.detailsOpen ? 180 : 0))
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 24)
+                    .contentShape(Rectangle())
+                }
             }
-            .help(model.statusDetail)
+            .buttonStyle(.plain)
+            .help(model.statusDetails.joined(separator: "\n"))
+            .accessibilityLabel("\(model.headline). Show details")
+            HideTextButton(model: model, compact: true)
+            IconButton(symbol: "macwindow.on.rectangle", help: "Keep the latest in a floating window") {
+                model.closePopover()
+                model.showFloating()
+            }
         }
         .padding(.leading, 16)
-        .padding(.trailing, 14)
-        .padding(.vertical, 11)
+        .padding(.trailing, 10)
+        .padding(.vertical, 10)
         .background(alignment: .bottom) {
             // The voice arriving: the wave wakes while something is being received.
             FlowingWave(color: Zone.accentGraphic(scheme), energy: model.isSyncing ? 1 : 0)
                 .frame(height: 26)
                 .padding(.leading, 96)
-                .padding(.trailing, 110)
+                .padding(.trailing, 150)
                 .opacity(model.isSyncing ? 0.9 : 0)
                 .animation(.easeInOut(duration: 0.5), value: model.isSyncing)
                 .offset(y: -8)
         }
+    }
+
+    /// What the one line leaves out: the phones and the library in a line each, then the
+    /// last few things that happened.
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(model.statusDetails, id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 11.5).monospacedDigit())
+                    .foregroundStyle(Zone.ink(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            let news = Array(model.feed.news.prefix(3))
+            if !news.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(news) { event in
+                        HStack(spacing: 6) {
+                            Image(systemName: event.kind == .clip ? "doc.on.clipboard" : "arrow.down")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(Zone.accentText(scheme))
+                                .frame(width: 12)
+                            Text(ActivityWords.headline(event))
+                                .lineLimit(1)
+                            Spacer(minLength: 6)
+                            Text(Formats.ago(event.date, now: model.now))
+                                .foregroundStyle(Zone.muted(scheme))
+                        }
+                        .font(.system(size: 11.5).monospacedDigit())
+                        .foregroundStyle(Zone.ink(scheme))
+                    }
+                }
+                .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
     }
 
     private var isProblem: Bool {
@@ -268,55 +348,257 @@ private struct MainPage: View {
         .zoneCard(padding: 0)
     }
 
-    // MARK: Recent items
+    // MARK: The last meeting and the open notes
 
-    private var recent: some View {
-        // The clip in the card above is not listed again.
-        let items = model.recent.filter { $0.id != model.leadingClip?.id }.prefix(4)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 2) {
-                Eyebrow("Latest").padding(.leading, 8)
-                Spacer()
-                HideTextButton(model: model, compact: true)
-                if !items.isEmpty {
-                    IconButton(symbol: "macwindow.on.rectangle", help: "Keep the latest in a floating window") {
-                        model.closePopover()
-                        model.showFloating()
+    private var pinned: some View {
+        VStack(spacing: 0) {
+            if let meeting = model.latestMeeting {
+                Button {
+                    model.closePopover()
+                    model.openHistory(.meeting(meeting.id))
+                } label: {
+                    HoverRow(radius: 8) { hovering in
+                        HStack(spacing: 9) {
+                            Image(systemName: "person.2")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Zone.accentText(scheme))
+                                .frame(width: 18)
+                            Group {
+                                if model.state.hideText {
+                                    Text(MenuContent.meetingTitle(meeting)).redacted(reason: .placeholder)
+                                } else {
+                                    Text(MenuContent.meetingTitle(meeting))
+                                }
+                            }
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(Zone.ink(scheme))
+                            .lineLimit(1)
+                            Spacer(minLength: 6)
+                            Text(MenuContent.meetingFacts(meeting, now: model.now))
+                                .font(.system(size: 11).monospacedDigit())
+                                .foregroundStyle(Zone.muted(scheme))
+                                .lineLimit(1)
+                                .layoutPriority(1)
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(hovering ? Zone.accentText(scheme) : Zone.faint(scheme))
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: Self.rowHeight + 2)
+                        .contentShape(Rectangle())
                     }
                 }
+                .buttonStyle(.plain)
+                .help("Your last meeting. Click to open its transcript in History")
+                .accessibilityLabel("Last meeting: \(model.state.hideText ? "hidden" : MenuContent.meetingTitle(meeting)), \(MenuContent.meetingFacts(meeting, now: model.now)). Opens in History")
             }
+            if model.latestMeeting != nil, !model.openNotes.isEmpty {
+                Hairline().padding(.leading, 35)
+            }
+            if !model.openNotes.isEmpty {
+                ForEach(model.openNotes) { note in
+                    CompactRow(model: model, item: note)
+                }
+                Button {
+                    model.closePopover()
+                    model.openHistory(.notes)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(notesLink)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 8.5, weight: .semibold))
+                    }
+                    .padding(.leading, 35)
+                    .frame(height: 22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(ZoneLinkButtonStyle(size: 11))
+                .help("Open all your notes in History")
+            }
+        }
+        .padding(3)
+        .zoneCard(padding: 0, shadow: false)
+    }
+
+    /// "All 8 open notes", or "All notes" when the three shown are all there are.
+    private var notesLink: String {
+        let open = model.openNotesTotal
+        return open > model.openNotes.count ? "All \(Formats.number(open)) open notes" : "All notes"
+    }
+
+    // MARK: The latest, by kind
+
+    private var rows: [ZoneItem] {
+        MenuContent.rows(
+            segment: navigation.segment,
+            recent: model.recent,
+            ofKind: navigation.segment.kind.flatMap { model.kindLists[$0] },
+            shownAbove: model.shownAboveList
+        )
+    }
+
+    /// How many rows show without scrolling: nine with everything above the list, up to
+    /// twelve when there is less above it, fewer on a small screen.
+    private var visibleRows: Int {
+        // The header, the kinds, the buttons and the space between them.
+        var above: CGFloat = 172
+        if model.leadingClip != nil { above += 68 }
+        if model.latestMeeting != nil || !model.openNotes.isEmpty { above += 16 }
+        if model.latestMeeting != nil { above += Self.rowHeight + 2 }
+        if !model.openNotes.isEmpty { above += CGFloat(model.openNotes.count) * Self.rowHeight + 23 }
+        if model.status?.phones.isEmpty == true { above += 70 }
+        if navigation.detailsOpen { above += 110 }
+        let room = min(navigation.maxHeight, 690) - above
+        return max(4, min(12, Int(room / Self.rowHeight)))
+    }
+
+    private var list: some View {
+        let items = rows
+        return VStack(alignment: .leading, spacing: 4) {
+            segments
             if items.isEmpty {
-                Text(model.status == nil ? "Reading your library" : "Nothing here yet. What you say into Zone on your iPhone shows up here.")
+                Text(emptyText)
                     .font(.system(size: 12))
                     .foregroundStyle(Zone.muted(scheme))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 8)
             } else {
-                ForEach(items) { item in
-                    ItemRow(model: model, item: item)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(items) { item in
+                            CompactRow(model: model, item: item, opens: item.kind == "meeting")
+                        }
+                    }
+                }
+                .scrollIndicators(.automatic)
+                .frame(height: CGFloat(min(items.count, visibleRows)) * Self.rowHeight)
+            }
+        }
+    }
+
+    private var emptyText: String {
+        if model.status == nil { return "Reading your library" }
+        switch navigation.segment {
+        case .all:
+            return model.shownAboveList.isEmpty ? "Nothing here yet. What you say into Zone on your iPhone shows up here." : "Nothing else yet."
+        case .note: return "No notes yet."
+        case .meeting: return "No meetings yet."
+        case .dictation: return "No dictations yet."
+        case .clip: return "No clips yet. Send text to this Mac from Zone on your iPhone."
+        }
+    }
+
+    /// All, Notes, Meetings, Dictations, Clips, each with how many the library holds.
+    private var segments: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 4) {
+                ForEach(ListSegment.shown(hasClips: model.hasClips)) { segment in
+                    let chosen = navigation.segment == segment
+                    Button {
+                        navigation.segment = segment
+                        model.showKind(segment.kind)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(segment.title)
+                                .font(.system(size: 11.5, weight: chosen ? .semibold : .medium))
+                            if let items = model.status?.items {
+                                Text(Formats.number(segment.count(in: items)))
+                                    .font(.system(size: 10.5).monospacedDigit())
+                                    .opacity(chosen ? 0.75 : 0.7)
+                            }
+                        }
+                        .foregroundStyle(chosen ? Zone.onInk(scheme) : Zone.muted(scheme))
+                        .padding(.horizontal, 9)
+                        .frame(height: 24)
+                        .background(chosen ? Zone.ink(scheme) : .clear, in: Capsule())
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(segment.title), \(model.status.map { segment.count(in: $0.items) } ?? 0)")
+                    .accessibilityAddTraits(chosen ? .isSelected : [])
                 }
             }
         }
+        .scrollIndicators(.never)
     }
 
     // MARK: Actions
 
     private var actions: some View {
         HStack(spacing: 0) {
-            ActionButton(symbol: "clock.arrow.circlepath", title: "History", working: model.working.contains("history")) {
-                model.openHistory()
+            ActionButton(symbol: "clock.arrow.circlepath", title: "History") {
                 model.closePopover()
+                model.openHistory()
             }
             ActionButton(symbol: "bolt", title: "Flash") {
                 model.closePopover()
                 model.openFlash()
             }
             ActionButton(symbol: "sparkles", title: "Agents") { navigation.page = .agents }
-            ActionButton(symbol: "ellipsis", title: "More") { navigation.page = .settings }
+            ActionButton(symbol: "gearshape", title: "Settings") { navigation.page = .settings }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
+    }
+}
+
+/// One thing said, in one line: what kind (the icon), the words, when. Click to copy; the
+/// time gives way to "Copied". A meeting also has an arrow that opens its transcript.
+private struct CompactRow: View {
+    let model: AppModel
+    let item: ZoneItem
+    /// True for a row that can also be opened in History.
+    var opens = false
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let copied = model.copiedID == item.id
+        HStack(spacing: 0) {
+            Button {
+                model.copy(item)
+            } label: {
+                HoverRow(radius: 7) { hovering in
+                    HStack(spacing: 9) {
+                        Image(systemName: copied ? "checkmark" : ItemRow.symbol(for: item.kind))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(copied || item.kind == "clip" ? Zone.accentText(scheme) : Zone.muted(scheme))
+                            .frame(width: 18)
+                        Group {
+                            if model.state.hideText {
+                                Text(MenuContent.line(item)).redacted(reason: .placeholder)
+                            } else {
+                                Text(MenuContent.line(item))
+                            }
+                        }
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Zone.ink(scheme))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        Spacer(minLength: 6)
+                        Text(copied ? "Copied" : (hovering ? "Copy" : Formats.when(item.created, now: model.now)))
+                            .font(.system(size: 10.5, weight: copied ? .semibold : .regular).monospacedDigit())
+                            .foregroundStyle(copied || hovering ? Zone.accentText(scheme) : Zone.muted(scheme))
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    }
+                    .padding(.leading, 8)
+                    .padding(.trailing, opens ? 4 : 8)
+                    .frame(height: MainPage.rowHeight)
+                    .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+            .help(model.state.hideText ? "Click to copy (text is hidden)" : "Click to copy")
+            .accessibilityLabel(model.state.hideText ? "\(ItemRow.label(for: item)), hidden. Copy" : "\(ItemRow.label(for: item)): \(MenuContent.line(item)). Copy")
+            if opens {
+                IconButton(symbol: "arrow.up.right", help: "Open this meeting in History") {
+                    model.closePopover()
+                    model.openHistory(.meeting(item.id))
+                }
+            }
+        }
     }
 }
 
@@ -390,7 +672,7 @@ private struct PhoneRow: View {
         let items = "\(Formats.number(phone.itemsReceived)) \(phone.itemsReceived == 1 ? "item" : "items")"
         guard let age = phone.lastSyncAge else { return "Paired, waiting for its first sync" }
         var line = "Synced \(Formats.ago(age)), \(items)"
-        if let route = ActivityWords.route(phone.lastPath) { line += ", \(route)" }
+        if let route = MenuContent.routeWords(phone.lastPath) { line += ", \(route)" }
         return line
     }
 }
@@ -564,7 +846,7 @@ private struct AgentsPage: View {
     var body: some View {
         VStack(spacing: 0) {
             PageHeader(title: "AI agents", navigation: navigation)
-            AgentsPanel(model: model)
+            AgentsPanel(model: model, navigation: navigation)
                 .padding(14)
         }
         .task { await model.loadAgents() }
@@ -578,20 +860,19 @@ private struct SettingsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader(title: "More", navigation: navigation)
+            PageHeader(title: "Settings", navigation: navigation)
             VStack(alignment: .leading, spacing: 14) {
                 section("iPhone") {
                     ForEach(model.status?.phones ?? [], id: \.id) { phone in
                         PhoneRow(model: model, phone: phone)
                         Hairline().padding(.leading, 38)
                     }
-                    row("qrcode", (model.status?.phones.isEmpty ?? true) ? "Pair an iPhone" : "Pair another iPhone", "Zone on the iPhone: Settings, Computers.") {
+                    row("qrcode", (model.status?.phones.isEmpty ?? true) ? "Pair an iPhone" : "Pair another iPhone", "In Zone on the iPhone: Settings, then Computers.") {
                         Button("Pair") { navigation.page = .pair }
                             .buttonStyle(ZonePillButtonStyle())
                     }
-                }
-                section("Sync") {
-                    row("folder", "Backup folder", backupLine) {
+                    Hairline().padding(.leading, 38)
+                    row("folder", "Read backups from a folder", backupLine) {
                         HStack(spacing: 6) {
                             if model.backupFolderBlocked {
                                 Button("Allow") {
@@ -613,7 +894,7 @@ private struct SettingsPage: View {
                     if model.hasClips {
                         Hairline().padding(.leading, 38)
                         Toggle(isOn: Binding(get: { model.clipboardCopyOn }, set: { model.setClipboardCopy($0) })) {
-                            label("doc.on.clipboard", "Put clips on the clipboard", clipboardLine)
+                            label("doc.on.clipboard", "Copy what I send from my iPhone", clipboardLine)
                         }
                         .toggleStyle(ZoneToggleStyle())
                         .disabled(model.clipboardCopy?.available == false || model.working.contains("clipboard"))
@@ -623,7 +904,7 @@ private struct SettingsPage: View {
                 }
                 section("This Mac") {
                     if model.loginItemNeedsApproval {
-                        row("power", "Start Zone when you log in", "macOS wants you to allow it in Login Items first.") {
+                        row("power", "Open Zone when I log in", "macOS wants you to allow it in Login Items first.") {
                             Button("Allow") {
                                 model.closePopover()
                                 model.approveLoginItem()
@@ -632,15 +913,27 @@ private struct SettingsPage: View {
                         }
                     } else {
                         Toggle(isOn: Binding(get: { model.loginItemOn }, set: { model.setLoginItem($0) })) {
-                            label("power", "Start Zone when you log in", model.env.isSandbox ? "Test run: no real login item is added." : "So your phone can always reach this Mac.")
+                            label("power", "Open Zone when I log in", loginLine)
                         }
                         .toggleStyle(ZoneToggleStyle())
                         .padding(.vertical, 8)
                         .padding(.horizontal, 10)
                     }
+                    if let other = otherStarter {
+                        // Only when something besides this app keeps the syncing going.
+                        Hairline().padding(.leading, 38)
+                        row("arrow.triangle.2.circlepath", other.title, other.detail) {
+                            Button(model.working.contains("takeover") ? "Changing" : "Use this app") {
+                                Task { await model.takeOver() }
+                            }
+                            .buttonStyle(ZonePillButtonStyle())
+                            .disabled(model.working.contains("takeover"))
+                            .help(other.help)
+                        }
+                    }
                     if model.runsZone, model.localNetwork == .denied {
                         Hairline().padding(.leading, 38)
-                        row("wifi", "Direct to your iPhone", "Not allowed, so syncs go through the relay. Allow Local Network for Zone to connect straight to the phone on the same network.") {
+                        row("wifi", "Sync straight over this network", "Not allowed yet, so syncs take the longer way through Zone's relay. Allow Local Network for Zone to change that.") {
                             Button("Allow") {
                                 model.closePopover()
                                 model.allowLocalNetwork()
@@ -651,37 +944,30 @@ private struct SettingsPage: View {
                     Hairline().padding(.leading, 38)
                     commandRow
                     Hairline().padding(.leading, 38)
-                    row("gearshape.2", "Who runs zone", ownerLine) {
-                        if model.owner == .loginItem || model.owner == .other || model.daemon == .waitingForLoginItem {
-                            Button(model.working.contains("takeover") ? "Taking over" : "Take over") {
-                                Task { await model.takeOver() }
-                            }
-                            .buttonStyle(ZonePillButtonStyle())
-                            .disabled(model.working.contains("takeover"))
+                    row("externaldrive", "Library folder", Formats.tilde(model.env.dataDirectory.path, home: model.env.home.path)) {
+                        Button("Show") {
+                            model.closePopover()
+                            model.open(model.env.dataDirectory)
                         }
+                        .buttonStyle(ZonePillButtonStyle())
                     }
                 }
                 section("About") {
-                    row("arrow.down.circle", "Check for updates", updateLine) {
-                        Button(model.checkingUpdate ? "Checking" : "Check") {
-                            Task { await model.checkForUpdates(openPage: true) }
+                    let update = model.updateLine
+                    row("arrow.down.circle", update.text, "") {
+                        if let button = update.button {
+                            Button(button) { model.followUpdateLine() }
+                                .buttonStyle(ZonePillButtonStyle(filled: update.button == "Update"))
+                        } else if model.checkingUpdate {
+                            ProgressView().controlSize(.small)
                         }
-                        .buttonStyle(ZonePillButtonStyle())
-                        .disabled(model.checkingUpdate)
                     }
+                    .help(update.detail ?? "")
                     Hairline().padding(.leading, 38)
                     row("hand.wave", "Setup guide", "") {
                         Button("Open") {
                             model.closePopover()
                             model.showWelcome()
-                        }
-                        .buttonStyle(ZonePillButtonStyle())
-                    }
-                    Hairline().padding(.leading, 38)
-                    row("externaldrive", "Your library", Formats.tilde(model.env.dataDirectory.path, home: model.env.home.path)) {
-                        Button("Show") {
-                            model.closePopover()
-                            model.open(model.env.dataDirectory)
                         }
                         .buttonStyle(ZonePillButtonStyle())
                     }
@@ -697,12 +983,13 @@ private struct SettingsPage: View {
             .padding(14)
             Hairline()
             HStack {
-                Text("Zone \(model.appVersion)\(model.zoneVersion.map { ", zone \($0)" } ?? "")")
+                Text(model.versionLine)
                     .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(Zone.muted(scheme))
                 Spacer()
                 Button("Quit Zone") { NSApp.terminate(nil) }
                     .buttonStyle(ZoneLinkButtonStyle(size: 11.5))
+                    .help(quitHelp)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
@@ -712,12 +999,13 @@ private struct SettingsPage: View {
             await model.refreshClipboardSetting()
             model.refreshLoginItem()
             await model.lookAtLocalNetwork()
+            await model.checkForUpdatesIfStale()
         }
     }
 
     private var backupLine: String {
         guard let folder = model.status?.backupFolder else {
-            return "Not set. Choose Zone's backup folder in iCloud Drive."
+            return "Off. For an iPhone that is not paired: Zone can save backups to iCloud Drive, and this Mac reads them from the folder you choose."
         }
         let path = Formats.tilde(folder, home: model.env.home.path)
         switch model.status?.backupState?.state {
@@ -729,56 +1017,78 @@ private struct SettingsPage: View {
         }
     }
 
+    /// What the clipboard switch does, how it stands as zone reports it, and once it is on,
+    /// how to try it (or that the last clip really was copied).
     private var clipboardLine: String {
         if let setting = model.clipboardCopy, !setting.available {
             return setting.fix ?? "This Mac has no tool that can write the clipboard."
         }
-        return "Text you send from the iPhone, ready to paste here."
+        guard model.clipboardCopyOn else {
+            return "Off. Text you send to this Mac from Zone on the iPhone is kept, and you copy it here yourself."
+        }
+        if let last = model.lastClipCopy {
+            return last.copied
+                ? "On. The last one was put on the clipboard \(Formats.ago(last.date, now: model.now))."
+                : "On, but the last one could not be put on the clipboard (\(Formats.ago(last.date, now: model.now)))."
+        }
+        return "On. Try it: send text to this Mac from Zone on your iPhone, then paste here."
     }
 
-    private var ownerLine: String {
+    private var loginLine: String {
+        if model.env.isSandbox { return "Test run: no real login item is added." }
+        if otherStarter != nil { return "Puts the Z in the menu bar at login." }
+        return model.loginItemOn
+            ? "Your iPhone can sync whenever this Mac is on."
+            : "Off: your iPhone syncs only while Zone is open."
+    }
+
+    /// Something other than this app does the syncing: what, and what changing it means.
+    /// Nil when this app does it, which is the usual case and needs no row.
+    private var otherStarter: (title: String, detail: String, help: String)? {
         switch model.daemon {
-        case .running(.app): return "This app. It stops when you quit Zone."
-        case .running(.adopted): return "This app (zone was still running from last time)."
-        case .running(.loginItem):
-            let program = model.legacyProgram.map { Formats.tilde($0, home: model.env.home.path) } ?? "zone install"
-            return "The login item from the command line (\(program)). It keeps running without this app."
-        case .running(.other): return "A zone started outside this app, most likely in a terminal."
-        case .starting, .checking: return "Starting."
-        case .waitingForLoginItem: return "The login item from the command line, which has not started zone yet."
-        case let .problem(message): return message
+        case .running(.loginItem), .waitingForLoginItem:
+            let program = model.legacyProgram.map { Formats.tilde($0, home: model.env.home.path) } ?? "zone"
+            return (
+                "Syncing is started by the zone command",
+                "\(program) starts at login and keeps syncing when this app is closed. \"Use this app\" hands that job to Zone: syncing then stops when you quit Zone, and updates come with the app.",
+                "Removes the command line login item (zone uninstall) and starts this app's own zone"
+            )
+        case .running(.other):
+            return (
+                "Syncing runs from a terminal",
+                "A zone started by hand is doing the syncing, and stops when its terminal closes. \"Use this app\" stops it and lets Zone do the syncing.",
+                "Stops that zone and starts this app's own"
+            )
+        default:
+            return nil
         }
     }
 
-    private var updateLine: String {
-        switch model.update {
-        case let .newer(version, _): return "\(version) is out."
-        case .upToDate: return "You have the latest."
-        case let .unknown(why): return why
-        case nil: return ""
-        }
+    private var quitHelp: String {
+        otherStarter == nil ? "Quits Zone. Syncing stops until you open it again." : "Quits this app. Syncing carries on without it."
     }
 
     @ViewBuilder
     private var commandRow: some View {
         switch model.commandLink {
         case let .linked(link):
-            row("terminal", "zone in the terminal", "On your PATH at \(Formats.tilde(link.path, home: model.env.home.path)).") {
+            row("terminal", "zone command for the terminal", "Installed at \(Formats.tilde(link.path, home: model.env.home.path)).") {
                 Button("Remove") { model.removeCommand() }
                     .buttonStyle(ZonePillButtonStyle())
             }
         case let .foreign(existing):
-            row("terminal", "zone in the terminal", "Another zone is at \(Formats.tilde(existing.path, home: model.env.home.path)). It is left alone unless you say so.") {
-                Button("Use this app's") { model.installCommand(replace: true) }
+            row("terminal", "zone command for the terminal", "You already have one at \(Formats.tilde(existing.path, home: model.env.home.path)), installed apart from this app. It is left alone.") {
+                Button("Replace") { model.installCommand(replace: true) }
                     .buttonStyle(ZonePillButtonStyle())
+                    .help("Makes the zone command run the zone inside this app instead")
             }
         case let .absent(suggested, needsAdmin):
-            row("terminal", "zone in the terminal", "Adds the command to \(Formats.tilde(suggested.deletingLastPathComponent().path, home: model.env.home.path))\(needsAdmin ? " (asks for your password)" : "").") {
+            row("terminal", "zone command for the terminal", "Optional, for people who use one. Goes in \(Formats.tilde(suggested.deletingLastPathComponent().path, home: model.env.home.path))\(needsAdmin ? " (asks for your password)" : "").") {
                 Button("Add") { model.installCommand() }
                     .buttonStyle(ZonePillButtonStyle())
             }
         case nil:
-            row("terminal", "zone in the terminal", "Looking at your PATH.") { EmptyView() }
+            row("terminal", "zone command for the terminal", "Looking.") { EmptyView() }
         }
     }
 
@@ -788,7 +1098,7 @@ private struct SettingsPage: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Watch this folder"
+        panel.prompt = "Read this folder"
         panel.message = "Choose the folder that holds Zone's backups (the one with a .zonebackup inside)."
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let folder = panel.url {
@@ -814,6 +1124,7 @@ private struct SettingsPage: View {
                 Text(title)
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(Zone.ink(scheme))
+                    .fixedSize(horizontal: false, vertical: true)
                 if !detail.isEmpty {
                     Text(detail)
                         .font(.system(size: 11))

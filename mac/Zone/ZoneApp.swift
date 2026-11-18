@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var welcomeWindow: NSWindow?
     private var floatingWindow: NSPanel?
     private var flash: FlashWindowController?
+    private var history: HistoryWindowController?
     private let guide = PermissionGuide()
     private var commandTimer: Timer?
     /// A test run can ask the app to stay out of the way of whoever is using the Mac: its
@@ -47,11 +48,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// (see `parkedOrigin`), where they can still be photographed.
     private var quiet = false
     private var signals: [DispatchSourceSignal] = []
+    private var testActivity: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let variables = ProcessInfo.processInfo.environment
         let env = ZoneEnvironment.resolve(from: variables, home: FileManager.default.homeDirectoryForCurrentUser)
         quiet = env.isSandbox && variables["ZONE_MAC_QUIET"] != nil
+        if env.isSandbox {
+            // A test run is steered by a file it looks at five times a second. With its
+            // windows off the screen (or the screen locked) macOS would slow that to a crawl.
+            testActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "A test run is being steered")
+        }
 
         // One Zone at a time (a test run in its own folder may sit beside the real one).
         if !env.isSandbox, let id = Bundle.main.bundleIdentifier {
@@ -89,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         model.closePopover = { [weak self] in self?.statusItem.close() }
         model.showFlash = { [weak self] in self?.showFlash() }
+        model.showHistory = { [weak self] route in self?.showHistory(route) }
         // A test run that stays out of the way never opens System Settings: the link is
         // noted in the sandbox's `opened` file and the card is parked like the windows.
         guide.parked = quiet
@@ -111,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         flash?.window.close()
+        history?.window.close()
         guide.close()
         model?.shutdown()
     }
@@ -256,6 +265,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         present(controller.window)
     }
 
+    /// The history page in a window of Zone's own (see HistoryWindow.swift), at a place in it.
+    func showHistory(_ route: PageRoute) {
+        if let history {
+            history.go(to: route)
+            present(history.window)
+            return
+        }
+        let controller = HistoryWindowController(model: model, route: route)
+        controller.onClose = { [weak self] in
+            self?.history = nil
+            self?.model.watchers = max(0, (self?.model.watchers ?? 1) - 1)
+        }
+        history = controller
+        model.watchers += 1
+        present(controller.window)
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         model.watchers = max(0, model.watchers - 1)
@@ -329,6 +355,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "restore": flash?.window.deminiaturize(nil)
             default: showFlash()
             }
+        case "history":
+            // history opens the page, history:notes, history:settings and
+            // history:meeting=ID open it at that place.
+            switch argument {
+            case "close": history?.window.close()
+            case "notes": showHistory(.notes)
+            case "settings": showHistory(.settings)
+            case let place? where place.hasPrefix("meeting="): showHistory(.meeting(String(place.dropFirst(8))))
+            default: showHistory(.home)
+            }
+        case "historyjs":
+            // historyjs:/path/answer.txt=return location.hash runs a script in the history page.
+            if let argument, let equals = argument.firstIndex(of: "="), let history {
+                let file = URL(fileURLWithPath: String(argument[..<equals]))
+                let script = String(argument[argument.index(after: equals)...])
+                Task {
+                    let answer = await history.evaluate(script)
+                    try? (answer + "\n").write(to: file, atomically: true, encoding: .utf8)
+                }
+            }
+        case "segment":
+            // segment:note narrows the menu's list to a kind (all, note, meeting, dictation, clip).
+            if let segment = argument.flatMap(ListSegment.init(rawValue:)) {
+                statusItem.navigation.segment = segment
+                model.showKind(segment.kind)
+            }
+        case "details":
+            // details:on opens what the line at the top of the menu leaves out.
+            statusItem.navigation.detailsOpen = argument != "off"
+        case "agent":
+            // agent:claude-code opens that app's profiles on the Agents page, agent:off
+            // opens the apps that are not connected, agent:close folds everything.
+            switch argument {
+            case "close": statusItem.navigation.openAgent = nil; statusItem.navigation.offAgentsOpen = false
+            case "off": statusItem.navigation.offAgentsOpen = true
+            default: statusItem.navigation.openAgent = argument
+            }
+        case "test":
+            // test:zone checks the zone that runs here, test:cursor each place of that agent.
+            if argument == "zone" {
+                model.testZone()
+            } else if let agent = model.agents.first(where: { $0.id == argument }) {
+                model.test(agent)
+            }
+        case "connect":
+            // connect:opencode is the agent's switch (or "Use this one"), connect:opencode=off
+            // turns it off.
+            if let argument {
+                let parts = argument.split(separator: "=").map(String.init)
+                if let agent = model.agents.first(where: { $0.id == parts[0] }) {
+                    Task { await model.setAgent(agent, connected: parts.last != "off") }
+                }
+            }
+        case "agents":
+            // agents reads the agents' settings again (after a test changed them from outside).
+            Task { await model.loadAgents() }
+        case "update":
+            Task { await model.checkForUpdates() }
         case "flashjs":
             // flashjs:/path/answer.txt=return document.title runs a script in the Flash page
             // and writes what it returned to that file.
@@ -396,6 +480,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let (window, path) = target(argument) {
                 _ = WindowSnapshot.capture(window, to: URL(fileURLWithPath: path))
             }
+        case "snapdrawn":
+            // The same, drawn by the app itself: for a run behind the lock screen, where the
+            // window server has nothing to give. No shadow, and no rounded corners cut out.
+            if let (window, path) = target(argument) {
+                _ = WindowSnapshot.capture(window, to: URL(fileURLWithPath: path), drawn: true)
+            }
         case "snapflat":
             // The same without the shadow, so a point in the picture is a point in the window.
             if let (window, path) = target(argument) {
@@ -446,6 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "welcome": window = welcomeWindow
         case "floating": window = floatingWindow
         case "flash": window = flash?.window
+        case "history": window = history?.window
         case "guide": window = guide.window
         default: window = nil
         }
@@ -546,6 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let welcomeWindow, welcomeWindow.isVisible { lines.append("welcome \(welcomeWindow.windowNumber)") }
         if let floatingWindow, floatingWindow.isVisible { lines.append("floating \(floatingWindow.windowNumber)") }
         if let window = flash?.window, window.isVisible { lines.append("flash \(window.windowNumber)") }
+        if let window = history?.window, window.isVisible { lines.append("history \(window.windowNumber)") }
         if let window = guide.window, window.isVisible { lines.append("guide \(window.windowNumber)") }
         let file = model.env.dataDirectory.deletingLastPathComponent().appendingPathComponent("windows")
         try? (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
