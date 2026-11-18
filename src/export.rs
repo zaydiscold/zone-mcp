@@ -133,7 +133,9 @@ pub fn turns(row: &Row) -> Vec<Turn> {
         }
         None => {
             for line in row.text.lines() {
-                match line.split_once(": ").filter(|(name, _)| !name.is_empty() && name.chars().count() <= 40 && !name.contains('.')) {
+                // A name before the colon: short, a few words at most. "So the plan is: we
+                // go on Friday" is somebody speaking, not somebody's name.
+                match line.split_once(": ").filter(|(name, _)| !name.is_empty() && name.chars().count() <= 40 && !name.contains(['.', ',', '?', '!']) && name.split_whitespace().count() <= 3) {
                     Some((name, words)) => push(Some(name.to_string()), None, words),
                     None => push(None, None, line),
                 }
@@ -453,6 +455,11 @@ mod tests {
         meeting.extra = "{}".to_string();
         let plain = render(&[meeting.clone()], &clock(), Format::Text, Order::Oldest, None);
         assert!(plain.contains("Ada:\nhello there and welcome\n\nGrace:\nthank you\n"), "{plain}");
+        // A sentence with a colon in it is not a speaker.
+        let mut said = row(4, "meeting", 1_794_960_000.0, "Speaker 1: so the plan is: ship it\nSo the plan is this: we go on Friday\nWell, then: yes\nDr Ada Lovelace: agreed");
+        said.extra = "{}".to_string();
+        assert_eq!(speakers(&said), ["Speaker 1", "Dr Ada Lovelace"]);
+        assert_eq!(turns(&said).iter().map(|turn| turn.text.as_str()).collect::<Vec<_>>(), ["so the plan is: ship it", "So the plan is this: we go on Friday", "Well, then: yes", "agreed"]);
         // A title and a speaker's name are one line each, whatever line breaks they hold.
         meeting.title = Some("Roof:\nplan &\tbudget\r\n".to_string());
         meeting.extra = json!({ "segments": [{ "speaker": " Ada\nLovelace ", "start": 0.0, "text": "hello" }] }).to_string();
