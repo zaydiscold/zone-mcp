@@ -14,9 +14,9 @@ looking. The fixes are listed at the end with their commits.
 
 | Path | What it does | How soon a person has the new version | Gaps |
 |---|---|---|---|
-| `zone update` | Asks `api.github.com/repos/zaydiscold/zone-mcp/releases/latest` once (6 seconds at most), then runs the install script built into the program you already have, with that version and the folder zone is in. | As soon as they run it. 0.1.1 to 0.1.3 took a few seconds. | Uses the OLD program's copy of the script, so a fix to `install.sh` only helps the update after next. At GitHub's hourly limit for the API (60 questions per address) it stopped with "API rate limit exceeded" even though the download itself needs no API: fixed, it now asks the website when the API will not say. |
+| `zone update` | Asks `api.github.com/repos/zaydiscold/zone-mcp/releases/latest` once (6 seconds at most), then runs the install script built into the program you already have, with that version and the folder zone is in. | As soon as they run it. 0.1.1 to 0.1.3 took a few seconds. | Uses the OLD program's copy of the script, so a fix to `install.sh` only helps the update after next. At GitHub's hourly limit for the API (60 questions per address) it stopped with "API rate limit exceeded" even though the download itself needs no API: fixed (7a2df1c), it now asks the website when the API will not say. |
 | `zone update --check` | The same question, installs nothing. Not cached: asks every time. | n/a | None found. Offline: says so, exit 1. Installed newer than the latest release: says so, exit 0. |
-| `install.sh` one-liner | Fetched from `raw.githubusercontent.com/.../main/`, which GitHub caches for 5 minutes (`cache-control: max-age=300`). Finds the latest by following `github.com/.../releases/latest`, which only ever leads to a published release that is not a draft or a prerelease. Downloads, checks the SHA-256, runs `zone --version` on the download before replacing anything. | As soon as they run it. The script itself can be up to 5 minutes behind `main`; the version it installs is worked out when it runs, so it is never behind. | Re-run over an install: restarts zone only when the login item (`zone install`) points at this very file. A `zone serve` in a terminal, or one Zone for Mac started, keeps running the old program. See "After the file is replaced". |
+| `install.sh` one-liner | Fetched from `raw.githubusercontent.com/.../main/`, which GitHub caches for 5 minutes (`cache-control: max-age=300`). Finds the latest by following `github.com/.../releases/latest`, which only ever leads to a published release that is not a draft or a prerelease. Downloads, checks the SHA-256, runs `zone --version` on the download before replacing anything. | As soon as they run it. The script itself can be up to 5 minutes behind `main`; the version it installs is worked out when it runs, so it is never behind. | Re-run over an install: the script restarts zone only when the login item (`zone install`) points at this very file. A `zone serve` in a terminal, or one Zone for Mac started, kept running the old program: fixed, a running zone now starts the version that replaced it. See "After the file is replaced". The script also removed the old `zone` before moving the new one in, leaving a moment with nothing at the path: fixed (abc93b5), one move. |
 | `install.ps1` one-liner | The same on Windows. A running `zone.exe` is moved aside (Windows allows a rename, not an overwrite), the new one takes its name, the background zone is stopped and started again through its launcher. | As soon as they run it. | Read and covered by the Windows CI job only. Not run by hand for this review (no Windows machine in the loop). |
 | Homebrew | There is no tap. `zaydiscold/homebrew-zone` does not exist (404). Each release carries a `zone.rb` with that release's version and checksums (0.1.1 and 0.1.3 checked against `SHA256SUMS`: they match). | Never, until a tap is published and its `Formula/zone.rb` is replaced at each release. | README says "soon", which is true. `brew upgrade` will lag every release by however long the tap's copy takes to be replaced: that step is by hand today. |
 | `cargo install --git` | Builds `main` at the moment it is run, not the latest release. `zone update` refuses to replace it and prints the command to run again (with `--force`). | When they run it again. | README gives the first-install line; the update line needs `--force`, which `zone update` prints. |
@@ -45,9 +45,24 @@ What restarts by itself:
 - A zone that Zone for Mac started: no. The app restarts its own zone only when the app itself
   is replaced and opened again.
 
-What says so now (fixed in this pass): `zone status` and `zone doctor` name the version that is
-running when it is not the version of the program on disk, `zone status --json` carries it as
-`daemon.version`, and an open page reloads when zone comes back as another version.
+Fixed in this pass, two ways.
+
+First, zone restarts itself. On macOS and Linux a running zone looks at its own program file
+every ten seconds. When another version of zone has taken its place (and that program runs:
+it is asked for its version first), zone cleans up as it does when stopped and starts the new
+program in its place, as the same process with the same arguments. So the three cases above
+all end with the new version running within about fifteen seconds, whoever started zone. Tried
+with a 0.1.3 build and a stand-in 0.1.4: in a terminal, and as the zone Zone for Mac started
+(same process id before and after, the app noticed nothing). The same version put there again
+changes nothing. On Windows the installer stops and starts zone as before.
+
+Second, it is said. `zone status` and `zone doctor` name the version that is running when it
+is not the version of the program on disk, `zone status --json` carries it as `daemon.version`,
+Zone for Mac shows it at the foot of its Settings, and an open page loads the new page when
+zone comes back as another version (four seconds, in the same test).
+
+This reaches people from the release after 0.1.3. A zone 0.1.1 to 0.1.3 that is running when
+it is updated still has to be stopped and started once, unless it starts at login.
 
 ## Who is told that a newer release exists
 
@@ -99,7 +114,7 @@ A long agent session keeps its old `zone mcp` after an update, and the Mac case 
 | Library opened in place by 0.1.3 | Works. One table added (`removed`), three columns on `devices`, nothing rewritten, `user_version` stays 1. | Same. |
 | Old `zone status`, `list`, `search`, `show`, `stats` on it | Work. An item removed on the 0.1.3 page is left out of all of them. | Same. |
 | Old `zone mcp`: `list_items`, `mark_processed` | Work. A mark set by the old program shows as Done on the 0.1.3 page. A removed item is "not found". | Same. |
-| Going back: the old zone runs the 0.1.3 library | Works. One flaw: when the phone sends everything again under the old zone, an item that was removed on the page comes back (the old zone does not know about removal). Back on 0.1.3 that item was both in the library and in "Removed from this computer", where Put back did nothing. Fixed: a removed entry whose item is back in the library is dropped when zone opens the library. | Same. |
+| Going back: the old zone runs the 0.1.3 library | Works. One flaw: when the phone sends everything again under the old zone, an item that was removed on the page comes back (the old zone does not know about removal). Back on 0.1.3 that item was both in the library and in "Removed from this computer", where Put back did nothing. Fixed: when a zone with the fix opens the library, such an item is removed again (it can be put back as before), unless the phone edited it in the meantime, in which case it is back as the phone has it. | Same. |
 
 ## What was fixed, and where
 
@@ -122,5 +137,6 @@ the Mac app offers only what it can deliver and never puts an older zone back.
 - **The download is checked against a checksum that comes from the same release.** That
   catches a broken or swapped file, not a release that was replaced whole. Signing the
   checksums would close that; not done here.
-- **A `zone serve` in a terminal is not restarted** by an update. It is now said plainly, not
-  fixed.
+- **Windows**: a `zone serve` typed into a terminal there is still not restarted by an update
+  (a running `.exe` cannot be swapped for another in place). The login item is, by the
+  installer.
