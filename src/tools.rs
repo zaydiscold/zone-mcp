@@ -732,6 +732,10 @@ pub fn sync_status(db: &mut Db, scope: &Scope) -> Result<Value> {
             "total": counts.total,
             "by_kind": kind_counts(&counts.by_kind),
             "dictations_by_source": by_source,
+            // Dictations that are the recording behind a voice note which is itself in the
+            // library: the same words twice. The page counts and lists a voice note once
+            // (`total` less this), and so does Zone for Mac.
+            "recordings_behind_notes": db.count_folded(&crate::db::Filter { scope: scope.clone(), ..Default::default() })?,
             "unprocessed": counts.unprocessed,
             "deleted_on_phone": counts.deleted,
             "oldest": span.map(|(oldest, _)| clock.full(oldest)),
@@ -1038,6 +1042,7 @@ mod tests {
         assert_eq!((out["items"]["total"].as_i64(), out["items"]["unprocessed"].as_i64()), (Some(3), Some(3)));
         assert_eq!(out["items"]["by_kind"], json!({ "dictation": 1, "meeting": 1, "note": 1 }));
         assert_eq!(out["items"]["dictations_by_source"], json!({ "app": 1 }));
+        assert_eq!(out["items"]["recordings_behind_notes"], 0);
         assert_eq!(out["scope"]["excluded_sources"], json!(["keyboard"]));
         assert!(out["scope"]["note"].as_str().unwrap().contains("limited view"));
         // The oldest visible item is the note, not the keyboard dictation before it.

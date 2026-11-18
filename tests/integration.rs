@@ -2046,7 +2046,7 @@ fn json_outputs_keep_their_shape() {
     let status = sandbox.json(&["status", "--json"]);
     has(&status, &["now", "computer", "daemon", "daemon_running", "phones", "last_sync", "backup_folder", "backup_folder_state", "items", "data_directory", "database"], "status");
     has(&status["daemon"], &["running", "pid", "endpoint_id", "web_page", "relay_connected", "relay_url"], "status.daemon");
-    has(&status["items"], &["total", "by_kind", "dictations_by_source", "unprocessed", "deleted_on_phone", "oldest", "newest"], "status.items");
+    has(&status["items"], &["total", "by_kind", "dictations_by_source", "recordings_behind_notes", "unprocessed", "deleted_on_phone", "oldest", "newest"], "status.items");
     has(&status["now"], &["local", "date", "weekday", "timezone", "utc_offset", "rfc3339"], "status.now");
     has(&status["last_sync"], &["link", "flash", "backup_folder"], "status.last_sync");
     has(&status["phones"][0], &["name", "app", "endpoint_id", "paired", "last_sync", "last_sync_age_s", "items_received", "last_path"], "status.phones");
