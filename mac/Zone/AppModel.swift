@@ -220,7 +220,7 @@ final class AppModel {
 
     /// "Zone 0.1.2". The zone inside is named only when it is another version.
     var versionLine: String {
-        Versions.line(app: appVersion, zone: zoneVersion)
+        Versions.line(app: appVersion, zone: zoneVersion, running: status?.daemon.running == true ? status?.daemon.version : nil)
     }
 
     // MARK: Starting up

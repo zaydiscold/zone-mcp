@@ -84,9 +84,15 @@ public enum Versions {
 
     /// The app's version, once: "Zone 0.1.2". The zone program inside is the same version
     /// by design, so it is named only when it really is another one.
-    public static func line(app: String, zone: String?) -> String {
-        guard let zone, parts(zone) != parts(app) else { return "Zone \(plain(app))" }
-        return "Zone \(plain(app)), with zone \(plain(zone)) inside"
+    ///
+    /// `running` is the version of the zone that is running, when zone says (0.1.4 and
+    /// later do). A login item can run another copy than the app's, and after an update the
+    /// one running can be the one from before: then it is named too.
+    public static func line(app: String, zone: String?, running: String? = nil) -> String {
+        var line = "Zone \(plain(app))"
+        if let zone, parts(zone) != parts(app) { line += ", with zone \(plain(zone)) inside" }
+        if let running, !parts(running).isEmpty, parts(running) != parts(zone ?? app) { line += ". Running: zone \(plain(running))" }
+        return line
     }
 
     /// True when `candidate` is a later version than `current`.

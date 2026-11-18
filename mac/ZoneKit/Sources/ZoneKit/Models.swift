@@ -112,9 +112,12 @@ public struct StatusReport: Decodable, Equatable, Sendable {
         public var webPage: String?
         public var relayConnected: Bool?
         public var relayURL: String?
+        /// The version of the zone that is running, which after an update can be older than
+        /// the program on disk. Nil from a zone before 0.1.4, and when none is running.
+        public var version: String?
 
         enum CodingKeys: String, CodingKey {
-            case running, pid
+            case running, pid, version
             case endpointID = "endpoint_id"
             case webPage = "web_page"
             case relayConnected = "relay_connected"

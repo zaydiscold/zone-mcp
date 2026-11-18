@@ -34,7 +34,8 @@ dot: zone is not running. An exclamation mark: something needs you.
   you are sharing your screen (it stays on until you turn it off, here and in the floating
   window), and the window icon opens the floating window.
 - The newest clip, for a quarter of an hour after it arrives (see Clips below).
-- Your last meeting: its title, when, how long. Click it and its transcript opens in History.
+- Your last meeting, under the words "Last meeting": its title, when, how long. Click it and
+  its transcript opens in History.
 - The newest three notes nobody has marked Done (on the history page, or an agent with
   `mark_processed`), and a link to all of them in History.
 - The latest things you said, nine to twelve rows at a time and more on a scroll. Above them
@@ -75,11 +76,14 @@ says what `zone mcp status` says in a terminal.
 **Settings.** Each paired phone (when it last synced, how many items, and a menu to ask it to
 send everything again or forget it), pairing another, reading backups from a folder, copying
 what you send from the iPhone, opening Zone at login, the `zone` command, the library
-folder, updates, the setup guide, and Quit. The version is at the foot, once. Updates are
-one line: "Up to date", or "0.1.3 is available" with **Update** (which opens the download
-page), or "Could not check for updates" with **Try again**. A build that is newer than the
-latest published release is up to date. When GitHub's API is at its hourly limit for the
-network, the app asks GitHub's website instead.
+folder, updates, the setup guide, and Quit. The version is at the foot, once, and names the
+zone that is running when that is another version ("Zone 0.1.3. Running: zone 0.1.4"). Updates
+are one line: "Up to date", or "0.1.4 is available" with **Update** (which downloads that
+release's `Zone.dmg`), or "0.1.4 is not out as an app yet" when the release has no disk image
+on it (a release is published with the command line's files first), or "Could not check for
+updates" with **Try again**. A build that is newer than the latest published release is up to
+date. When GitHub's API is at its hourly limit for the network, the app asks GitHub's website
+instead.
 
 <p align="center">
   <img src="../docs/media/mac-popover-more.png" width="412" alt="Settings: the paired iPhone, pairing another, reading backups from a folder, copying what you send from the iPhone, this Mac and updates">
@@ -231,7 +235,9 @@ The app owns the background service.
   opens at once and says "Starting zone" until it can load.
 - **The app's own copy of zone** lives at `~/Library/Application Support/Zone/bin/zone`. On
   every launch the app makes sure it is the same program as the one inside the app, and
-  replaces it when the app was updated. It is never written into while it runs: the new file
+  replaces it when the app was updated. A copy that is a later version than the app's
+  (`zone update` run through it) is left alone: the app never puts an older zone back. It
+  is never written into while it runs: the new file
   is written beside it and moved into place (macOS kills a signed program whose file changes
   under it). This is the path AI clients are registered with and the `zone` command links
   to, so they survive the app being updated, moved, or opened straight from the disk image.
@@ -443,8 +449,9 @@ this file was taken this way.
 - When the app is attached to an older zone that someone else runs (a login item from
   before clips), the clipboard switch is saved but that zone does not act on it until the
   app takes over.
-- Updates are a check against the latest GitHub release and a link to it. The app does not
-  update itself.
+- Updates are a check against the latest GitHub release and a link to its disk image, made
+  when Settings comes into view. The app does not update itself, and says nothing about a
+  newer release anywhere else. The zone inside can be updated by itself with `zone update`.
 - The menu's links into the history page (`#/meeting/<id>`, `#/notes`) are the routes of
   the page as of 7281a21, and were opened against it on 2026-11-17. The page of zone 0.1.2
   and earlier does not know them and opens as it always did.

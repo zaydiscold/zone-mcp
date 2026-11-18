@@ -456,6 +456,12 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(Versions.line(app: "0.1.2", zone: "0.1.2"), "Zone 0.1.2")
         XCTAssertEqual(Versions.line(app: "0.1.2", zone: nil), "Zone 0.1.2")
         XCTAssertEqual(Versions.line(app: "0.1.2", zone: "0.1.3"), "Zone 0.1.2, with zone 0.1.3 inside")
+        // The zone that is running is named when it is another version than the app's copy:
+        // a login item running its own copy, or the one from before an update.
+        XCTAssertEqual(Versions.line(app: "0.1.2", zone: "0.1.2", running: "0.1.2"), "Zone 0.1.2")
+        XCTAssertEqual(Versions.line(app: "0.1.2", zone: "0.1.2", running: "0.1.3"), "Zone 0.1.2. Running: zone 0.1.3")
+        XCTAssertEqual(Versions.line(app: "0.1.3", zone: "0.1.4", running: "0.1.3"), "Zone 0.1.3, with zone 0.1.4 inside. Running: zone 0.1.3")
+        XCTAssertEqual(Versions.line(app: "0.1.2", zone: nil, running: ""), "Zone 0.1.2")
         XCTAssertEqual(Versions.plain("v0.1.3"), "0.1.3")
     }
 }
