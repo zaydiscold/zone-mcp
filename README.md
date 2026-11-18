@@ -388,7 +388,9 @@ zone export --format jsonl > library.jsonl
 
 `zone export` writes `jsonl`, `json`, `csv`, `md` or `txt`, `--order oldest` or `newest`, in the
 same layouts as the page's Export. `--done` and `--unprocessed` pick items by the done flag,
-`--phone` by the phone they came from, and `--id` names single items.
+`--phone` by the phone they came from, and `--id` names single items. In CSV, a title or text
+that begins with `=`, `+`, `-` or `@` gets an apostrophe in front, so that a spreadsheet shows
+it as words and does not run it as a formula.
 
 Times can be RFC 3339 (`2026-11-11T12:00:00-08:00`), a date (`2026-11-11`), a date and time
 (`"2026-11-11 12:00"`, in the computer's time zone, or the one given with `--tz`), an age (`2h`,

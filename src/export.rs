@@ -336,6 +336,14 @@ fn csv_field(text: &str) -> String {
     if text.contains([',', '"', '\n', '\r']) { format!("\"{}\"", text.replace('"', "\"\"")) } else { text.to_string() }
 }
 
+/// A field whose words came from a phone. A spreadsheet takes a cell that begins with `=`,
+/// `+`, `-` or `@` (or a tab or a return before one) as a formula, and a formula can fetch an
+/// address or start a program. Such a field gets an apostrophe in front, which a spreadsheet
+/// shows as text and does not run. It is the one place an export changes what was said.
+fn csv_words(text: &str) -> String {
+    if text.starts_with(['=', '+', '-', '@', '\t', '\r']) { csv_field(&format!("'{text}")) } else { csv_field(text) }
+}
+
 fn csv(rows: &[&Row], clock: &Clock) -> String {
     let mut out = String::from("id,kind,source,created,done,duration_s,words,title,text\r\n");
     for row in rows {
@@ -350,7 +358,9 @@ fn csv(rows: &[&Row], clock: &Clock) -> String {
             row.title.clone().unwrap_or_default(),
             row.text.clone(),
         ];
-        out.push_str(&fields.iter().map(|field| csv_field(field)).collect::<Vec<_>>().join(","));
+        // The created time, done, the duration and the word count are zone's own.
+        let field = |(index, field): (usize, &String)| if (3..=6).contains(&index) { csv_field(field) } else { csv_words(field) };
+        out.push_str(&fields.iter().enumerate().map(field).collect::<Vec<_>>().join(","));
         out.push_str("\r\n");
     }
     out
@@ -462,6 +472,15 @@ mod tests {
         assert_eq!(lines[1], "E0000000-0000-4000-8000-000000000004,meeting,,2026-11-16T16:00:00-08:00,no,,2,Standup,Ada: one");
         assert!(lines[4].ends_with(",clip,,2026-11-17T17:01:40-08:00,no,,1,,\"https://example.invalid/a,b\""), "{}", lines[4]);
         assert_eq!(csv_field("say \"hi\"\nnow"), "\"say \"\"hi\"\"\nnow\"");
+        // Nothing a phone sent is a formula to a spreadsheet.
+        for start in ["=HYPERLINK(\"http://example.invalid\",\"x\")", "+1 555 0100", "-2+3", "@SUM(A1)", "\t=1+1"] {
+            assert!(csv_words(start).trim_start_matches('"').starts_with('\''), "{start}");
+        }
+        assert_eq!(csv_words("=1+1,2"), "\"'=1+1,2\"");
+        assert_eq!(csv_words("a = b - c"), "a = b - c");
+        let hostile = Row { title: Some("=cmd|' /C calc'!A0".into()), text: "@SUM(1)".into(), source: Some("+x".into()), ..rows[0].clone() };
+        let line = render(&[hostile], &clock(), Format::Csv, Order::Oldest, None);
+        assert!(line.contains(",'+x,") && line.contains(",'=cmd|' /C calc'!A0,'@SUM(1)"), "{line}");
 
         let json: Value = serde_json::from_str(&render(&rows, &clock(), Format::Json, Order::Newest, None)).unwrap();
         assert_eq!((json.as_array().unwrap().len(), json[0]["kind"].as_str()), (4, Some("clip")));
