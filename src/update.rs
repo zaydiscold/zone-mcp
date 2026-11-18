@@ -393,6 +393,9 @@ mod tests {
     fn the_installers_are_built_in() {
         assert!(INSTALL_SH.starts_with("#!/bin/sh") && INSTALL_SH.contains("ZONE_INSTALL_DIR"));
         assert!(INSTALL_PS1.contains("ZONE_INSTALL_DIR"));
+        // The new program takes the old one's place in one move: the old one is never
+        // removed first, which would leave a moment with no zone at the path.
+        assert!(INSTALL_SH.contains("mv -f \"$staged\" \"$target\"") && !INSTALL_SH.contains("rm -f \"$target\""));
         for script in [INSTALL_SH, INSTALL_PS1] {
             assert!(script.contains(REPO) && script.contains("SHA256SUMS") && !script.contains('\u{2014}'));
         }

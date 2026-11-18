@@ -102,14 +102,14 @@ main() {
     updating=""
     [ -e "$target" ] && updating="yes"
 
-    # Put the new program beside the old one, take the old one away, then move the new one
-    # into its place. Writing over a running zone would get it killed by macOS, whose code
-    # signing check does not allow a running program's file to change.
+    # Put the new program beside the old one, then move it into the old one's place in one
+    # step, so there is never a moment without a zone at that path (an AI client starting
+    # `zone mcp` just then would fail). Writing over a running zone instead would get it killed
+    # by macOS, whose code signing check does not allow a running program's file to change.
     staged="$dir/.zone-new.$$"
     cp "$work/unpacked/zone" "$staged" || fail "cannot write to $dir"
     chmod 755 "$staged"
-    rm -f "$target"
-    mv "$staged" "$target" || fail "cannot put zone in $dir"
+    mv -f "$staged" "$target" || { rm -f "$staged"; fail "cannot put zone in $dir"; }
 
     say "Installed $installed_version in $target"
 
