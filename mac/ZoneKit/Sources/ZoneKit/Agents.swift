@@ -375,7 +375,7 @@ public struct Agent: Equatable, Sendable, Identifiable {
             return other > 0 ? base + ", \(other) with another copy of zone" : base
         case .otherCopy:
             let other = otherCopyPlaces.count
-            if count > 1, other < count { return "\(other) of \(count) profiles start another copy of zone" }
+            if count > 1, other < count { return "\(other) of \(count) profiles \(other == 1 ? "starts" : "start") another copy of zone" }
             return joined(profiles, "starts another copy of zone")
         case .notConnected:
             if !installed { return "Not on this Mac" }
@@ -389,7 +389,8 @@ public struct Agent: Equatable, Sendable, Identifiable {
     /// (The zone that runs on this Mac is named once, at the foot of the panel.)
     public func otherCopyExplanation(home: String = "") -> String {
         let there = otherCopyProgram.map { " (\(Formats.tilde($0, home: home)))" } ?? ""
-        let who = otherCopyPlaces.count < places.count ? "\(otherCopyPlaces.count) of its profiles start" : "\(title) starts"
+        let some = otherCopyPlaces.count
+        let who = some < places.count ? "\(some) of its profiles \(some == 1 ? "starts" : "start")" : "\(title) starts"
         return "\(who) another copy of zone\(there), not the one that runs on this Mac. It reads the same library, but is updated on its own and can fall behind."
     }
 

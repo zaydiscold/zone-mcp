@@ -92,14 +92,14 @@ final class AgentCheckTests: XCTestCase {
         ]), knowsClips: true)[0]
         XCTAssertEqual(mixed.standing, .partly(places: 2, total: 3))
         XCTAssertEqual(mixed.note, "Connected in 2 of 3 profiles, 1 with another copy of zone")
-        XCTAssertEqual(mixed.otherCopyExplanation(), "1 of its profiles start another copy of zone (/old/zone), not the one that runs on this Mac. It reads the same library, but is updated on its own and can fall behind.")
+        XCTAssertEqual(mixed.otherCopyExplanation(), "1 of its profiles starts another copy of zone (/old/zone), not the one that runs on this Mac. It reads the same library, but is updated on its own and can fall behind.")
 
         let everywhere = Agent.list(from: AgentSurvey(clients: [
             place("codex", "Codex (default)", "default", state: "registered"),
             place("codex", "Codex (~/.codex_b)", "~/.codex_b", state: "other_copy", detail: "/old/zone"),
         ]), knowsClips: true)[0]
         XCTAssertEqual(everywhere.standing, .otherCopy("/old/zone"))
-        XCTAssertEqual(everywhere.note, "1 of 2 profiles start another copy of zone")
+        XCTAssertEqual(everywhere.note, "1 of 2 profiles starts another copy of zone")
 
         let none = AgentSections(Agent.list(from: AgentSurvey(clients: [place("zed", "Zed", state: "not_registered")])))
         XCTAssertEqual(none.summary, "None connected yet")

@@ -543,13 +543,18 @@ private struct AgentRow: View {
                             .foregroundStyle(Zone.ink(scheme))
                             .lineLimit(1)
                             .truncationMode(.middle)
+                        Spacer(minLength: 6)
+                        if let test = model.agentTests[place.path], test == .running || test.outcome?.answered == true {
+                            TestLine(test: test)
+                        }
                     }
                     Text(([place.words(home: home)] + [place.limit(knowsClips: agent.knowsClips)].compactMap { $0 }).joined(separator: ", "))
                         .font(.system(size: 10.5))
                         .foregroundStyle(Zone.muted(scheme))
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, 10)
-                    if let test = model.agentTests[place.path] {
+                    // What went wrong takes a line of its own: it can be a sentence.
+                    if let test = model.agentTests[place.path], test.outcome?.answered == false {
                         TestLine(test: test)
                             .padding(.leading, 10)
                     }
