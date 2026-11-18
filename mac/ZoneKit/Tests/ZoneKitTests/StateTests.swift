@@ -172,6 +172,37 @@ final class StateTests: XCTestCase {
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: stable.path))
     }
 
+    func testANewerCopyIsNeverReplacedByTheOlderOneInsideTheApp() throws {
+        // `zone update` run through the app's copy replaces that copy with a later version.
+        // Opening the app must not put its own older one back.
+        let folder = try temporaryFolder()
+        let bundled = folder.appendingPathComponent("bundled-zone")
+        let stable = folder.appendingPathComponent("bin/zone")
+        func program(_ version: String, at url: URL) throws {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: url)
+            try Data("#!/bin/sh\necho \"zone \(version)\"\n".utf8).write(to: url)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        try program("0.1.3", at: bundled)
+        try program("0.1.4", at: stable)
+        XCTAssertEqual(BinaryInstaller.version(of: stable), "0.1.4")
+        XCTAssertEqual(try BinaryInstaller.ensure(bundled: bundled, stable: stable), .newerKept)
+        XCTAssertEqual(BinaryInstaller.version(of: stable), "0.1.4")
+        // An older copy, and one that does not say what it is, are replaced as before.
+        try program("0.1.2", at: stable)
+        XCTAssertEqual(try BinaryInstaller.ensure(bundled: bundled, stable: stable), .updated)
+        XCTAssertEqual(BinaryInstaller.version(of: stable), "0.1.3")
+        try Data("#!/bin/sh\necho nonsense\n".utf8).write(to: stable)
+        XCTAssertNil(BinaryInstaller.version(of: stable))
+        XCTAssertEqual(try BinaryInstaller.ensure(bundled: bundled, stable: stable), .updated)
+        // A newer app replaces the copy once it is the later one.
+        try program("0.1.5", at: bundled)
+        try program("0.1.4", at: stable)
+        XCTAssertEqual(try BinaryInstaller.ensure(bundled: bundled, stable: stable), .updated)
+        XCTAssertEqual(BinaryInstaller.version(of: stable), "0.1.5")
+    }
+
     func testAMissingBundledProgramIsAnError() throws {
         let folder = try temporaryFolder()
         XCTAssertThrowsError(try BinaryInstaller.ensure(bundled: folder.appendingPathComponent("nope"), stable: folder.appendingPathComponent("bin/zone")))

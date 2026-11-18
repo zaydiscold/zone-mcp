@@ -237,6 +237,20 @@ public enum BinaryInstaller {
         case updated
         /// The copy was already the same.
         case current
+        /// The copy is a later version than the one inside the app (`zone update` was run
+        /// through it): it is left alone. Putting the app's own back would undo the update.
+        case newerKept
+    }
+
+    /// What `program --version` says: "0.1.3" out of "zone 0.1.3". Nil when it does not run
+    /// or says something else.
+    public static func version(of program: URL) -> String? {
+        guard let output = try? ZoneProcessRunner.runAndWait(binary: program, arguments: ["--version"], environment: ["PATH": "/usr/bin:/bin"], timeout: 5),
+              output.status == 0
+        else { return nil }
+        let words = output.text.split(whereSeparator: { $0 == " " || $0.isNewline })
+        guard words.count >= 2, words[0] == "zone", !Versions.parts(String(words[1])).isEmpty else { return nil }
+        return String(words[1])
     }
 
     public static func sha256(of file: URL) -> String? {
@@ -257,6 +271,9 @@ public enum BinaryInstaller {
         let had = fm.fileExists(atPath: stable.path)
         if had, sha256(of: stable) == wanted, fm.isExecutableFile(atPath: stable.path) {
             return .current
+        }
+        if had, fm.isExecutableFile(atPath: stable.path), let theirs = version(of: stable), let ours = version(of: bundled), Versions.isNewer(theirs, than: ours) {
+            return .newerKept
         }
         try fm.createDirectory(at: stable.deletingLastPathComponent(), withIntermediateDirectories: true)
         let temporary = stable.deletingLastPathComponent().appendingPathComponent(".zone.new.\(getpid())")
