@@ -86,32 +86,47 @@ private struct MainPage: View {
                     .transition(.opacity)
             }
             Hairline()
-            VStack(alignment: .leading, spacing: 10) {
-                if model.loginItemStalled {
-                    stalledBanner
+            // Something that needs the person keeps a box of its own; everything else is a
+            // block on the paper with a label, divided by hairlines.
+            if model.loginItemStalled || isDaemonProblem || model.permissionIssue != nil {
+                VStack(alignment: .leading, spacing: 10) {
+                    if model.loginItemStalled {
+                        stalledBanner
+                    }
+                    if case let .problem(message) = model.daemon {
+                        problemBanner(message)
+                    }
+                    if let issue = model.permissionIssue {
+                        permissionBanner(issue.text, issue.permission)
+                    }
                 }
-                if case let .problem(message) = model.daemon {
-                    problemBanner(message)
-                }
-                if let issue = model.permissionIssue {
-                    permissionBanner(issue.text, issue.permission)
-                }
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+            }
+            VStack(alignment: .leading, spacing: 0) {
                 if model.status?.phones.isEmpty == true {
                     noPhone
+                    InsetRule()
                 }
                 if let clip = model.leadingClip {
-                    ClipCard(model: model, clip: clip)
+                    ClipSection(model: model, clip: clip)
                         .transition(.opacity.combined(with: .offset(y: -6)))
+                    InsetRule()
                 }
-                if model.latestMeeting != nil || !model.openNotes.isEmpty {
-                    pinned
+                if let meeting = model.latestMeeting {
+                    meetingSection(meeting)
+                    InsetRule()
+                }
+                if !model.openNotes.isEmpty {
+                    notesSection
+                    InsetRule()
                 }
                 list
+                    .padding(.horizontal, 8)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
             }
             .animation(Zone.settle, value: model.leadingClip?.id)
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
             if let notice = model.notice {
                 Text(notice)
                     .font(.system(size: 11.5))
@@ -215,6 +230,11 @@ private struct MainPage: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
+    }
+
+    private var isDaemonProblem: Bool {
+        if case .problem = model.daemon { return true }
+        return false
     }
 
     private var isProblem: Bool {
@@ -342,94 +362,88 @@ private struct MainPage: View {
             Button("Pair") {
                 navigation.page = .pair
             }
-            .buttonStyle(ZonePillButtonStyle(filled: true))
+            .buttonStyle(ZoneKeyButtonStyle(ink: true, height: 30))
         }
-        .padding(10)
-        .zoneCard(padding: 0)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     // MARK: The last meeting and the open notes
 
-    private var pinned: some View {
-        VStack(spacing: 0) {
-            if let meeting = model.latestMeeting {
-                Button {
-                    model.closePopover()
-                    model.openHistory(.meeting(meeting.id))
-                } label: {
-                    HoverRow(radius: 8) { hovering in
-                        HStack(spacing: 9) {
-                            Image(systemName: "person.2")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Zone.accentText(scheme))
-                                .frame(width: 18)
-                            Text("Last meeting")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Zone.muted(scheme))
-                                .lineLimit(1)
-                                .fixedSize()
-                            Group {
-                                if model.state.hideText {
-                                    Text(MenuContent.lastMeetingTitle(meeting)).redacted(reason: .placeholder)
-                                } else {
-                                    Text(MenuContent.lastMeetingTitle(meeting))
-                                }
+    /// The newest meeting under its label, the way the page lists one: title, then when, how
+    /// long. The whole block opens its transcript in History.
+    private func meetingSection(_ meeting: ZoneItem) -> some View {
+        Button {
+            model.closePopover()
+            model.openHistory(.meeting(meeting.id))
+        } label: {
+            HoverRow(radius: 8) { hovering in
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Eyebrow("Last meeting")
+                        Group {
+                            if model.state.hideText {
+                                Text(MenuContent.lastMeetingTitle(meeting)).redacted(reason: .placeholder)
+                            } else {
+                                Text(MenuContent.lastMeetingTitle(meeting))
                             }
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(Zone.ink(scheme))
-                            .lineLimit(1)
-                            Spacer(minLength: 6)
-                            Text(MenuContent.meetingFacts(meeting, now: model.now))
-                                .font(.system(size: 11).monospacedDigit())
-                                .foregroundStyle(Zone.muted(scheme))
-                                .lineLimit(1)
-                                .layoutPriority(1)
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(hovering ? Zone.accentText(scheme) : Zone.faint(scheme))
                         }
-                        .padding(.horizontal, 8)
-                        .frame(height: Self.rowHeight + 2)
-                        .contentShape(Rectangle())
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Zone.ink(scheme))
+                        .lineLimit(1)
+                        Text(MenuContent.meetingFacts(meeting, now: model.now))
+                            .font(.system(size: 11.5).monospacedDigit())
+                            .foregroundStyle(Zone.muted(scheme))
+                            .lineLimit(1)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(hovering ? Zone.accentText(scheme) : Zone.quiet(scheme))
                 }
-                .buttonStyle(.plain)
-                .help("Your last meeting. Click to open its transcript in History")
-                .accessibilityLabel("Last meeting: \(model.state.hideText ? "hidden" : MenuContent.lastMeetingTitle(meeting)), \(MenuContent.meetingFacts(meeting, now: model.now)). Opens in History")
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
             }
-            if model.latestMeeting != nil, !model.openNotes.isEmpty {
-                Hairline().padding(.leading, 35)
-            }
-            if !model.openNotes.isEmpty {
-                ForEach(model.openNotes) { note in
-                    CompactRow(model: model, item: note)
-                }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .help("Your last meeting. Click to open its transcript in History")
+        .accessibilityLabel("Last meeting: \(model.state.hideText ? "hidden" : MenuContent.lastMeetingTitle(meeting)), \(MenuContent.meetingFacts(meeting, now: model.now)). Opens in History")
+    }
+
+    /// The newest open notes under a label that says how many more there are, and the way to
+    /// all of them.
+    private var notesSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Eyebrow(MenuContent.openNotesLabel(shown: model.openNotes.count, open: model.openNotesTotal))
+                Spacer(minLength: 8)
                 Button {
                     model.closePopover()
                     model.openHistory(.notes)
                 } label: {
-                    HStack(spacing: 4) {
-                        Text(notesLink)
+                    HStack(spacing: 3) {
+                        Text("All notes")
                         Image(systemName: "arrow.up.right")
                             .font(.system(size: 8.5, weight: .semibold))
                     }
-                    .padding(.leading, 35)
-                    .frame(height: 22)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(ZoneLinkButtonStyle(size: 11))
+                .buttonStyle(ZoneLinkButtonStyle(size: 12))
                 .help("Open all your notes in History")
             }
+            .padding(.horizontal, 8)
+            VStack(spacing: 0) {
+                ForEach(model.openNotes) { note in
+                    CompactRow(model: model, item: note)
+                }
+            }
         }
-        .padding(3)
-        .zoneCard(padding: 0, shadow: false)
-    }
-
-    /// "All 8 open notes", or "All notes" when the three shown are all there are.
-    private var notesLink: String {
-        let open = model.openNotesTotal
-        return open > model.openNotes.count ? "All \(Formats.number(open)) open notes" : "All notes"
+        .padding(.horizontal, 8)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 
     // MARK: The latest, by kind
@@ -448,12 +462,11 @@ private struct MainPage: View {
     /// twelve when there is less above it, fewer on a small screen.
     private var visibleRows: Int {
         // The header, the kinds, the buttons and the space between them.
-        var above: CGFloat = 172
-        if model.leadingClip != nil { above += 68 }
-        if model.latestMeeting != nil || !model.openNotes.isEmpty { above += 16 }
-        if model.latestMeeting != nil { above += Self.rowHeight + 2 }
-        if !model.openNotes.isEmpty { above += CGFloat(model.openNotes.count) * Self.rowHeight + 23 }
-        if model.status?.phones.isEmpty == true { above += 70 }
+        var above: CGFloat = 178
+        if model.leadingClip != nil { above += 82 }
+        if model.latestMeeting != nil { above += 74 }
+        if !model.openNotes.isEmpty { above += CGFloat(model.openNotes.count) * Self.rowHeight + 42 }
+        if model.status?.phones.isEmpty == true { above += 66 }
         if navigation.detailsOpen { above += 110 }
         let room = min(navigation.maxHeight, 690) - above
         return max(4, min(12, Int(room / Self.rowHeight)))
@@ -461,8 +474,9 @@ private struct MainPage: View {
 
     private var list: some View {
         let items = rows
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 6) {
             segments
+                .padding(.horizontal, 8)
             if items.isEmpty {
                 Text(emptyText)
                     .font(.system(size: 12))
@@ -496,38 +510,52 @@ private struct MainPage: View {
         }
     }
 
-    /// All, Notes, Meetings, Dictations, Clips, each with how many the library holds.
+    /// All, Notes, Meetings, Dictations, Clips, each with how many the library holds: the iPhone
+    /// app's switch, an ink capsule in a card track. It spreads across the window, and scrolls
+    /// only when large counts make it too wide.
     private var segments: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 4) {
-                ForEach(ListSegment.shown(hasClips: model.hasClips)) { segment in
-                    let chosen = navigation.segment == segment
-                    Button {
-                        navigation.segment = segment
-                        model.showKind(segment.kind)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(segment.title)
-                                .font(.system(size: 11.5, weight: chosen ? .semibold : .medium))
-                            if let items = model.status?.items {
-                                Text(Formats.number(segment.count(in: items)))
-                                    .font(.system(size: 10.5).monospacedDigit())
-                                    .opacity(chosen ? 0.75 : 0.7)
-                            }
+        ViewThatFits(in: .horizontal) {
+            segmentTrack(spread: true)
+            ScrollView(.horizontal) { segmentTrack(spread: false) }
+                .scrollIndicators(.never)
+        }
+    }
+
+    private func segmentTrack(spread: Bool) -> some View {
+        HStack(spacing: 0) {
+            ForEach(ListSegment.shown(hasClips: model.hasClips)) { segment in
+                let chosen = navigation.segment == segment
+                Button {
+                    navigation.segment = segment
+                    model.showKind(segment.kind)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(segment.title)
+                            .font(.system(size: 12, weight: .semibold))
+                        if let items = model.status?.items {
+                            Text(Formats.number(segment.count(in: items)))
+                                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                                .opacity(0.75)
                         }
-                        .foregroundStyle(chosen ? Zone.onInk(scheme) : Zone.muted(scheme))
-                        .padding(.horizontal, 9)
-                        .frame(height: 24)
-                        .background(chosen ? Zone.ink(scheme) : .clear, in: Capsule())
-                        .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(segment.title), \(model.status.map { segment.count(in: $0.items) } ?? 0)")
-                    .accessibilityAddTraits(chosen ? .isSelected : [])
+                    .lineLimit(1)
+                    .fixedSize()
+                    .foregroundStyle(chosen ? Zone.onInk(scheme) : Zone.muted(scheme))
+                    .padding(.horizontal, 6)
+                    .frame(maxWidth: spread ? .infinity : nil)
+                    .frame(height: 24)
+                    .background(chosen ? Zone.ink(scheme) : .clear, in: Capsule())
+                    .contentShape(Capsule())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(segment.title), \(model.status.map { segment.count(in: $0.items) } ?? 0)")
+                .accessibilityAddTraits(chosen ? .isSelected : [])
             }
         }
-        .scrollIndicators(.never)
+        .padding(3)
+        .background(Zone.card(scheme), in: Capsule())
+        .overlay(Capsule().strokeBorder(Zone.rule(scheme), lineWidth: 1))
+        .animation(Zone.motion, value: navigation.segment)
     }
 
     // MARK: Actions
@@ -717,24 +745,18 @@ private struct ActionButton: View {
     }
 }
 
-/// The clip that just arrived, at the top of the menu: where it came from, one line of it,
-/// and a button that copies it.
-private struct ClipCard: View {
+/// The clip that just arrived, at the top of the menu: a label that says what it is and where
+/// it came from, one line of it, and the one ink key in the window, Copy.
+private struct ClipSection: View {
     let model: AppModel
     let clip: Clip
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         let copied = model.copiedID == clip.id
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "doc.on.clipboard")
-                .font(.system(size: 16))
-                .foregroundStyle(Zone.accentText(scheme))
-                .frame(width: 26)
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(clip.title(phone: model.phoneName(for: clip), now: model.now))
-                    .font(.system(size: 11.5, weight: .medium).monospacedDigit())
-                    .foregroundStyle(Zone.muted(scheme))
+                Eyebrow(clip.label(phone: model.phoneName(for: clip), now: model.now))
                     .lineLimit(1)
                 Group {
                     if model.state.hideText {
@@ -743,31 +765,33 @@ private struct ClipCard: View {
                         Text(clip.preview)
                     }
                 }
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Zone.ink(scheme))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 if model.wasPutOnClipboard(clip) {
                     Text("Already on this Mac's clipboard")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Zone.muted(scheme))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Zone.quiet(scheme))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Button(copied ? "Copied" : "Copy") {
                 model.copy(clip)
             }
-            .buttonStyle(ZonePillButtonStyle(filled: true))
+            .buttonStyle(ZoneKeyButtonStyle(ink: true, height: 30))
             .help("Copy this clip")
         }
-        .padding(.vertical, 9)
-        .padding(.leading, 6)
-        .padding(.trailing, 10)
-        .background(Zone.accentGraphic(scheme).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Zone.accentGraphic(scheme).opacity(0.35), lineWidth: 1))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Clip. \(clip.title(phone: model.phoneName(for: clip), now: model.now))")
+        .accessibilityLabel(clip.label(phone: model.phoneName(for: clip), now: model.now))
     }
+}
+
+/// A hairline between the blocks of the window, inset to the text's edge.
+private struct InsetRule: View {
+    var body: some View { Hairline().padding(.horizontal, 16) }
 }
 
 // MARK: Sub pages

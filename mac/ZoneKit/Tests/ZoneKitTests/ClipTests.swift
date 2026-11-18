@@ -86,6 +86,8 @@ final class ClipTests: XCTestCase {
         let clip = Clip(id: "A", createdAt: 1794786120, text: "x")
         XCTAssertEqual(clip.title(phone: "Demo iPhone", now: now, calendar: calendar), "From Demo iPhone, 3:42 PM")
         XCTAssertEqual(clip.title(phone: nil, now: now, calendar: calendar), "From your iPhone, 3:42 PM")
+        XCTAssertEqual(clip.label(phone: "Demo iPhone", now: now, calendar: calendar), "Latest clip, from Demo iPhone, 3:42 PM",
+                       "the popover's clip has no box or icon, so its label says what it is")
     }
 
     // MARK: zone clipboard

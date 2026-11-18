@@ -30,6 +30,11 @@ enum Zone {
     static func muted(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color(hex: 0xC9C1AB) : Color(hex: 0x555555)
     }
+    /// A third text level for times, counts and the labels over a block: quieter than muted,
+    /// still 4.5:1 or better on paper in both schemes.
+    static func quiet(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(hex: 0xA5A092) : Color(hex: 0x686660)
+    }
     static func faint(_ scheme: ColorScheme) -> Color {
         ink(scheme).opacity(scheme == .dark ? 0.42 : 0.5)
     }
@@ -43,10 +48,19 @@ enum Zone {
     static func accentText(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? accent : Color(hex: 0x6A4BDB)
     }
-    /// Purple as a shape (the wave, dots, progress).
+    /// Purple as a shape (the wave, dots, progress). The iPhone app's tone on cream.
     static func accentGraphic(_ scheme: ColorScheme) -> Color {
-        scheme == .dark ? accent : Color(hex: 0x7A5AF0)
+        scheme == .dark ? accent : Color(hex: 0x7A52FF)
     }
+    /// The iPhone app's corners: a key is 8 pt, a card 16 pt, both continuous.
+    static let keyRadius: CGFloat = 8
+    static let cardRadius: CGFloat = 16
+    /// The app's hard shadow with the sun mid morning (SunShadow 1.6, 2.2 pt), scaled per
+    /// object as the app scales it: cards 0.8, keys 0.6.
+    static func shadow(_ scheme: ColorScheme) -> Color {
+        .black.opacity(scheme == .dark ? 0.47 : 0.15)
+    }
+    static let shadowOffset = CGSize(width: 1.6, height: 2.2)
 }
 
 extension Color {
@@ -65,17 +79,18 @@ extension Font {
     static func zoneSerif(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .serif)
     }
-    /// Small label above a block.
-    static let zoneEyebrow = Font.system(size: 11, weight: .medium)
+    /// Small label above a block ("Last meeting"), in the quiet color.
+    static let zoneEyebrow = Font.system(size: 12, weight: .medium)
 }
 
 // MARK: Surfaces
 
-/// A quiet inset surface with a 1 pt rule and a hard-edged shadow.
+/// A raised object: card fill, a 1 pt rule inside the edge and the hard shadow. Only for a
+/// thing you pick up or set apart (a setting group, a pairing code); lists are never boxed.
 struct ZoneCardModifier: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    var padding: CGFloat = 14
-    var radius: CGFloat = 12
+    var padding: CGFloat = 16
+    var radius: CGFloat = Zone.cardRadius
     var shadow = true
 
     func body(content: Content) -> some View {
@@ -84,14 +99,15 @@ struct ZoneCardModifier: ViewModifier {
             .background {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .fill(Zone.card(scheme))
-                    .shadow(color: .black.opacity(shadow ? (scheme == .dark ? 0.5 : 0.16) : 0), radius: 0, x: 2, y: 3)
+                    .shadow(color: shadow ? Zone.shadow(scheme) : .clear, radius: 0,
+                            x: Zone.shadowOffset.width * 0.8, y: Zone.shadowOffset.height * 0.8)
             }
             .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Zone.rule(scheme), lineWidth: 1))
     }
 }
 
 extension View {
-    func zoneCard(padding: CGFloat = 14, radius: CGFloat = 12, shadow: Bool = true) -> some View {
+    func zoneCard(padding: CGFloat = 16, radius: CGFloat = Zone.cardRadius, shadow: Bool = true) -> some View {
         modifier(ZoneCardModifier(padding: padding, radius: radius, shadow: shadow))
     }
 }
@@ -113,8 +129,8 @@ struct Eyebrow: View {
 
     var body: some View {
         Text(text)
-            .font(.zoneEyebrow)
-            .foregroundStyle(Zone.muted(scheme))
+            .font(.zoneEyebrow.monospacedDigit())
+            .foregroundStyle(Zone.quiet(scheme))
     }
 }
 
@@ -176,6 +192,36 @@ struct ZoneQuietButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(Zone.motion, value: configuration.isPressed)
             .contentShape(Capsule())
+    }
+}
+
+/// The iPhone app's key: an 8 pt continuous corner, the card fill, a 1 pt rule inside and the
+/// hard shadow at the key's scale. `ink` is the one action a block exists for (Copy a clip).
+struct ZoneKeyButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.isEnabled) private var isEnabled
+    var ink = false
+    var height: CGFloat = 28
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Zone.keyRadius, style: .continuous)
+        configuration.label
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle((ink ? Zone.onInk(scheme) : Zone.ink(scheme)).opacity(isEnabled ? 1 : 0.45))
+            .padding(.horizontal, 11)
+            .frame(minHeight: height)
+            .background {
+                shape.fill(ink ? Zone.ink(scheme) : Zone.card(scheme))
+                    .shadow(color: Zone.shadow(scheme), radius: 0,
+                            x: configuration.isPressed ? 0 : Zone.shadowOffset.width * 0.6,
+                            y: configuration.isPressed ? 0 : Zone.shadowOffset.height * 0.6)
+            }
+            .overlay(shape.strokeBorder(ink ? .clear : Zone.rule(scheme), lineWidth: 1))
+            // Pressed, the key sits down into its shadow, as the keyboard's keys do.
+            .offset(x: configuration.isPressed ? Zone.shadowOffset.width * 0.6 : 0,
+                    y: configuration.isPressed ? Zone.shadowOffset.height * 0.6 : 0)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .contentShape(shape)
     }
 }
 

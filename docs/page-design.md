@@ -16,18 +16,16 @@ it (PROTOCOL.md, `hello`). The server writes `data-theme` and `data-accent` into
 it is sent, so it never flashes the wrong face.
 
 The accent is used sparingly, as in the apps: the wordmark's dot, the state light, search
-marks, the calendar's dots, focus rings, and the tiles of the Flash picture. The main action
-is an ink capsule (cream on charcoal, charcoal on cream), never the accent. On the library page
+marks, the calendar's dots, focus rings, your own turns in a meeting, and the tiles of the Flash
+picture. The main action is an ink key (cream on charcoal, charcoal on cream), never the accent. On the library page
 the accent is one of the iPhone app's five (`AccentChoice`: violet, ice, ember, mint, rose),
 with the app's own three tones for each: the bright one on dark paper, the deeper graphic tone
 as shapes on cream, the text tone as text on cream. Until one is chosen in Settings it is the
 iPhone's, when the phone says, else violet.
 
-Each kind has one quiet hue of its own, so a list can be read at a glance: notes amber
-(`#E3B65C` / `#8A5D00`), meetings teal (`#6CC5B0` / `#17695B`), clips blue (`#7FB2F0` /
-`#2A5EA8`), dictations ink (they are most of the library, so they are the ground the others
-stand out from). The hue is in the stripe at the row's left edge, the icon and the kind's
-label, and in the panel's top rule. These do not change with the accent.
+Kinds have no colors of their own (2026-11-18, "Paper"): the iPhone app has one accent and
+none per kind, and the amber, teal and blue stripes read as decoration. A kind shows in its quiet
+icon and in words (the kind's label in the row's facts, a note's round checkbox).
 
 Two values were added for small text, measured against the paper: "quiet" text is ink at 62%
 in dark (`#A5A092`, 5.5:1) and `#686660` in light (4.7:1), and purple as small text in dark is
@@ -60,25 +58,29 @@ and nothing could be acted on. What it is now:
 
 - A bar with the views as tabs (Home, Notes with its open count, Meetings, History, Stats,
   Settings), search, the phone chip, Flash, and the keys.
-- Home fills one laptop screen without scrolling the page: a strip of figures (today, the last
-  7 days, time spoken, the busiest hour, a bar per day for 30 days), then three panels that
-  scroll by themselves. Notes, the widest, is the list of things to do. Meetings is beside it.
+- Home fills one laptop screen without scrolling the page: the figures straight on the paper
+  (today, the last 7 days, time spoken, the busiest hour, a bar per day for 30 days) over a rule,
+  then three columns that scroll by themselves. A column is a sans semibold header over a rule,
+  then its list on the paper: no panel, no box. Notes, the widest, is the list of things to do. Meetings is beside it.
   "Lately" (the latest clip and recent dictations) is the narrowest and plainly secondary. Below
   1180 px Lately moves under the other two, below 720 px everything is one column.
-- One row for an item everywhere: the kind's stripe and icon (a round checkbox for a note), the
-  words, one quiet line of facts (kind, where it was spoken, when, how long, which phone when
-  there are several), and its actions on hover, focus or the keyboard's cursor: done, copy,
-  export, remove, select. A meeting's row has its title in the serif and its speakers as chips.
+- One row for an item everywhere, on the paper with a hairline from the next (never its own
+  card): the kind's quiet icon (a round checkbox for a note), the words, one quiet line of facts
+  (kind, where it was spoken, when, how long, which phone when there are several), and its actions
+  on hover, focus or the keyboard's cursor: done, copy, export, remove, select. Remove takes the
+  item off this computer only and offers Undo. A meeting's row has its title in sans semibold and
+  its speakers as chips. Meetings in their own view are the same rows in two columns.
 - Notes show their whole text, cut only after ten lines with a way to show the rest. Done notes
   are struck through and stay where they were until the view is opened again, so a tick can be
   undone where it was made.
-- History keeps the dated document (a serif heading per day with a rule) and the rail: kinds
+- History keeps the dated document (a sans semibold heading per day with a rule) and the rail: kinds
   with their icons and counts, where a dictation was spoken (with what each name means), done or
   not, quick ranges, and the month calendar with a dot on days that have items. The title names
   what is shown.
 - A meeting opens as a page: title, facts, actions, then the turns, the speaker and the time in
-  the margin, each speaker in a hue of their own.
-- Statistics and Settings are flat cards with serif figures.
+  the margin. Speakers are told apart by name; only you ("Me") are in the accent, as in the app.
+- Statistics and Settings keep cards (a group of settings is a thing set apart), with the app's
+  16 pt continuous corner and serif figures.
 - Source names are plain words: Keyboard (spoken into another app with the Zone keyboard), In
   Zone (dictated inside the Zone app), Note recording (the recording behind a voice note). The
   meaning is in each label's tooltip and listed under "What these mean" in History.
@@ -89,8 +91,15 @@ by the phone's sign for sending (two chevrons), the readout underneath with a la
 percentage and the counts as serif figures set apart by 1 pt rules, as the Mac popover shows its
 counts.
 
-Surfaces are flat. Cards have a 1 pt rule and a hard shadow (2 px across, 3 px down, no blur).
-No gradients on surfaces, no blur, no glow.
+Surfaces are flat. Three shapes, the iPhone app's: a key (8 pt corner) for every button, with a
+1 pt rule inside and the hard shadow at the key's scale, sitting down into it when pressed; a card
+(16 pt) only for a group of settings or a figure set apart; a capsule for the switch (an ink
+capsule in a card track, 3 px in). Corners are continuous where the browser draws `corner-shape:
+squircle` (the radius then grows by 1.25), circular elsewhere. The shadow is the app's sun mid
+morning: 1.6 px across, 2.2 px down, no blur. Serif is for the wordmark, a view's headline,
+figures and sheet titles only; list titles and section headers are the sans, semibold. No
+gradients on surfaces, no blur, no glow. The same rules hold in Zone for Mac's menu window
+(`mac/Zone/Theme.swift`: `ZoneKeyButtonStyle`, `zoneCard`, `Zone.quiet`).
 
 ## Motion
 

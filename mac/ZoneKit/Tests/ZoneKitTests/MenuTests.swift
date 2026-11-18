@@ -60,6 +60,12 @@ final class MenuTests: XCTestCase {
         XCTAssertEqual(ListSegment.meeting.kind, "meeting")
     }
 
+    func testTheOpenNotesLabelSaysWhenMoreAreOpen() {
+        XCTAssertEqual(MenuContent.openNotesLabel(shown: 3, open: 3), "Open notes")
+        XCTAssertEqual(MenuContent.openNotesLabel(shown: 2, open: 2), "Open notes")
+        XCTAssertEqual(MenuContent.openNotesLabel(shown: 3, open: 1240), "Open notes, newest of 1,240")
+    }
+
     func testAMeetingsFactsAndLength() throws {
         // As `zone list --kind meeting --json` prints one: no duration, the lines in "extra".
         let json = """

@@ -86,6 +86,12 @@ public struct Clip: Decodable, Equatable, Sendable, Identifiable {
         "From \(phone ?? "your iPhone"), \(Formats.when(created, now: now, calendar: calendar))"
     }
 
+    /// The label over the newest clip in the popover, which has no box or icon to say what it
+    /// is: "Latest clip, from Demo iPhone, 10:42 AM".
+    public func label(phone: String?, now: Date = Date(), calendar: Calendar = .current) -> String {
+        "Latest clip, from \(phone ?? "your iPhone"), \(Formats.when(created, now: now, calendar: calendar))"
+    }
+
     /// How it was sent, in a few words. Nil when zone does not say.
     public var sentHow: String? {
         switch source {

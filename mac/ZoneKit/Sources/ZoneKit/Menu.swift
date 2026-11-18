@@ -79,6 +79,12 @@ public enum MenuContent {
         return title.isEmpty ? "Untitled" : title
     }
 
+    /// The label over the open notes: "Open notes", or "Open notes, newest of 37" when more
+    /// are open than are shown.
+    public static func openNotesLabel(shown: Int, open: Int) -> String {
+        open > shown ? "Open notes, newest of \(Formats.number(open))" : "Open notes"
+    }
+
     /// When a meeting was and how long it ran: "Yesterday, 42 min".
     public static func meetingFacts(_ item: ZoneItem, now: Date = Date(), calendar: Calendar = .current) -> String {
         var parts = [Formats.when(item.created, now: now, calendar: calendar)]
