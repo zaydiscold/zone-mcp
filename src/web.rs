@@ -1847,6 +1847,9 @@ mod tests {
         assert!(!PAGE.contains(" style=\"") && !PAGE.contains("onclick="), "nothing the policy would block");
         // Ticking a note recounts the open and done notes shown in the heading and on home.
         assert!(PAGE.contains("\"data-note-counts\": \"1\"") && PAGE.contains("[data-open-count], [data-note-counts]"));
+        // An open item is drawn again when the phone changed it, and a change that arrived
+        // under a selection or a dialog is drawn once that is over.
+        assert!(PAGE.contains("if (R.view === \"item\" || R.view === \"meeting\") { refreshOpenItem(); return; }") && PAGE.contains("S.behind = true;"));
         // A link that names a phone no longer paired shows everything, it does not fail.
         assert!(PAGE.contains("S.status.phones.some((p) => p.id === R.p.phone)"));
     }

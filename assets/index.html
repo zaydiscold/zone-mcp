@@ -1066,7 +1066,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       const order = item.speakers;
       body = h("div", null, item.turns.map((turn) => h("div", { class: "turn s" + (Math.max(0, order.indexOf(turn.speaker)) % 5) },
         h("div", { class: "sp" }, turn.speaker || "", turn.at ? h("small", null, turn.at) : null), h("p", null, turn.text))));
-    } else body = h("p", { class: "body" }, item.text);
+    } else body = h("p", { class: "body" }, item.text || (meeting ? "No transcript has arrived for this meeting yet." : ""));
     return h("article", { class: "doc kc-" + item.kind },
       h("a", { class: "textbutton back", href: meeting ? href("meetings") : href(item.kind === "note" ? "notes" : "history") }, icon("left"), meeting ? "Meetings" : item.kind === "note" ? "Notes" : "History"),
       h("h1", null, item.title || (meeting ? "Meeting" : KIND_ONE[item.kind] || item.kind)),
@@ -1394,12 +1394,32 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     S.status = next;
     renderStatus();
     if (first || quiet === true) { S.revision = next.revision; return; }
-    if (next.revision === S.revision) return;
-    S.revision = next.revision;
-    if (grew) { const light = $("light"); light.classList.remove("ping"); void light.offsetWidth; light.classList.add("ping"); }
+    if (next.revision !== S.revision) {
+      S.revision = next.revision;
+      // What is on screen is behind the library now, until it is drawn again.
+      S.behind = true;
+      S.grew = S.grew || grew;
+      if (grew) { const light = $("light"); light.classList.remove("ping"); void light.offsetWidth; light.classList.add("ping"); }
+    }
+    if (!S.behind) return;
+    // Not under a dialog, a selection or a name being typed. It is remembered, and drawn at
+    // the first look after that is over.
     if (document.querySelector("dialog[open]") || S.sel.size || document.querySelector(".prow input")) return;
-    if (R.view === "settings" || R.view === "item" || R.view === "meeting") return;
-    if (window.scrollY < 200) { S.arrivals = grew; route(); } else $("fresh").hidden = false;
+    S.behind = false;
+    const arrivals = S.grew; S.grew = false;
+    if (R.view === "settings") return;
+    if (R.view === "item" || R.view === "meeting") { refreshOpenItem(); return; }
+    if (window.scrollY < 200) { S.arrivals = arrivals; route(); } else $("fresh").hidden = false;
+  }
+  // The one item that is open: drawn again only when the phone changed it (a meeting whose
+  // transcript arrived, a title, an edit), so reading it is not disturbed by other arrivals.
+  async function refreshOpenItem() {
+    const view = R.view, arg = R.arg, shown = S.items.get(arg) || [...S.items.values()].find((item) => item.id.toLowerCase() === arg.toLowerCase());
+    const same = (a, b) => JSON.stringify(Object.assign({}, a, { age_s: 0 })) === JSON.stringify(Object.assign({}, b, { age_s: 0 }));
+    let now = null;
+    try { now = await api("/api/item?id=" + encodeURIComponent(arg)); } catch (error) { if (error.message === "locked") return; }
+    if (R.view !== view || R.arg !== arg || document.querySelector("dialog[open]")) return;
+    if (!now || !shown || !same(now, shown)) route();
   }
   $("fresh").addEventListener("click", () => { window.scrollTo({ top: 0 }); S.arrivals = true; route(); });
 
