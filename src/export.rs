@@ -127,7 +127,7 @@ pub fn turns(row: &Row) -> Vec<Turn> {
     match extra.get("segments").and_then(Value::as_array).filter(|segments| !segments.is_empty()) {
         Some(segments) => {
             for segment in segments {
-                let speaker = segment.get("speaker").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+                let speaker = segment.get("speaker").and_then(Value::as_str).map(one_line).filter(|s| !s.is_empty());
                 push(speaker, segment.get("start").and_then(Value::as_f64), segment.get("text").and_then(Value::as_str).unwrap_or(""));
             }
         }
@@ -233,7 +233,15 @@ fn exported_line(clock: &Clock, order: Order) -> String {
 }
 
 fn heading(level: usize, text: &str, markdown: bool) -> String {
+    // A heading is one line, whatever the title holds: a line break in it would end the
+    // heading and leave the rest of the title standing as a paragraph of its own.
+    let text = &one_line(text);
     if markdown { format!("{} {text}\n\n", "#".repeat(level)) } else if level == 1 { format!("{}\n{}\n\n", text.to_uppercase(), "=".repeat(text.chars().count())) } else { format!("{text}\n{}\n\n", "-".repeat(text.chars().count())) }
+}
+
+/// The words on one line: every run of spaces, tabs and line breaks is one space.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// One checklist line: the box, the text with later lines indented under it, and when.
@@ -443,8 +451,15 @@ mod tests {
         assert_eq!(file_name(&rows, &clock(), Format::Text), "zone-meeting-roof-plan-budget-2026-11-17.txt");
         // Without segments the lines of the text are the turns.
         meeting.extra = "{}".to_string();
-        let plain = render(&[meeting], &clock(), Format::Text, Order::Oldest, None);
+        let plain = render(&[meeting.clone()], &clock(), Format::Text, Order::Oldest, None);
         assert!(plain.contains("Ada:\nhello there and welcome\n\nGrace:\nthank you\n"), "{plain}");
+        // A title and a speaker's name are one line each, whatever line breaks they hold.
+        meeting.title = Some("Roof:\nplan &\tbudget\r\n".to_string());
+        meeting.extra = json!({ "segments": [{ "speaker": " Ada\nLovelace ", "start": 0.0, "text": "hello" }] }).to_string();
+        let md = render(&[meeting.clone()], &clock(), Format::Markdown, Order::Oldest, None);
+        assert!(md.starts_with("# Roof: plan & budget\n\nTuesday") && md.contains("**Ada Lovelace** (0:00)\nhello\n"), "{md}");
+        let plain = render(&[meeting], &clock(), Format::Text, Order::Oldest, None);
+        assert!(plain.starts_with("ROOF: PLAN & BUDGET\n===================\n\n"), "{plain}");
     }
 
     #[test]
