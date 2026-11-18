@@ -106,7 +106,45 @@ CREATE TABLE IF NOT EXISTS flashes (
     stored_at  REAL NOT NULL,
     PRIMARY KEY (session, total_len, k, chunk)
 );
+
+-- Items the person removed from this computer on the page. The item's row stays in `items`
+-- as a deleted one without its words (so every reader, an older zone included, leaves it
+-- out), and what it held is kept here for thirty days so that it can be put back. After that
+-- the words are erased and the row remains only so the item does not come back with the next
+-- sync. Added after zone 0.1.2; an older zone opening the library ignores it.
+CREATE TABLE IF NOT EXISTS removed (
+    id              TEXT PRIMARY KEY,
+    removed_at      REAL NOT NULL,
+    item_updated_at REAL NOT NULL,
+    kind            TEXT NOT NULL,
+    source          TEXT,
+    created_at      REAL NOT NULL,
+    text            TEXT NOT NULL DEFAULT '',
+    title           TEXT,
+    duration_s      REAL,
+    engine          TEXT,
+    status          TEXT,
+    extra           TEXT NOT NULL DEFAULT '{}',
+    rev             TEXT,
+    words           INTEGER NOT NULL DEFAULT 0,
+    erased_at       REAL
+);
 "#;
+
+/// Columns added to tables that libraries made by an earlier zone already have. Each is added
+/// when missing, with no default that an older zone would need to know about: an older zone
+/// names the columns it reads and writes, so it keeps working on a library that has these.
+/// Added after zone 0.1.2.
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    // What the person calls this phone on this computer. iOS only ever reports "iPhone".
+    ("devices", "nickname", "TEXT"),
+    // How Zone looks on the phone, when it says (PROTOCOL.md, `hello`).
+    ("devices", "appearance", "TEXT"),
+    ("devices", "accent", "TEXT"),
+];
+
+/// How long a removed item can be put back. After this its words are erased.
+pub const REMOVED_KEPT_SECONDS: f64 = 30.0 * 86400.0;
 
 /// What the merge rule says to do with an incoming item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,6 +309,14 @@ pub struct Filter {
     pub kinds: Vec<String>,
     pub sources: Vec<String>,
     pub unprocessed_only: bool,
+    /// Only items that are flagged as processed (the page calls it Done).
+    pub processed_only: bool,
+    /// Only items from this phone.
+    pub phone: Option<FromPhone>,
+    /// Leave out the recording behind a voice note when the note itself is in the library:
+    /// a dictation whose source is `note` with a note saved while it was recorded or in the
+    /// two minutes after. The page asks for this so the same words are not listed twice.
+    pub fold_note_recordings: bool,
     /// What the asker may see at all. Everything, unless an MCP server was started with a
     /// narrower view (see scope.rs).
     pub scope: Scope,
@@ -367,6 +413,47 @@ pub struct Device {
     pub items_received: i64,
     pub last_path: Option<String>,
     pub resend_all: bool,
+    /// What the person calls this phone on this computer, when they gave it a name here.
+    pub nickname: Option<String>,
+    /// `dark` or `light`: how Zone is drawn on the phone, when the phone says.
+    pub appearance: Option<String>,
+    /// The accent color chosen in Zone on the phone, when the phone says.
+    pub accent: Option<String>,
+}
+
+impl Device {
+    /// The name to show: the one given on this computer, else the phone's own, else "iPhone".
+    pub fn label(&self) -> String {
+        self.nickname.clone().or_else(|| self.name.clone()).unwrap_or_else(|| "iPhone".to_string())
+    }
+}
+
+/// The appearances a phone may report.
+pub const APPEARANCES: [&str; 2] = ["dark", "light"];
+/// The accent colors Zone for iPhone offers (`AccentChoice` there), by their raw names.
+pub const ACCENTS: [&str; 5] = ["violet", "ice", "ember", "mint", "rose"];
+
+/// Which phone's items a query wants.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FromPhone {
+    /// Items delivered by the phone with this install id.
+    Id(String),
+    /// Items no phone is recorded for: read from a backup folder, or sent by a phone that
+    /// gave no id.
+    Unknown,
+}
+
+/// An item taken off this computer by the person, while it can still be put back.
+#[derive(Clone, Debug)]
+pub struct RemovedRow {
+    pub id: String,
+    pub removed_at: f64,
+    pub kind: String,
+    pub source: Option<String>,
+    pub created_at: f64,
+    pub text: String,
+    pub title: Option<String>,
+    pub words: i64,
 }
 
 /// What a phone says about itself in `hello`.
@@ -375,6 +462,31 @@ pub struct PhoneInfo {
     pub id: Option<String>,
     pub name: Option<String>,
     pub app: Option<String>,
+    /// `dark` or `light`: how Zone is drawn on the phone right now. Optional.
+    pub appearance: Option<String>,
+    /// The accent color chosen in Zone on the phone (see [`ACCENTS`]). Optional.
+    pub accent: Option<String>,
+}
+
+impl PhoneInfo {
+    /// The look the phone reported, keeping only values this zone knows.
+    fn look(&self) -> (Option<String>, Option<String>) {
+        let known = |value: &Option<String>, among: &[&str]| value.as_deref().map(|v| v.trim().to_ascii_lowercase()).filter(|v| among.contains(&v.as_str()));
+        (known(&self.appearance, &APPEARANCES), known(&self.accent, &ACCENTS))
+    }
+}
+
+/// Stores how Zone looks on a phone, as it said in `hello` or in a flash. A value the phone
+/// left out, or one this zone does not know, leaves what is stored as it is.
+fn store_look(conn: &Connection, endpoint_id: &str, phone: &PhoneInfo) -> rusqlite::Result<()> {
+    let (appearance, accent) = phone.look();
+    if appearance.is_some() || accent.is_some() {
+        conn.execute(
+            "UPDATE devices SET appearance = coalesce(?2, appearance), accent = coalesce(?3, accent) WHERE endpoint_id = ?1",
+            params![endpoint_id, appearance, accent],
+        )?;
+    }
+    Ok(())
 }
 
 /// How long a used pairing offer is remembered.
@@ -542,6 +654,7 @@ impl Db {
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
+        add_missing_columns(&conn)?;
         let db = Db { conn, atomic: false };
         if db.meta_get("database_id")?.is_none() {
             // INSERT OR IGNORE: two programs opening a brand new library at once agree on one id.
@@ -905,7 +1018,7 @@ impl Db {
         let (total, unprocessed, deleted, oldest, newest): (i64, i64, i64, Option<f64>, Option<f64>) = self.conn.query_row(
             &format!(
                 "SELECT coalesce(sum(i.deleted = 0), 0), coalesce(sum(i.deleted = 0 AND i.processed_at IS NULL), 0), \
-                 coalesce(sum(i.deleted = 1), 0), min(CASE WHEN i.deleted = 0 THEN i.created_at END), \
+                 coalesce(sum(i.deleted = 1 AND i.id NOT IN (SELECT id FROM removed)), 0), min(CASE WHEN i.deleted = 0 THEN i.created_at END), \
                  max(CASE WHEN i.deleted = 0 THEN i.created_at END) FROM items i WHERE {clause}"
             ),
             params_from_iter(args.iter().cloned()),
@@ -1052,6 +1165,9 @@ impl Db {
             }
             Admission::NotPaired | Admission::BadSecret => {}
         }
+        if matches!(admission, Admission::Paired | Admission::Known) {
+            store_look(&tx, endpoint_id, phone)?;
+        }
         tx.commit()?;
         Ok(admission)
     }
@@ -1114,6 +1230,7 @@ impl Db {
              last_seen = excluded.last_seen, flash_key = excluded.flash_key",
             params![device_id, phone.id, phone.name, phone.app, now, offer_hash],
         )?;
+        store_look(&tx, &device_id, phone)?;
         tx.commit()?;
         Ok(Some(device_id))
     }
@@ -1125,6 +1242,7 @@ impl Db {
              last_seen = ?5 WHERE endpoint_id = ?1",
             params![endpoint_id, phone.id, phone.name, phone.app, now],
         )?;
+        store_look(self.writer()?, endpoint_id, phone)?;
         Ok(())
     }
 
@@ -1190,8 +1308,8 @@ impl Db {
 
     pub fn devices(&self) -> Result<Vec<Device>> {
         let mut statement = self.conn.prepare(
-            "SELECT endpoint_id, phone_id, name, app, paired_at, last_seen, last_sync, items_received, last_path, resend_all \
-             FROM devices ORDER BY paired_at",
+            "SELECT endpoint_id, phone_id, name, app, paired_at, last_seen, last_sync, items_received, last_path, resend_all, \
+             nickname, appearance, accent FROM devices ORDER BY paired_at",
         )?;
         let rows = statement
             .query_map([], |row| {
@@ -1206,6 +1324,9 @@ impl Db {
                     items_received: row.get(7)?,
                     last_path: row.get(8)?,
                     resend_all: row.get::<_, i64>(9)? != 0,
+                    nickname: row.get(10)?,
+                    appearance: row.get(11)?,
+                    accent: row.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1228,6 +1349,7 @@ impl Db {
             .filter(|d| {
                 d.endpoint_id.to_lowercase() == wanted
                     || d.name.as_deref().map(str::to_lowercase).as_deref() == Some(&wanted)
+                    || d.nickname.as_deref().map(str::to_lowercase).as_deref() == Some(&wanted)
                     || d.phone_id.as_deref().map(str::to_lowercase).as_deref() == Some(&wanted)
             })
             .collect();
@@ -1240,6 +1362,7 @@ impl Db {
                     d.endpoint_id.to_lowercase().starts_with(&wanted)
                         || d.phone_id.as_deref().map(|p| p.to_lowercase().starts_with(&wanted)).unwrap_or(false)
                         || d.name.as_deref().map(|n| n.to_lowercase().contains(&wanted)).unwrap_or(false)
+                        || d.nickname.as_deref().map(|n| n.to_lowercase().contains(&wanted)).unwrap_or(false)
                 })
                 .collect()
         };
@@ -1292,6 +1415,157 @@ impl Db {
             (None, false) => OfferState::Expired,
         };
         Ok(Some(OfferStatus { id: offer_id_of_hash(&hash), state, expires_at, claimed_at: used_at, device_id: used_by, device }))
+    }
+
+    /// Gives a paired phone a name on this computer, or with None (or an empty name) goes
+    /// back to the phone's own. False when no such phone is paired.
+    pub fn set_device_nickname(&self, endpoint_id: &str, nickname: Option<&str>) -> Result<bool> {
+        let name = nickname.map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().take(60).collect::<String>());
+        Ok(self.writer()?.execute("UPDATE devices SET nickname = ?2 WHERE endpoint_id = ?1", params![endpoint_id, name])? == 1)
+    }
+
+    /// `(phone install id, items)` for items that are not deleted. The id is None for items
+    /// no phone is recorded for.
+    pub fn counts_by_phone(&self) -> Result<Vec<(Option<String>, i64)>> {
+        let mut statement = self.conn.prepare("SELECT device_id, count(*) FROM items WHERE deleted = 0 GROUP BY device_id")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    // ---------------------------------------------------------------- done, and removing
+
+    /// How many of the items a filter selects are flagged as processed.
+    pub fn count_processed(&self, filter: &Filter) -> Result<i64> {
+        let (clause, args) = filter_sql(filter);
+        let sql = format!("SELECT count(*) FROM items i WHERE {clause} AND i.processed_at IS NOT NULL");
+        Ok(self.conn.query_row(&sql, params_from_iter(args), |row| row.get(0))?)
+    }
+
+    /// How many recordings behind voice notes a filter leaves out when it folds them.
+    pub fn count_folded(&self, filter: &Filter) -> Result<i64> {
+        let mut unfolded = filter.clone();
+        unfolded.fold_note_recordings = false;
+        let (clause, args) = filter_sql(&unfolded);
+        let sql = format!("SELECT count(*) FROM items i WHERE {clause} AND {FOLDED_RECORDING}");
+        Ok(self.conn.query_row(&sql, params_from_iter(args), |row| row.get(0))?)
+    }
+
+    /// Takes items off this computer for the person who asked on the page. Nothing is sent
+    /// to the phone. What each item held is kept for [`REMOVED_KEPT_SECONDS`] so that it can
+    /// be put back; in `items` it becomes a deleted row without its words, which is what every
+    /// reader (agents, the command line, exports, an older zone) already leaves out.
+    /// Returns the ids that were removed.
+    pub fn remove_items(&mut self, ids: &[String], now: f64) -> Result<Vec<String>> {
+        let tx = self.write()?;
+        let mut done = Vec::new();
+        for id in ids {
+            let id = id.trim().to_ascii_uppercase();
+            let kept = tx.execute(
+                "INSERT OR REPLACE INTO removed (id, removed_at, item_updated_at, kind, source, created_at, text, title, duration_s, \
+                 engine, status, extra, rev, words) \
+                 SELECT id, ?2, updated_at, kind, source, created_at, text, title, duration_s, engine, status, extra, rev, words \
+                 FROM items WHERE id = ?1 AND deleted = 0",
+                params![id, now],
+            )?;
+            if kept == 1 {
+                tx.execute("UPDATE items SET deleted = 1, text = '', title = NULL, extra = '{}', words = 0 WHERE id = ?1", params![id])?;
+                done.push(id);
+            }
+        }
+        tx.commit()?;
+        Ok(done)
+    }
+
+    /// Puts removed items back as they were. Returns the ids that were restored: an item
+    /// whose words were already erased, or that the phone has since deleted, is not among them.
+    pub fn restore_items(&mut self, ids: &[String]) -> Result<Vec<String>> {
+        let tx = self.write()?;
+        let mut done = Vec::new();
+        for id in ids {
+            let id = id.trim().to_ascii_uppercase();
+            let restored = tx.execute(
+                "UPDATE items SET deleted = 0, kind = r.kind, source = r.source, created_at = r.created_at, text = r.text, \
+                 title = r.title, duration_s = r.duration_s, engine = r.engine, status = r.status, extra = r.extra, rev = r.rev, \
+                 words = r.words, updated_at = r.item_updated_at \
+                 FROM removed r WHERE items.id = ?1 AND r.id = ?1 AND r.erased_at IS NULL AND items.deleted = 1",
+                params![id],
+            )?;
+            if restored == 1 {
+                tx.execute("DELETE FROM removed WHERE id = ?1", params![id])?;
+                done.push(id);
+            }
+        }
+        tx.commit()?;
+        Ok(done)
+    }
+
+    /// Removed items that can still be put back, the latest removal first.
+    pub fn removed_items(&self) -> Result<Vec<RemovedRow>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, removed_at, kind, source, created_at, text, title, words FROM removed WHERE erased_at IS NULL \
+             ORDER BY removed_at DESC, id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(RemovedRow {
+                    id: row.get(0)?,
+                    removed_at: row.get(1)?,
+                    kind: row.get(2)?,
+                    source: row.get(3)?,
+                    created_at: row.get(4)?,
+                    text: row.get(5)?,
+                    title: row.get(6)?,
+                    words: row.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// How many removed items can still be put back.
+    pub fn removed_count(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT count(*) FROM removed WHERE erased_at IS NULL", [], |row| row.get(0))?)
+    }
+
+    /// True when the person removed this item from this computer (whether or not its words
+    /// are still kept).
+    pub fn is_removed(&self, id: &str) -> bool {
+        self.conn.query_row("SELECT 1 FROM removed WHERE id = ?1", params![id.trim().to_ascii_uppercase()], |_| Ok(())).optional().ok().flatten().is_some()
+    }
+
+    /// Erases the words of items removed more than [`REMOVED_KEPT_SECONDS`] ago. The row
+    /// stays, without them, so the item does not come back with a later sync.
+    pub fn erase_old_removed(&self, now: f64) -> Result<usize> {
+        // Asked often (the page does on every look), so it only writes when there is something.
+        let due: i64 = self.conn.query_row(
+            "SELECT count(*) FROM removed WHERE erased_at IS NULL AND removed_at <= ?1",
+            params![now - REMOVED_KEPT_SECONDS],
+            |row| row.get(0),
+        )?;
+        if due == 0 {
+            return Ok(0);
+        }
+        Ok(self.writer()?.execute(
+            "UPDATE removed SET text = '', title = NULL, extra = '{}', words = 0, erased_at = ?1 WHERE erased_at IS NULL AND removed_at <= ?2",
+            params![now, now - REMOVED_KEPT_SECONDS],
+        )?)
+    }
+
+    /// The numbers behind the page's statistics: `(quarter hour, kind, items, words, recorded
+    /// seconds)` for the items a filter selects, where the quarter hour is the item's created
+    /// time divided by 900. Every time zone's days and hours begin on a quarter hour, so the
+    /// caller can sort these into local days and hours exactly, and SQLite does the counting.
+    pub fn stat_buckets(&self, filter: &Filter) -> Result<Vec<(i64, String, i64, i64, f64)>> {
+        let (clause, args) = filter_sql(filter);
+        let sql = format!(
+            "SELECT CAST(i.created_at / 900.0 AS INTEGER) AS q, i.kind, count(*), coalesce(sum(i.words), 0), \
+             coalesce(sum(i.duration_s), 0.0) FROM items i WHERE {clause} GROUP BY q, i.kind ORDER BY q"
+        );
+        let mut statement = self.conn.prepare_cached(&sql)?;
+        let rows = statement
+            .query_map(params_from_iter(args), |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     // ---------------------------------------------------------------- the feed
@@ -1421,7 +1695,28 @@ fn apply_one(tx: &Connection, item: &Item, delivery: &Delivery<'_>, applied: &mu
         )
         .optional()?;
 
-    let decision = merge_decision(delivery.carrier, stored.as_ref().map(|s| (s.updated_at, s.deleted)), item.updated_at, item.deleted);
+    // An item the person removed from this computer stays removed whoever sends it again, in
+    // the version they removed or an older one. Two things end that: the phone deleting the
+    // item (then it is simply deleted), and a newer edit of it (then it is back, as the phone
+    // now has it).
+    let removed_version: Option<f64> = tx.query_row("SELECT item_updated_at FROM removed WHERE id = ?1", params![item.id], |row| row.get(0)).optional()?;
+    let mut comes_back = false;
+    if let Some(version) = removed_version {
+        let supersedes =
+            if item.deleted { delivery.carrier.is_the_phone() || item.updated_at >= version } else { item.updated_at > version };
+        if !supersedes {
+            applied.kept_newer += 1;
+            return Ok(());
+        }
+        tx.execute("DELETE FROM removed WHERE id = ?1", params![item.id])?;
+        comes_back = !item.deleted;
+    }
+
+    let decision = if comes_back {
+        Decision::Replace
+    } else {
+        merge_decision(delivery.carrier, stored.as_ref().map(|s| (s.updated_at, s.deleted)), item.updated_at, item.deleted)
+    };
     match decision {
         Decision::Keep => applied.kept_newer += 1,
         Decision::Insert => {
@@ -1458,6 +1753,11 @@ fn apply_one(tx: &Connection, item: &Item, delivery: &Delivery<'_>, applied: &mu
         Decision::Replace => {
             let stored = stored.expect("replace implies a stored row");
             if stored.same_content(item) {
+                // An item first read from a backup folder learns which phone it is from when
+                // that phone sends it.
+                if let Some(device_id) = delivery.device_id {
+                    tx.execute("UPDATE items SET device_id = ?2 WHERE id = ?1 AND device_id IS NULL", params![item.id, device_id])?;
+                }
                 applied.unchanged += 1;
                 return Ok(());
             }
@@ -1565,8 +1865,49 @@ fn filter_sql(filter: &Filter) -> (String, Vec<Sql>) {
     if filter.unprocessed_only {
         clause.push_str(" AND i.processed_at IS NULL");
     }
+    if filter.processed_only {
+        clause.push_str(" AND i.processed_at IS NOT NULL");
+    }
+    match &filter.phone {
+        Some(FromPhone::Id(id)) => {
+            clause.push_str(" AND i.device_id = ?");
+            args.push(Sql::Text(id.clone()));
+        }
+        Some(FromPhone::Unknown) => clause.push_str(" AND i.device_id IS NULL"),
+        None => {}
+    }
+    if filter.fold_note_recordings {
+        clause.push_str(&format!(" AND NOT {FOLDED_RECORDING}"));
+    }
     scope_sql(&filter.scope, &mut clause, &mut args);
     (clause, args)
+}
+
+/// True for the recording behind a voice note that is itself in the library (see
+/// [`Filter::fold_note_recordings`]). The note is saved when the recording ends, so it is
+/// looked for from just before the recording began until two minutes after it ended.
+const FOLDED_RECORDING: &str = "(i.kind = 'dictation' AND i.source = 'note' AND EXISTS (SELECT 1 FROM items n WHERE n.kind = 'note' \
+     AND n.deleted = 0 AND n.created_at >= i.created_at - 5 AND n.created_at <= i.created_at + coalesce(i.duration_s, 0) + 120))";
+
+/// Adds the columns of [`ADDED_COLUMNS`] that a library does not have yet.
+fn add_missing_columns(conn: &Connection) -> Result<()> {
+    for (table, column, kind) in ADDED_COLUMNS {
+        let has: bool = conn.query_row(
+            &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            params![column],
+            |row| Ok(row.get::<_, i64>(0)? > 0),
+        )?;
+        if has {
+            continue;
+        }
+        if let Err(error) = conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}")) {
+            // Another program opening the library at the same moment added it first.
+            if !error.to_string().contains("duplicate column") {
+                return Err(error).with_context(|| format!("cannot add {column} to {table}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Adds a scope's limits to a WHERE clause over `items i`.
@@ -2076,7 +2417,7 @@ mod tests {
     #[test]
     fn pairing_offer_is_single_use_and_expires() {
         let mut db = Db::open_in_memory().unwrap();
-        let phone = PhoneInfo { id: Some("P1".into()), name: Some("Test iPhone".into()), app: Some("1.0".into()) };
+        let phone = PhoneInfo { id: Some("P1".into()), name: Some("Test iPhone".into()), app: Some("1.0".into()), ..Default::default() };
         let secret = "ab".repeat(32);
         let other = "cd".repeat(32);
         let now = 1000.0;
@@ -2159,7 +2500,7 @@ mod tests {
         for (endpoint, name) in [("aaaa1111", "Zed's iPhone"), ("bbbb2222", "Test iPad")] {
             let secret = paths::random_hex32();
             db.create_offer(&secret, 1.0, 600.0).unwrap();
-            let phone = PhoneInfo { id: Some(format!("ID-{endpoint}")), name: Some(name.into()), app: None };
+            let phone = PhoneInfo { id: Some(format!("ID-{endpoint}")), name: Some(name.into()), app: None, ..Default::default() };
             assert_eq!(db.admit(endpoint, Some(&secret), &phone, 2.0).unwrap(), Admission::Paired);
         }
         assert_eq!(db.find_device("aaaa").unwrap().endpoint_id, "aaaa1111");

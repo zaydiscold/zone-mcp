@@ -56,6 +56,7 @@ pub fn encode(options: &EncodeOptions) -> Result<Value> {
         id: Some(options.phone_id.clone().unwrap_or_else(|| "F1A50000-0000-4000-8000-000000000001".to_string())),
         name: Some(options.name.clone().unwrap_or_else(|| "Flash test phone".to_string())),
         app: Some(format!("zone dev {}", env!("CARGO_PKG_VERSION"))),
+        ..Default::default()
     };
     let json = seal::flash_json(&phone, &items);
     let sealed = seal::seal(&key, &json)?;

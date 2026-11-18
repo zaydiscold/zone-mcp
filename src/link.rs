@@ -176,7 +176,7 @@ async fn session(
     let started = std::time::Instant::now();
     let phone_value = hello.get("phone").cloned().unwrap_or(Value::Null);
     let text = |key: &str| phone_value.get(key).and_then(Value::as_str).map(|s| s.chars().take(200).collect::<String>());
-    let phone = PhoneInfo { id: text("id"), name: text("name"), app: text("app") };
+    let phone = PhoneInfo { id: text("id"), name: text("name"), app: text("app"), appearance: text("appearance"), accent: text("accent") };
     // A refusal goes in the feed, so an app can say why a phone is not getting through.
     let refused = |reason: &'static str| {
         let db = state.db.clone();

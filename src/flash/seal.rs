@@ -68,7 +68,7 @@ pub fn flash_json(phone: &PhoneInfo, items: &[Value]) -> Vec<u8> {
     json!({
         "t": "flash",
         "v": 1,
-        "phone": { "id": phone.id, "name": phone.name, "app": phone.app },
+        "phone": { "id": phone.id, "name": phone.name, "app": phone.app, "appearance": phone.appearance, "accent": phone.accent },
         "items": items,
     })
     .to_string()
@@ -88,7 +88,7 @@ pub fn parse(json: &[u8]) -> Result<Flash> {
     }
     let phone_value = value.get("phone").cloned().unwrap_or(Value::Null);
     let text = |key: &str| phone_value.get(key).and_then(Value::as_str).map(|s| s.chars().take(200).collect::<String>());
-    let phone = PhoneInfo { id: text("id"), name: text("name"), app: text("app") };
+    let phone = PhoneInfo { id: text("id"), name: text("name"), app: text("app"), appearance: text("appearance"), accent: text("accent") };
     let entries = value.get("items").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let mut items = Vec::new();
     let mut rejected = 0;
@@ -133,7 +133,7 @@ mod tests {
         let key = test_key();
         assert_eq!(hex(&key), "a00f0027d0be63dc4d0e64abf643d94be5f261dc0e4502d7028dc0e2c20f56fc");
         let items = crate::fakephone::synthetic_items(0, 60);
-        let phone = PhoneInfo { id: Some("PHONE-1".into()), name: Some("Test phone".into()), app: Some("1.0.3 (1)".into()) };
+        let phone = PhoneInfo { id: Some("PHONE-1".into()), name: Some("Test phone".into()), app: Some("1.0.3 (1)".into()), ..Default::default() };
         let json = flash_json(&phone, &items);
         let sealed = seal(&key, &json).unwrap();
         assert!(sealed.len() < json.len() / 2, "compressed: {} of {}", sealed.len(), json.len());

@@ -50,6 +50,10 @@ pub struct Options {
     /// Direct addresses of the computer to try, skipping address lookup.
     pub addrs: Vec<SocketAddr>,
     pub name: Option<String>,
+    /// How Zone looks on this phone, to say in hello: `dark` or `light`.
+    pub appearance: Option<String>,
+    /// The accent chosen on this phone, to say in hello.
+    pub accent: Option<String>,
     /// Protocol version to claim in hello.
     pub version: Option<i64>,
     /// How long to wait for the connection.
@@ -140,6 +144,159 @@ pub fn synthetic_items(start_index: usize, count: usize) -> Vec<Value> {
             }
         })
         .collect()
+}
+
+/// A made-up library that reads like a real one, for looking at the page: notes that are
+/// things to do, meetings with titles and several speakers, short and long dictations from
+/// each source, voice notes with the recording behind them, and a few clips. Item 0 was made
+/// a few minutes before `now` and the rest go back about six weeks.
+pub fn demo_items(start_index: usize, count: usize, now: f64) -> Vec<Value> {
+    const NOTES: &[&str] = &[
+        "Order the cedar boards for the back fence, twelve of the six foot ones, and ask whether they deliver on Saturday.",
+        "Call the dentist about moving the cleaning to the first week of December.",
+        "Draft the outline for the harbor talk. Start with the story about the lantern, then the three numbers, then the ask.",
+        "Renew the car registration before the end of the month.",
+        "Send Grace the photos from the orchard and ask which two she wants printed.",
+        "Idea: a weekly page that lists what I said I would do and what actually happened. One screen, no charts.",
+        "Book the ferry for the Friday crossing. Check whether the early one still takes bikes.",
+        "Look into why the kitchen light flickers when the dryer runs. Might be the same circuit.\nAsk the electrician when he comes for the porch.",
+        "Reply to the landlord about the gutter. Keep it short and attach the two pictures.",
+        "Read the chapter on tides before Thursday and write down three questions.",
+        "Pick up the saffron and the good rice for Sunday.",
+        "Remember to thank Ada for covering the standup. She did the whole budget section without notes.",
+    ];
+    const KEYBOARD: &[&str] = &[
+        "Running ten minutes late, start without me.",
+        "Yes that works, see you at the harbor at noon.",
+        "Can you send me the address again?",
+        "Sounds good. I will bring the lantern and the extra batteries.",
+        "I looked at the quote and I think the second option is the better one, mostly because the delivery date is a week earlier and we do not need the larger size.",
+        "cedar fence boards six foot near me",
+        "Thanks for the notes from this morning. Two things I would change: move the budget part to the end, and cut the slide about the river entirely.",
+        "On my way.",
+        "Could we move it to Thursday? Wednesday filled up.",
+        "Write a short, friendly reply saying I can do the first week of December but not the second.",
+        "That is the one. Order two.",
+        "Happy birthday! Hope the day is a good one.",
+        "I think the bug is in how the list is sorted after a refresh, not in the fetch itself. Try sorting by the created time and then the id.",
+        "ferry timetable friday early crossing bikes",
+        "Let me check with Grace and get back to you tonight.",
+    ];
+    const IN_APP: &[&str] = &[
+        "Thinking out loud about the talk. The opening is too slow. People do not need the history, they need the one picture of the harbor at night and then the question.",
+        "Grocery list: rice, saffron, two lemons, olive oil, the small tomatoes, bread.",
+        "The thing I keep coming back to is that the plan only works if the first week goes well, so the first week has to be boring on purpose.",
+    ];
+    const CLIPS: &[(&str, &str)] = &[
+        ("clipboard", "https://example.invalid/ferry/timetable?day=friday"),
+        ("share", "Cedar fence boards, 6 ft, pack of 12. In stock at the yard on Orchard Road, open until 5."),
+        ("typed", "Gate code 4471, then the second door on the left."),
+        ("shortcut", "https://example.invalid/docs/harbor-talk-outline"),
+    ];
+    const MEETINGS: &[(&str, &[&str], &[&str])] = &[
+        (
+            "Harbor talk run-through",
+            &["Ada", "Grace", "Me"],
+            &[
+                "Okay, let us run it from the top. You have twelve minutes and the room is about forty people.",
+                "I will start with the lantern story. It takes about ninety seconds if I do not wander.",
+                "Keep it. That story is the reason anyone remembers the rest.",
+                "Then the three numbers: crossings per week, how many were late, and what a late one costs.",
+                "Can you put the cost on its own slide? It got lost last time.",
+                "Yes. One number, large, nothing else on it.",
+                "And the ask at the end needs a date. People agree to things with dates.",
+                "The fifteenth, then. I will say it twice.",
+                "Good. Let us go again and I will time it.",
+            ],
+        ),
+        (
+            "Fence and porch with the contractor",
+            &["Me", "Sam"],
+            &[
+                "So the fence is about sixty feet along the back and it turns at the cedar.",
+                "Sixty feet, six foot boards. I would put posts every eight feet and set them in concrete.",
+                "How long does that take once the boards are here?",
+                "Two days for the fence. The porch light is half a day, it depends what I find in the wall.",
+                "The kitchen light flickers when the dryer runs. Could that be related?",
+                "Could be. I will look at the panel while I am there. Might just be a loose neutral.",
+                "Great. Saturday delivery, and you start Monday?",
+                "Monday works.",
+            ],
+        ),
+        (
+            "Weekly planning",
+            &["Grace", "Me", "Ada", "Noor"],
+            &[
+                "Three things this week: the outline, the budget, and deciding about the ferry trip.",
+                "The outline is mine. I will have a draft by Wednesday.",
+                "I have the budget. It is mostly done, I am waiting on one quote.",
+                "I can chase the quote today if you send me the name.",
+                "Sending it now.",
+                "And the ferry: are we going Friday or the week after?",
+                "Friday, if the early crossing still takes bikes.",
+                "I will check and book it tonight.",
+                "Then that is the week. Short one.",
+            ],
+        ),
+    ];
+    let rev = |i: usize| format!("{:016x}", (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xDE40);
+    let mut items = Vec::new();
+    for i in start_index..start_index + count {
+        // Recent items are minutes apart and older ones hours apart, with whole quiet days.
+        let age = 240.0 + (i as f64).powf(1.62) * 95.0 + ((i * 37) % 11) as f64 * 53.0;
+        let created = now - age;
+        let id = |salt: usize| format!("DE400000-0000-4000-8000-{:012X}", i * 4 + salt);
+        match i % 40 {
+            17 => {
+                let (title, names, lines) = MEETINGS[(i / 40) % MEETINGS.len()];
+                let mut at = 0.0;
+                let mut segments = Vec::new();
+                let mut text = Vec::new();
+                // The lines three times over, so a meeting is long enough to scroll.
+                for (n, line) in lines.iter().cycle().take(lines.len() * 3).enumerate() {
+                    let speaker = names[(n * 7 + n / 3) % names.len()];
+                    let length = 2.0 + line.len() as f64 / 14.0;
+                    segments.push(json!({ "speaker": speaker, "start": at, "end": at + length, "text": line }));
+                    text.push(format!("{speaker}: {line}"));
+                    at += length + 0.6;
+                }
+                items.push(json!({
+                    "id": id(0), "kind": "meeting", "source": null, "created_at": created, "updated_at": created + at,
+                    "text": text.join("\n"), "title": title, "duration_s": at.round(), "engine": "fluidMini", "status": "done",
+                    "extra": { "segments": segments }, "rev": rev(i),
+                }));
+            }
+            5 | 13 | 22 | 31 | 37 => {
+                let text = NOTES[(i / 5 + i / 40) % NOTES.len()];
+                let seconds = 3.0 + text.len() as f64 / 15.0;
+                // A voice note arrives as two items: the recording, and the note saved from it.
+                items.push(json!({
+                    "id": id(1), "kind": "dictation", "source": "note", "created_at": created - seconds - 1.0, "updated_at": created,
+                    "text": text, "title": null, "duration_s": seconds, "engine": "fluidMini", "status": "note", "extra": {}, "rev": rev(i * 3 + 1),
+                }));
+                items.push(json!({
+                    "id": id(0), "kind": "note", "source": null, "created_at": created, "updated_at": created,
+                    "text": text, "title": null, "duration_s": null, "engine": null, "status": null, "extra": {}, "rev": rev(i),
+                }));
+            }
+            9 | 29 => {
+                let (source, text) = CLIPS[(i / 20) % CLIPS.len()];
+                items.push(json!({
+                    "id": id(0), "kind": "clip", "source": source, "created_at": created, "updated_at": created,
+                    "text": text, "title": null, "duration_s": null, "engine": null, "status": null, "extra": {}, "rev": rev(i),
+                }));
+            }
+            n => {
+                let (source, text) = if n % 9 == 2 { ("app", IN_APP[(i / 9) % IN_APP.len()]) } else { ("keyboard", KEYBOARD[(i * 7 + i / 15) % KEYBOARD.len()]) };
+                items.push(json!({
+                    "id": id(0), "kind": "dictation", "source": source, "created_at": created, "updated_at": created + 2.0,
+                    "text": text, "title": null, "duration_s": (1.5 + text.len() as f64 / 16.0).round(), "engine": "fluidMini",
+                    "status": if source == "app" { "finished" } else { "inserted" }, "extra": {}, "rev": rev(i),
+                }));
+            }
+        }
+    }
+    items
 }
 
 /// A clip as the phone sends one: text the person chose to send, with a new id.
@@ -240,6 +397,12 @@ pub async fn run(options: Options) -> Result<Value> {
         "v": options.version.unwrap_or(PROTOCOL_VERSION),
         "phone": { "id": identity.phone_id, "name": identity.name, "app": format!("fake {}", env!("CARGO_PKG_VERSION")) },
     });
+    if let Some(appearance) = &options.appearance {
+        hello["phone"]["appearance"] = json!(appearance);
+    }
+    if let Some(accent) = &options.accent {
+        hello["phone"]["accent"] = json!(accent);
+    }
     let presents_secret = link.is_some() && !options.no_secret;
     if presents_secret {
         hello["pair"] = json!(link.as_ref().unwrap().secret);

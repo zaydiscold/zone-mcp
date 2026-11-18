@@ -1353,13 +1353,17 @@ pub fn survey(env: &Env, state: &State, current: &Launch) -> Vec<Row> {
     rows
 }
 
-/// `zone mcp status`.
-pub fn status(as_json: bool) -> Result<()> {
+/// Where zone stands with every client, as `zone mcp status --json` prints it. The page's
+/// Settings shows the same.
+pub fn status_json() -> Result<Value> {
     let current = Launch::current(false, &Scope::default())?;
     let env = Env::from_system()?;
     let state = data_dir().map(|d| State::load(&d)).unwrap_or_default();
     let rows = survey(&env, &state, &current);
-    if as_json {
+    Ok(rows_json(&rows, &current, &state))
+}
+
+fn rows_json(rows: &[Row], current: &Launch, state: &State) -> Value {
         let list: Vec<Value> = rows
             .iter()
             .map(|row| {
@@ -1395,7 +1399,17 @@ pub fn status(as_json: bool) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json!({ "zone": current.command, "automatic": state.auto, "clients": list }))?);
+        json!({ "zone": current.command, "automatic": state.auto, "clients": list })
+}
+
+/// `zone mcp status`.
+pub fn status(as_json: bool) -> Result<()> {
+    let current = Launch::current(false, &Scope::default())?;
+    let env = Env::from_system()?;
+    let state = data_dir().map(|d| State::load(&d)).unwrap_or_default();
+    let rows = survey(&env, &state, &current);
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&rows_json(&rows, &current, &state))?);
         return Ok(());
     }
     println!("This zone: {}", current.command);

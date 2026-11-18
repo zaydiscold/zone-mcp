@@ -29,6 +29,7 @@ mod codec;
 mod daemon_info;
 mod db;
 mod events;
+mod export;
 mod fakephone;
 mod flash;
 mod item;
@@ -41,6 +42,7 @@ mod paths;
 mod scope;
 mod serve;
 mod service;
+mod stats;
 mod timeparse;
 mod tools;
 mod update;
@@ -254,13 +256,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Write items out as JSON Lines or Markdown, oldest first
+    /// Write items out: JSON Lines, JSON, CSV, Markdown or plain text. In Markdown and text,
+    /// notes alone become a checklist, one meeting a transcript, anything else a document by day
     Export {
         #[command(flatten)]
         filter: FilterArgs,
-        /// jsonl or md
+        /// jsonl, json, csv, md or txt
         #[arg(long, default_value = "jsonl")]
         format: String,
+        /// oldest or newest first
+        #[arg(long, default_value = "oldest")]
+        order: String,
+        /// Only these items: an id or the beginning of one (repeatable). Other filters are
+        /// then left aside
+        #[arg(long, value_name = "ID")]
+        id: Vec<String>,
         /// Write to this file instead of the terminal
         #[arg(long, short, value_name = "FILE")]
         output: Option<PathBuf>,
@@ -445,6 +455,12 @@ enum DevAction {
         addr: Vec<SocketAddr>,
         #[arg(long)]
         name: Option<String>,
+        /// Say in hello how Zone looks on this phone: dark or light
+        #[arg(long)]
+        appearance: Option<String>,
+        /// Say in hello which accent is chosen on this phone: violet, ice, ember, mint or rose
+        #[arg(long)]
+        accent: Option<String>,
         /// Protocol version to claim
         #[arg(long)]
         protocol_version: Option<i64>,
@@ -596,6 +612,10 @@ enum DevAction {
         count: usize,
         #[arg(long, default_value_t = 0)]
         start_index: usize,
+        /// A made-up library that reads like a real one (to-do notes, meetings with several
+        /// speakers, clips, voice notes with their recordings), ending a few minutes ago
+        #[arg(long)]
+        demo: bool,
     },
 }
 
@@ -655,7 +675,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Show { ids, tz, json } => cli::show(&Db::open_default()?, &ids, tz.as_deref(), json)?,
         Command::Stats { filter, by, json } => cli::stats(&Db::open_default()?, &filter, &by, json)?,
-        Command::Export { filter, format, output } => cli::export(&Db::open_default()?, &filter, &format, output.as_deref())?,
+        Command::Export { filter, format, order, id, output } => cli::export(&Db::open_default()?, &filter, &format, &order, &id, output.as_deref())?,
         Command::Import { path } => admin::import(&path)?,
         Command::BackupFolder { path, clear } => admin::backup_folder(path.as_deref(), clear)?,
         Command::Mcp { view, action } => match action {
@@ -705,6 +725,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 relay_only,
                 addr,
                 name,
+                appearance,
+                accent,
                 protocol_version,
                 timeout,
             } => {
@@ -724,6 +746,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     relay_only,
                     addrs: addr,
                     name,
+                    appearance,
+                    accent,
                     version: protocol_version,
                     timeout: Duration::from_secs(timeout),
                 };
@@ -788,8 +812,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                     return Ok(ExitCode::from(1));
                 }
             }
-            DevAction::Synthetic { count, start_index } => {
-                for item in fakephone::synthetic_items(start_index, count) {
+            DevAction::Synthetic { count, start_index, demo } => {
+                let items = if demo { fakephone::demo_items(start_index, count, paths::now_unix()) } else { fakephone::synthetic_items(start_index, count) };
+                for item in items {
                     println!("{item}");
                 }
             }

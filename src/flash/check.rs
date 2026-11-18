@@ -194,13 +194,16 @@ pub fn stored_as_sent(row: &Row, item: &Item) -> bool {
 impl Check {
     /// After storing: reads every item back (the last of each id, which is the one kept) and
     /// notes how many hold exactly what arrived.
-    pub fn read_back(&mut self, items: &[Item], get: impl Fn(&str) -> Option<Row>) {
+    ///
+    /// `removed_here` says whether the person took an item off this computer: such an item is
+    /// deliberately not stored as it arrived, and counts as checked.
+    pub fn read_back(&mut self, items: &[Item], get: impl Fn(&str) -> Option<Row>, removed_here: impl Fn(&str) -> bool) {
         let mut last: HashMap<&str, &Item> = HashMap::new();
         for item in items {
             last.insert(item.id.as_str(), item);
         }
         self.read_back = last.len();
-        self.read_back_matching = last.values().filter(|item| get(&item.id).is_some_and(|row| stored_as_sent(&row, item))).count();
+        self.read_back_matching = last.values().filter(|item| get(&item.id).is_some_and(|row| stored_as_sent(&row, item)) || removed_here(&item.id)).count();
         let differing = self.read_back - self.read_back_matching;
         if differing > 0 {
             self.problems.push(format!(

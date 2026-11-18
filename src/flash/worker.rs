@@ -400,7 +400,7 @@ mod tests {
 
     fn flash(items: usize, session: u32) -> Encoder {
         let key = seal::key_bytes(&crate::flash::flash_key(SECRET).unwrap()).unwrap();
-        let phone = crate::db::PhoneInfo { id: Some("PHONE-W".into()), name: Some("Worker phone".into()), app: None };
+        let phone = crate::db::PhoneInfo { id: Some("PHONE-W".into()), name: Some("Worker phone".into()), app: None, ..Default::default() };
         let sealed = seal::seal(&key, &seal::flash_json(&phone, &crate::fakephone::synthetic_items(0, items))).unwrap();
         Encoder::new(session, &sealed, 300).unwrap()
     }

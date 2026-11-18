@@ -354,7 +354,7 @@ fn filter(args: &Map<String, Value>, clock: &Clock, scope: &Scope) -> Result<(Fi
         "end": end.map(|t| clock.full(t)),
         "timezone": clock.zone_name(),
     });
-    Ok((Filter { start, end, kinds, sources, unprocessed_only: false, scope: scope.clone() }, range))
+    Ok((Filter { start, end, kinds, sources, scope: scope.clone(), ..Filter::default() }, range))
 }
 
 /// Agents say "dictations", "notes", "meetings". The stored kinds are singular.

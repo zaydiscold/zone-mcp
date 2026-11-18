@@ -375,7 +375,7 @@ fn another_flash_at_the_same_time_and_the_page_started_over() {
     db.create_offer(&other_secret, NOW - 5.0, 600.0).unwrap();
     let other_items = crate::fakephone::synthetic_items(5000, 200);
     let other_key = crate::flash::seal::key_bytes(&crate::flash::flash_key(&other_secret).unwrap()).unwrap();
-    let phone = crate::db::PhoneInfo { id: Some("OTHER-PHONE".into()), name: Some("Other".into()), app: None };
+    let phone = crate::db::PhoneInfo { id: Some("OTHER-PHONE".into()), name: Some("Other".into()), app: None, ..Default::default() };
     let other_sealed = crate::flash::seal::seal(&other_key, &crate::flash::seal::flash_json(&phone, &other_items)).unwrap();
     let other = Encoder::new(0x8000_0bad, &other_sealed, 900).unwrap();
     let other_cycle = 3 * other.k() as u32 + 60;
@@ -536,7 +536,7 @@ fn stress_flash() -> (String, Encoder, u32) {
     let secret = "ef".repeat(32);
     let items = crate::fakephone::synthetic_items(20_000, 2_500);
     let key = crate::flash::seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
-    let sealed = crate::flash::seal::seal(&key, &crate::flash::seal::flash_json(&crate::db::PhoneInfo { id: Some("S".into()), name: None, app: None }, &items)).unwrap();
+    let sealed = crate::flash::seal::seal(&key, &crate::flash::seal::flash_json(&crate::db::PhoneInfo { id: Some("S".into()), name: None, app: None, ..Default::default() }, &items)).unwrap();
     let encoder = Encoder::new(0x8123_0001, &sealed, 300).unwrap();
     let cycle = 3 * encoder.k() as u32 + 60;
     (secret, encoder, cycle)

@@ -27,9 +27,15 @@ pub struct FilterArgs {
     /// or typed (clips). Repeat for more than one
     #[arg(long, value_name = "SOURCE")]
     pub source: Vec<String>,
-    /// Only items no agent has flagged as processed
+    /// Only items not flagged as processed (on the page: not marked Done)
     #[arg(long)]
     pub unprocessed: bool,
+    /// Only items flagged as processed (on the page: marked Done)
+    #[arg(long, conflicts_with = "unprocessed")]
+    pub done: bool,
+    /// Only items from this phone: its name, or the beginning of its id from `zone devices`
+    #[arg(long, value_name = "PHONE")]
+    pub phone: Option<String>,
     /// Read and show times in this time zone (for example America/Los_Angeles) instead of
     /// the computer's
     #[arg(long, value_name = "ZONE")]
@@ -57,8 +63,20 @@ impl FilterArgs {
             kinds: split(&self.kind).iter().map(|k| normalize_kind(k)).collect(),
             sources: split(&self.source),
             unprocessed_only: self.unprocessed,
-            scope: Default::default(),
+            processed_only: self.done,
+            ..Filter::default()
         })
+    }
+
+    /// The filter, with `--phone` looked up among the paired phones.
+    pub fn filter_in(&self, db: &Db, clock: &Clock) -> Result<Filter> {
+        let mut filter = self.filter(clock)?;
+        if let Some(spec) = &self.phone {
+            let device = db.find_device(spec)?;
+            let id = device.phone_id.clone().ok_or_else(|| anyhow::anyhow!("{} never said which phone it is, so its items cannot be told apart", device.label()))?;
+            filter.phone = Some(crate::db::FromPhone::Id(id));
+        }
+        Ok(filter)
     }
 }
 
@@ -117,7 +135,7 @@ fn print_card(out: &mut impl Write, row: &Row, clock: &Clock, body: &str) -> std
 
 pub fn list(db: &Db, args: &FilterArgs, order: &str, limit: usize, all: bool, as_json: bool) -> Result<()> {
     let clock = args.clock()?;
-    let filter = args.filter(&clock)?;
+    let filter = args.filter_in(db, &clock)?;
     let order = Order::parse(order)?;
     let total = db.count(&filter)?;
     let limit = if all { usize::MAX / 2 } else { limit.max(1) };
@@ -143,7 +161,7 @@ pub fn list(db: &Db, args: &FilterArgs, order: &str, limit: usize, all: bool, as
 
 pub fn search(db: &Db, query: &str, args: &FilterArgs, order: Option<&str>, limit: usize, cursor: Option<&str>, as_json: bool) -> Result<()> {
     let clock = args.clock()?;
-    let filter = args.filter(&clock)?;
+    let filter = args.filter_in(db, &clock)?;
     let order = order.map(Order::parse).transpose()?;
     let offset = cursor.map(SearchCursor::decode).transpose()?.map(|c| c.0).unwrap_or(0);
     let result = db.search_page(query, &filter, order, limit.max(1), offset)?;
@@ -236,7 +254,7 @@ pub fn show(db: &Db, ids: &[String], tz: Option<&str>, as_json: bool) -> Result<
 
 pub fn stats(db: &Db, args: &FilterArgs, by: &str, as_json: bool) -> Result<()> {
     let clock = args.clock()?;
-    let filter = args.filter(&clock)?;
+    let filter = args.filter_in(db, &clock)?;
     if !matches!(by, "day" | "kind" | "source") {
         bail!("--by must be day, kind or source");
     }
@@ -292,43 +310,34 @@ pub fn stats(db: &Db, args: &FilterArgs, by: &str, as_json: bool) -> Result<()> 
     Ok(())
 }
 
-pub fn export(db: &Db, args: &FilterArgs, format: &str, output: Option<&std::path::Path>) -> Result<()> {
+pub fn export(db: &Db, args: &FilterArgs, format: &str, order: &str, ids: &[String], output: Option<&std::path::Path>) -> Result<()> {
     let clock = args.clock()?;
-    let filter = args.filter(&clock)?;
-    let rows = db.list(&filter, Order::Oldest, usize::MAX / 2, None)?;
-    let mut out: Box<dyn Write> = match output {
-        Some(path) => Box::new(std::io::BufWriter::new(std::fs::File::create(path)?)),
-        None => Box::new(std::io::stdout().lock()),
+    let format = crate::export::Format::parse(format)?;
+    let order = Order::parse(order)?;
+    let rows = if ids.is_empty() {
+        db.list(&args.filter_in(db, &clock)?, Order::Oldest, usize::MAX / 2, None)?
+    } else {
+        let mut rows = Vec::new();
+        for id in ids {
+            let row = db.resolve(id)?;
+            if row.deleted {
+                bail!("{} is not in the library any more", row.id);
+            }
+            rows.push(row);
+        }
+        rows
     };
-    match format {
-        "jsonl" => {
-            for row in &rows {
-                writeln!(out, "{}", item_json(row, &clock))?;
-            }
+    let text = crate::export::render(&rows, &clock, format, order, None);
+    match output {
+        Some(path) => {
+            std::fs::write(path, text)?;
+            eprintln!("Wrote {} items to {}", rows.len(), path.display());
         }
-        "md" | "markdown" => {
-            writeln!(out, "# Zone library\n")?;
-            writeln!(out, "{} items, exported {} ({}).", rows.len(), clock.full(crate::paths::now_unix()), clock.zone_name())?;
-            let mut day = String::new();
-            for row in &rows {
-                let this_day = clock.day(row.created_at);
-                if this_day != day {
-                    day = this_day;
-                    writeln!(out, "\n## {}\n", clock.day_label(row.created_at))?;
-                }
-                let mut head = format!("### {} {}", clock.time_of_day(row.created_at), label(row));
-                if let Some(title) = &row.title {
-                    head.push_str(&format!(": {title}"));
-                }
-                writeln!(out, "{head}\n")?;
-                writeln!(out, "{}\n", row.text.trim())?;
-            }
+        None => {
+            let mut out = std::io::stdout().lock();
+            out.write_all(text.as_bytes())?;
+            out.flush()?;
         }
-        other => bail!("--format must be jsonl or md, not {other}"),
-    }
-    out.flush()?;
-    if let Some(path) = output {
-        eprintln!("Wrote {} items to {}", rows.len(), path.display());
     }
     Ok(())
 }

@@ -241,7 +241,7 @@ pub fn enabled(db: &Db) -> bool {
     matches!(db.meta_get(SETTING), Ok(Some(value)) if value == "on")
 }
 
-fn set_enabled(db: &Db, on: bool) -> Result<()> {
+pub fn set_enabled(db: &Db, on: bool) -> Result<()> {
     if on { db.meta_set(SETTING, "on") } else { db.meta_delete(SETTING) }
 }
 

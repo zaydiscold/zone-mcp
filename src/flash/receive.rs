@@ -730,7 +730,7 @@ fn import_inner(db: &mut Db, shape: &Shape, sealed: &[u8], now: f64) -> Result<S
     }
     db.record_delivery(&device, changed, Some("flash"), now).map_err(Problem::Storage)?;
     db.record_flash(&stored_flash(shape, &stored)).map_err(Problem::Storage)?;
-    stored.check.read_back(&flash.items, |id| db.get(id).ok().flatten());
+    stored.check.read_back(&flash.items, |id| db.get(id).ok().flatten(), |id| db.is_removed(id));
     Ok(stored)
 }
 
@@ -748,7 +748,7 @@ mod tests {
     }
 
     fn phone(id: &str) -> PhoneInfo {
-        PhoneInfo { id: Some(id.to_string()), name: Some("Test phone".to_string()), app: Some("1.0.3 (1)".to_string()) }
+        PhoneInfo { id: Some(id.to_string()), name: Some("Test phone".to_string()), app: Some("1.0.3 (1)".to_string()), ..Default::default() }
     }
 
     /// Imports a payload as a flash of its own: a header made up from it, so every payload

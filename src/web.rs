@@ -16,7 +16,7 @@ use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
@@ -27,7 +27,7 @@ use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
 
 use crate::daemon_info::DaemonInfo;
-use crate::db::{Cursor, Db, Filter, Order, Row};
+use crate::db::{ACCENTS, Cursor, Db, Device, Filter, FromPhone, Order, REMOVED_KEPT_SECONDS, Row};
 use crate::flash::color::{ColorRead, Rgb};
 use crate::flash::qr::Gray;
 use crate::flash::worker::FlashWorker;
@@ -50,7 +50,17 @@ const SERIF: &[u8] = include_bytes!("../assets/fonts/zone-serif.woff2");
 /// The largest request body read: one camera picture, a gray byte per pixel or three for a
 /// color one (1080 by 1080 in color is about 3.5 MB).
 const MAX_BODY: usize = 4 * 1024 * 1024;
+/// The largest body of any other request: a list of item ids, a setting.
+const MAX_JSON_BODY: usize = 256 * 1024;
 const PAGE_LIMIT: usize = 60;
+/// The most items one request may ask for.
+const MAX_PAGE_LIMIT: usize = 500;
+/// The most items one export may hold.
+const MAX_EXPORT_ITEMS: usize = 50_000;
+/// The most ids one request may name.
+const MAX_IDS: usize = 2000;
+/// How long an answer about the latest release is reused before GitHub is asked again.
+const UPDATE_ANSWER_KEPT_SECONDS: f64 = 12.0 * 3600.0;
 const SEARCH_LIMIT: usize = 200;
 /// Longer texts are cut in listings. The page fetches the rest when asked.
 const LIST_TEXT_CHARS: usize = 4000;
@@ -122,9 +132,11 @@ type Reply = Response<Full<Bytes>>;
 async fn handle(request: Request<Incoming>, state: Arc<WebState>) -> Reply {
     let nonce = paths::hex(&paths::random_bytes::<16>());
     let mut head = RequestHead::from(&request);
-    // Only the Flash routes take a body: a camera picture or the bytes of one frame.
-    if head.method == Method::POST && head.path.starts_with("/api/flash/") {
-        match Limited::new(request.into_body(), MAX_BODY).collect().await {
+    // The Flash routes take a camera picture or the bytes of one frame. The page's own writes
+    // take a little JSON.
+    if head.method == Method::POST && head.path.starts_with("/api/") {
+        let most = if head.path.starts_with("/api/flash/") { MAX_BODY } else { MAX_JSON_BODY };
+        match Limited::new(request.into_body(), most).collect().await {
             Ok(body) => head.body = body.to_bytes(),
             Err(_) => return secure(text(StatusCode::PAYLOAD_TOO_LARGE, "That is too much to send in one request."), &nonce),
         }
@@ -243,12 +255,27 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
                 }
                 return locked(nonce);
             }
-            if has_session(head, state) { page(nonce) } else { locked(nonce) }
+            if has_session(head, state) { page(nonce, state) } else { locked(nonce) }
         }
         "/api/status" if get => guarded(head, state, |db| status(db, state)),
         "/api/items" if get => guarded(head, state, |db| items(db, &head.query)),
         "/api/item" if get => guarded(head, state, |db| item(db, &head.query)),
+        "/api/stats" if get => guarded(head, state, |db| stats(db, &head.query)),
+        "/api/export" if get => guarded(head, state, |db| export(db, &head.query)),
+        "/api/settings" if get => guarded(head, state, |db| settings(db, state)),
+        "/api/removed" if get => guarded(head, state, |db| removed(db)),
+        // These two touch no item: which AI clients have zone, and whether a newer zone is out.
+        "/api/agents" if get => unguarded(head, state, agents),
+        "/api/update" if get => unguarded(head, state, || Ok(update_answer(head.query.contains_key("again")))),
+        // Every write is a POST, and like every /api/ route it needs the session cookie, the
+        // right Host, and no other site as its Origin (checked above).
         "/api/pair" if post => guarded(head, state, |db| pair(db, state)),
+        "/api/done" if post => guarded(head, state, |db| set_done(db, &body_json(head)?)),
+        "/api/remove" if post => guarded(head, state, |db| remove(db, &body_json(head)?)),
+        "/api/restore" if post => guarded(head, state, |db| restore(db, &body_json(head)?)),
+        "/api/settings" if post => guarded(head, state, |db| change_settings(db, state, &body_json(head)?)),
+        "/api/phone" if post => guarded(head, state, |db| rename_phone(db, &body_json(head)?)),
+        "/api/unpair" if post => guarded(head, state, |db| unpair(db, &body_json(head)?)),
         // Carrier 2 (Flash): the page reads the phone's screen with the camera and posts what
         // it sees. See flash/receive.rs.
         "/flash" if get => {
@@ -272,7 +299,8 @@ pub fn route(head: &RequestHead, state: &WebState, nonce: &str) -> Reply {
         // The font holds nothing private, so the locked page can use it too.
         "/font/zone-serif.woff2" if get => font(),
         "/" | "/flash" | "/font/zone-serif.woff2" | "/api/status" | "/api/items" | "/api/item" | "/api/pair" | "/api/flash/status" | "/api/flash/picture"
-        | "/api/flash/frame" | "/api/flash/reset" => text(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed."),
+        | "/api/flash/frame" | "/api/flash/reset" | "/api/stats" | "/api/export" | "/api/settings" | "/api/removed" | "/api/agents" | "/api/update"
+        | "/api/done" | "/api/remove" | "/api/restore" | "/api/phone" | "/api/unpair" => text(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed."),
         _ => text(StatusCode::NOT_FOUND, "Not found."),
     }
 }
@@ -288,6 +316,38 @@ fn guarded(head: &RequestHead, state: &WebState, work: impl FnOnce(&mut Db) -> R
         Ok(value) => json_reply(StatusCode::OK, &value),
         Err(error) => json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
     }
+}
+
+/// A route that needs the session but not the library.
+fn unguarded(head: &RequestHead, state: &WebState, work: impl FnOnce() -> Result<Value>) -> Reply {
+    if !has_session(head, state) {
+        return json_reply(StatusCode::UNAUTHORIZED, &json!({ "error": "locked", "fix": "Run `zone open` to unlock this page." }));
+    }
+    match work() {
+        Ok(value) => json_reply(StatusCode::OK, &value),
+        Err(error) => json_reply(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}") })),
+    }
+}
+
+/// The JSON object a write was sent with.
+fn body_json(head: &RequestHead) -> Result<Value> {
+    let value: Value = serde_json::from_slice(&head.body).map_err(|_| anyhow!("the request body is not JSON"))?;
+    if !value.is_object() {
+        bail!("the request body is not a JSON object");
+    }
+    Ok(value)
+}
+
+/// The item ids a write names.
+fn body_ids(body: &Value) -> Result<Vec<String>> {
+    let ids: Vec<String> = body.get("ids").and_then(Value::as_array).context("ids is required: a list of item ids")?.iter().filter_map(Value::as_str).map(str::to_string).collect();
+    if ids.is_empty() {
+        bail!("ids is empty");
+    }
+    if ids.len() > MAX_IDS {
+        bail!("at most {MAX_IDS} items at a time");
+    }
+    Ok(ids)
 }
 
 /// Runs one Flash request and answers with where the flash stands. The flash's own thread
@@ -377,8 +437,13 @@ fn html(status: StatusCode, body: String) -> Reply {
     reply
 }
 
-fn page(nonce: &str) -> Reply {
-    html(StatusCode::OK, PAGE.replace("__NONCE__", nonce))
+/// The page, drawn from its first moment in the appearance and accent chosen in Settings.
+fn page(nonce: &str, state: &WebState) -> Reply {
+    let look = match state.db.try_lock() {
+        Ok(db) => Look::of(&db),
+        Err(_) => Look::default(),
+    };
+    html(StatusCode::OK, PAGE.replace("__NONCE__", nonce).replace("__THEME__", look.theme).replace("__ACCENT__", &look.accent))
 }
 
 fn locked(nonce: &str) -> Reply {
@@ -429,109 +494,501 @@ fn list_param(query: &HashMap<String, String>, key: &str) -> Vec<String> {
     query.get(key).map(|v| v.split(',').map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect()).unwrap_or_default()
 }
 
-fn filter_from(query: &HashMap<String, String>, clock: &Clock) -> Result<Filter> {
+/// The phone a request asks about: `device` is the id of a paired phone (as `/api/status`
+/// lists it), or `none` for items no phone is recorded for.
+fn phone_param(db: &Db, query: &HashMap<String, String>) -> Result<Option<FromPhone>> {
+    match query.get("device").map(|v| v.trim()).filter(|v| !v.is_empty() && *v != "all") {
+        None => Ok(None),
+        Some("none") => Ok(Some(FromPhone::Unknown)),
+        Some(id) => {
+            let device = db.device(id)?.context("no such paired phone")?;
+            // A phone that never said which install it is has no items that can be told apart.
+            Ok(Some(FromPhone::Id(device.phone_id.unwrap_or_else(|| "(unknown)".to_string()))))
+        }
+    }
+}
+
+/// What a request selects. The recording behind a voice note is left out when the note is
+/// there too, unless the request says `fold=0` or asks for those recordings by their source.
+fn filter_from(db: &Db, query: &HashMap<String, String>, clock: &Clock) -> Result<Filter> {
     let time = |key: &str, bound: Bound| -> Result<Option<f64>> {
         match query.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
             Some(value) => Ok(Some(clock.parse(value, bound).map_err(|e| anyhow!("{key}: {e}"))?)),
             None => Ok(None),
         }
     };
+    let done = query.get("done").map(|v| v.trim()).unwrap_or("");
+    if !matches!(done, "" | "all" | "open" | "done") {
+        bail!("done must be open, done or all");
+    }
+    let sources = list_param(query, "sources");
     Ok(Filter {
         start: time("start", Bound::Start)?,
         end: time("end", Bound::End)?,
         kinds: list_param(query, "kinds").iter().map(|k| normalize_kind(k)).collect(),
-        sources: list_param(query, "sources"),
-        unprocessed_only: false,
+        fold_note_recordings: query.get("fold").map(String::as_str) != Some("0") && !sources.iter().any(|s| s == "note"),
+        sources,
+        unprocessed_only: done == "open",
+        processed_only: done == "done",
+        phone: phone_param(db, query)?,
         scope: Default::default(),
     })
 }
 
-fn item_view(row: &Row, clock: &Clock, snippet: Option<&str>) -> Value {
-    let total_chars = row.text.chars().count();
-    let truncated = total_chars > LIST_TEXT_CHARS;
-    let text: String = if truncated { row.text.chars().take(LIST_TEXT_CHARS).collect() } else { row.text.clone() };
-    json!({
-        "id": row.id,
-        "kind": row.kind,
-        "source": row.source,
-        "day": clock.day(row.created_at),
-        "day_label": clock.day_label(row.created_at),
-        "time": clock.time_of_day(row.created_at),
-        "full_time": clock.full(row.created_at),
-        "rfc3339": clock.rfc3339(row.created_at),
-        "duration_s": row.duration_s,
-        "words": row.words,
-        "title": row.title,
-        "text": text,
-        "truncated": truncated,
-        "snippet": snippet,
-    })
+/// What the page needs to know to draw items: the clock, and what each phone is called.
+struct Views {
+    clock: Clock,
+    now: f64,
+    /// Install id to the name shown, for every paired phone.
+    phones: HashMap<String, String>,
+}
+
+impl Views {
+    fn new(db: &Db) -> Result<Views> {
+        let clock = Clock::system();
+        let now = unix(clock.now);
+        let phones = db.devices()?.into_iter().filter_map(|d| Some((d.phone_id.clone()?, d.label()))).collect();
+        Ok(Views { clock, now, phones })
+    }
+
+    fn item(&self, row: &Row, snippet: Option<&str>) -> Value {
+        let clock = &self.clock;
+        let total_chars = row.text.chars().count();
+        let truncated = total_chars > LIST_TEXT_CHARS;
+        let text: String = if truncated { row.text.chars().take(LIST_TEXT_CHARS).collect() } else { row.text.clone() };
+        let mut view = json!({
+            "id": row.id,
+            "kind": row.kind,
+            "source": row.source,
+            "day": clock.day(row.created_at),
+            "day_label": clock.day_label(row.created_at),
+            "time": clock.time_of_day(row.created_at),
+            "full_time": clock.full(row.created_at),
+            "rfc3339": clock.rfc3339(row.created_at),
+            "age_s": (self.now - row.created_at).max(0.0).round(),
+            "duration_s": row.duration_s,
+            "words": row.words,
+            "title": row.title,
+            "text": text,
+            "truncated": truncated,
+            "snippet": snippet,
+            // The same flag agents set with mark_processed.
+            "done": row.processed_at.is_some(),
+            "phone": row.device_id.as_ref().and_then(|id| self.phones.get(id)),
+        });
+        if row.kind == "meeting" {
+            let turns = crate::export::turns(row);
+            view["speakers"] = json!(crate::export::speakers(row));
+            view["turn_count"] = json!(turns.len());
+            view["first_line"] = json!(turns.first().map(|turn| crate::item::preview(&turn.text, 220)));
+        }
+        view
+    }
+}
+
+fn limit_param(query: &HashMap<String, String>) -> Result<usize> {
+    match query.get("limit").map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        Some(text) => Ok(text.parse::<usize>().map_err(|_| anyhow!("limit must be a number"))?.clamp(1, MAX_PAGE_LIMIT)),
+        None => Ok(PAGE_LIMIT),
+    }
+}
+
+fn order_param(query: &HashMap<String, String>) -> Result<Order> {
+    query.get("order").map(|v| v.trim()).filter(|v| !v.is_empty()).map(Order::parse).transpose().map(Option::unwrap_or_default)
 }
 
 fn items(db: &mut Db, query: &HashMap<String, String>) -> Result<Value> {
-    let clock = Clock::system();
-    let filter = filter_from(query, &clock)?;
+    let views = Views::new(db)?;
+    let filter = filter_from(db, query, &views.clock)?;
     let search = query.get("q").map(|q| q.trim()).filter(|q| !q.is_empty());
+    let order = order_param(query)?;
+    let limit = limit_param(query)?;
 
-    let mut day_counts = Map::new();
-    if search.is_none() {
-        let mut counts: Vec<(String, i64)> = Vec::new();
-        for row in db.stat_rows(&filter)? {
-            let day = clock.day(row.created_at);
-            match counts.last_mut() {
-                Some((last, n)) if *last == day => *n += 1,
-                _ => counts.push((day, 1)),
-            }
-        }
-        for (day, count) in counts {
-            day_counts.insert(day, json!(count));
-        }
-    }
+    // How many of them are done, whatever the request's own done filter says: the page shows
+    // "12 open" beside a list of either.
+    let mut either = filter.clone();
+    either.unprocessed_only = false;
+    either.processed_only = false;
 
     if let Some(q) = search {
-        let result = db.search(q, &filter, Some(Order::Newest), SEARCH_LIMIT)?;
-        let list: Vec<Value> = result.hits.iter().map(|hit| item_view(&hit.row, &clock, Some(&hit.snippet))).collect();
+        let result = db.search(q, &filter, Some(order), SEARCH_LIMIT)?;
+        let list: Vec<Value> = result.hits.iter().map(|hit| views.item(&hit.row, Some(&hit.snippet))).collect();
         return Ok(json!({ "total": result.total, "items": list, "next_cursor": null, "matched": result.matched, "day_counts": {} }));
     }
+
+    // The calendar's dots, only when asked for: they take a pass over everything selected.
+    let day_counts = if query.contains_key("days") { crate::stats::day_counts(db, &views.clock, &filter)? } else { Map::new() };
 
     let cursor = match query.get("cursor").filter(|c| !c.is_empty()) {
         Some(text) => Some(Cursor::decode(text)?),
         None => None,
     };
     let total = db.count(&filter)?;
-    let mut rows = db.list(&filter, Order::Newest, PAGE_LIMIT + 1, cursor)?;
-    let more = rows.len() > PAGE_LIMIT;
-    rows.truncate(PAGE_LIMIT);
+    let all = db.count(&either)?;
+    let done = db.count_processed(&either)?;
+    let folded = if filter.fold_note_recordings { db.count_folded(&filter)? } else { 0 };
+    let mut rows = db.list(&filter, order, limit + 1, cursor)?;
+    let more = rows.len() > limit;
+    rows.truncate(limit);
     let next_cursor = if more { rows.last().map(|row| Cursor::after(row).encode()) } else { None };
-    let list: Vec<Value> = rows.iter().map(|row| item_view(row, &clock, None)).collect();
-    Ok(json!({ "total": total, "items": list, "next_cursor": next_cursor, "day_counts": day_counts }))
+    let list: Vec<Value> = rows.iter().map(|row| views.item(row, None)).collect();
+    Ok(json!({
+        "total": total,
+        "counts": { "all": all, "done": done, "open": all - done },
+        // Recordings behind voice notes that are not listed because the note is.
+        "folded": folded,
+        "items": list,
+        "next_cursor": next_cursor,
+        "day_counts": day_counts,
+    }))
 }
 
+/// One item in full. A meeting comes with its turns.
 fn item(db: &mut Db, query: &HashMap<String, String>) -> Result<Value> {
     let id = query.get("id").context("id is required")?;
     let row = db.get(id)?.filter(|row| !row.deleted).context("no such item")?;
-    Ok(json!({ "id": row.id, "title": row.title, "text": row.text }))
+    let views = Views::new(db)?;
+    let mut view = views.item(&row, None);
+    view["text"] = json!(row.text);
+    view["truncated"] = json!(false);
+    if row.kind == "meeting" {
+        let turns: Vec<Value> = crate::export::turns(&row)
+            .into_iter()
+            .map(|turn| json!({ "speaker": turn.speaker, "start": turn.start, "at": turn.start.map(crate::export::stamp), "text": turn.text }))
+            .collect();
+        view["turns"] = json!(turns);
+    }
+    Ok(view)
+}
+
+fn stats(db: &mut Db, query: &HashMap<String, String>) -> Result<Value> {
+    let clock = Clock::system();
+    let filter = filter_from(db, query, &clock)?;
+    crate::stats::summary(db, &clock, &filter)
+}
+
+/// Items written out for a person: the ones named in `ids`, or everything a filter selects.
+fn export(db: &mut Db, query: &HashMap<String, String>) -> Result<Value> {
+    let clock = Clock::system();
+    let format = crate::export::Format::parse(query.get("format").map(String::as_str).unwrap_or("md"))?;
+    let order = order_param(query)?;
+    let ids = list_param(query, "ids");
+    let rows: Vec<Row> = if ids.is_empty() {
+        let filter = filter_from(db, query, &clock)?;
+        if db.count(&filter)? > MAX_EXPORT_ITEMS as i64 {
+            bail!("that is more than {MAX_EXPORT_ITEMS} items. Narrow it by kind or dates, or use `zone export`.");
+        }
+        match query.get("q").map(|q| q.trim()).filter(|q| !q.is_empty()) {
+            Some(q) => db.search(q, &filter, Some(order), MAX_EXPORT_ITEMS)?.hits.into_iter().map(|hit| hit.row).collect(),
+            None => db.list(&filter, order, MAX_EXPORT_ITEMS, None)?,
+        }
+    } else {
+        if ids.len() > MAX_IDS {
+            bail!("at most {MAX_IDS} items at a time");
+        }
+        let mut rows = Vec::new();
+        for id in &ids {
+            // An item removed or deleted since the page listed it is simply left out.
+            if let Some(row) = db.get(id)?.filter(|row| !row.deleted) {
+                rows.push(row);
+            }
+        }
+        rows
+    };
+    let title = query.get("title").map(|t| t.trim()).filter(|t| !t.is_empty());
+    Ok(json!({
+        "filename": crate::export::file_name(&rows, &clock, format),
+        "format": format.extension(),
+        "shape": crate::export::Shape::of(&rows).as_str(),
+        "items": rows.len(),
+        "content": crate::export::render(&rows, &clock, format, order, title),
+    }))
+}
+
+// -------------------------------------------------------------------- done, and removing
+
+/// Done on the page is the flag agents set with `mark_processed`: one column, so an agent's
+/// `unprocessed_only` and the page's Open always agree.
+fn set_done(db: &mut Db, body: &Value) -> Result<Value> {
+    let ids = body_ids(body)?;
+    let done = body.get("done").and_then(Value::as_bool).context("done is required: true or false")?;
+    let (found, missing) = db.mark_processed(&ids, done, paths::now_unix())?;
+    Ok(json!({ "done": done, "ids": found, "missing": missing }))
+}
+
+fn remove(db: &mut Db, body: &Value) -> Result<Value> {
+    let removed = db.remove_items(&body_ids(body)?, paths::now_unix())?;
+    Ok(json!({ "removed": removed, "kept_days": (REMOVED_KEPT_SECONDS / 86400.0).round() }))
+}
+
+fn restore(db: &mut Db, body: &Value) -> Result<Value> {
+    let restored = db.restore_items(&body_ids(body)?)?;
+    Ok(json!({ "restored": restored }))
+}
+
+/// What was removed from this computer and can still be put back.
+fn removed(db: &mut Db) -> Result<Value> {
+    let clock = Clock::system();
+    let now = unix(clock.now);
+    db.erase_old_removed(now)?;
+    let list: Vec<Value> = db
+        .removed_items()?
+        .iter()
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "kind": row.kind,
+                "source": row.source,
+                "title": row.title,
+                "preview": crate::item::preview(&row.text, 240),
+                "words": row.words,
+                "day_label": clock.day_label(row.created_at),
+                "rfc3339": clock.rfc3339(row.created_at),
+                "removed_age_s": (now - row.removed_at).max(0.0).round(),
+                "days_left": ((row.removed_at + REMOVED_KEPT_SECONDS - now) / 86400.0).ceil().max(0.0),
+            })
+        })
+        .collect();
+    Ok(json!({ "items": list, "kept_days": (REMOVED_KEPT_SECONDS / 86400.0).round() }))
+}
+
+// -------------------------------------------------------------------- how the page looks
+
+/// What can be chosen for the page's appearance. `phone` follows the iPhone, once one says
+/// how Zone looks there.
+const APPEARANCE_CHOICES: [&str; 4] = ["system", "light", "dark", "phone"];
+const SETTING_APPEARANCE: &str = "page_appearance";
+const SETTING_ACCENT: &str = "page_accent";
+
+/// The page's look: what was chosen, and what that comes to right now.
+struct Look {
+    /// `system`, `light`, `dark` or `phone`.
+    appearance: String,
+    /// One of [`ACCENTS`], or `phone`.
+    accent_choice: String,
+    /// What the page is drawn in: `light`, `dark`, or `auto` to follow the computer.
+    theme: &'static str,
+    /// The accent the page is drawn with, one of [`ACCENTS`].
+    accent: String,
+    /// The phone whose look was last reported: its name, appearance and accent.
+    phone: Option<(String, Option<String>, Option<String>)>,
+}
+
+impl Default for Look {
+    fn default() -> Look {
+        Look { appearance: "system".to_string(), accent_choice: "phone".to_string(), theme: "auto", accent: "violet".to_string(), phone: None }
+    }
+}
+
+impl Look {
+    fn of(db: &Db) -> Look {
+        let devices = db.devices().unwrap_or_default();
+        Look::from(db.meta_get(SETTING_APPEARANCE).ok().flatten(), db.meta_get(SETTING_ACCENT).ok().flatten(), &devices)
+    }
+
+    fn from(appearance: Option<String>, accent: Option<String>, devices: &[Device]) -> Look {
+        // The phone seen most recently among those that said how they look.
+        let phone = devices
+            .iter()
+            .filter(|d| d.appearance.is_some() || d.accent.is_some())
+            .max_by(|a, b| a.last_seen.unwrap_or(0.0).total_cmp(&b.last_seen.unwrap_or(0.0)))
+            .map(|d| (d.label(), d.appearance.clone(), d.accent.clone()));
+        let appearance = appearance.filter(|a| APPEARANCE_CHOICES.contains(&a.as_str())).unwrap_or_else(|| "system".to_string());
+        // Until an accent is chosen here, the iPhone's is used when it is known.
+        let accent_choice = accent.filter(|a| a == "phone" || ACCENTS.contains(&a.as_str())).unwrap_or_else(|| "phone".to_string());
+        let phone_appearance = phone.as_ref().and_then(|p| p.1.as_deref());
+        let theme = match (appearance.as_str(), phone_appearance) {
+            ("light", _) | ("phone", Some("light")) => "light",
+            ("dark", _) | ("phone", Some("dark")) => "dark",
+            _ => "auto",
+        };
+        let accent = match accent_choice.as_str() {
+            "phone" => phone.as_ref().and_then(|p| p.2.clone()).unwrap_or_else(|| "violet".to_string()),
+            chosen => chosen.to_string(),
+        };
+        Look { appearance, accent_choice, theme, accent, phone }
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "appearance": self.appearance,
+            "accent": self.accent_choice,
+            "theme": self.theme,
+            "accent_shown": self.accent,
+            "accents": ACCENTS,
+            "phone": self.phone.as_ref().map(|(name, appearance, accent)| json!({ "name": name, "appearance": appearance, "accent": accent })),
+        })
+    }
+}
+
+fn clipboard_json(db: &Db) -> Value {
+    let tool = crate::clip::tool_name();
+    json!({
+        "enabled": crate::clip::enabled(db),
+        "available": tool.is_some(),
+        "tool": tool,
+        "fix": if tool.is_none() { Some(crate::clip::how_to_get_a_tool()) } else { None },
+        "max_age_s": crate::clip::FRESH_SECONDS,
+    })
+}
+
+/// Everything the Settings view shows that lives in the library or the data folder.
+fn settings(db: &mut Db, state: &WebState) -> Result<Value> {
+    let now = paths::now_unix();
+    let dir = paths::data_dir()?;
+    let backup_folder = db.meta_get("backup_folder")?;
+    let backup_state = match state.info.lock() {
+        Ok(info) => crate::tools::backup_folder_state(Some(&info), backup_folder.as_deref(), now),
+        Err(_) => Value::Null,
+    };
+    let exe = paths::current_exe().ok();
+    Ok(json!({
+        "look": Look::of(db).json(),
+        "clipboard": clipboard_json(db),
+        "backup": {
+            "folder": backup_folder,
+            "state": backup_state,
+            "last_read_age_s": db.meta_f64("last_sync_backup")?.map(|t| (now - t).max(0.0).round()),
+        },
+        "data": {
+            "folder": dir.to_string_lossy(),
+            "library": paths::database(&dir).to_string_lossy(),
+            "log": paths::log_file(&dir).to_string_lossy(),
+        },
+        "computer": { "name": state.computer_name, "version": env!("CARGO_PKG_VERSION"), "zone": exe.map(|p| p.to_string_lossy().to_string()) },
+        "removed": db.removed_count()?,
+    }))
+}
+
+/// Changes what the body names: `appearance`, `accent`, `clipboard`. Answers with the settings.
+fn change_settings(db: &mut Db, state: &WebState, body: &Value) -> Result<Value> {
+    let known = ["appearance", "accent", "clipboard"];
+    if let Some(other) = body.as_object().and_then(|o| o.keys().find(|k| !known.contains(&k.as_str()))) {
+        bail!("{other} is not a setting this page can change");
+    }
+    if let Some(value) = body.get("appearance") {
+        let choice = value.as_str().filter(|v| APPEARANCE_CHOICES.contains(v)).context("appearance must be system, light, dark or phone")?;
+        db.meta_set(SETTING_APPEARANCE, choice)?;
+    }
+    if let Some(value) = body.get("accent") {
+        let choice = value.as_str().filter(|v| *v == "phone" || ACCENTS.contains(v)).context("accent must be violet, ice, ember, mint, rose or phone")?;
+        db.meta_set(SETTING_ACCENT, choice)?;
+    }
+    if let Some(value) = body.get("clipboard") {
+        crate::clip::set_enabled(db, value.as_bool().context("clipboard must be true or false")?)?;
+    }
+    settings(db, state)
+}
+
+/// Which AI clients have zone registered, and what the agents there may do and see. Read
+/// from the clients' own settings, as `zone mcp status` does. Nothing is changed.
+fn agents() -> Result<Value> {
+    let status = crate::clients::status_json()?;
+    let shown: Vec<Value> = status["clients"]
+        .as_array()
+        .map(|list| list.iter().filter(|c| c["installed"] == true || c["state"] != "not_registered").cloned().collect())
+        .unwrap_or_default();
+    Ok(json!({ "zone": status["zone"], "automatic": status["automatic"], "clients": shown }))
+}
+
+/// Whether a newer zone is out: the same question `zone update --check` asks, asked at most
+/// twice a day however often the page looks (`again` asks now).
+fn update_answer(again: bool) -> Value {
+    static LAST: Mutex<Option<(f64, Value)>> = Mutex::new(None);
+    let now = paths::now_unix();
+    if !again
+        && let Ok(last) = LAST.lock()
+        && let Some((at, answer)) = last.as_ref()
+        && now - at < UPDATE_ANSWER_KEPT_SECONDS
+    {
+        return answer.clone();
+    }
+    let origin = paths::current_exe().map(|exe| crate::update::origin_of(&exe)).unwrap_or(crate::update::Origin::Script);
+    let answer = update_view(&crate::update::check(), origin);
+    if let Ok(mut last) = LAST.lock() {
+        *last = Some((now, answer.clone()));
+    }
+    answer
+}
+
+/// The check as the page shows it: one line of words beside the version, and how to update.
+fn update_view(check: &crate::update::Check, origin: crate::update::Origin) -> Value {
+    use crate::update::Check;
+    let mut view = crate::update::check_json(check, origin);
+    view["words"] = json!(match check {
+        Check::Latest { .. } => "Up to date".to_string(),
+        Check::Newer { latest, .. } => format!("{latest} is available"),
+        Check::Unknown(why) => format!("Could not check: {why}"),
+        Check::Off => "Checking for updates is turned off".to_string(),
+    });
+    view
+}
+
+// -------------------------------------------------------------------- phones
+
+fn phone_json(device: &Device, items: i64, now: f64) -> Value {
+    let age = |t: Option<f64>| t.map(|t| (now - t).max(0.0).round());
+    json!({
+        // The phone's public key: it names the phone to this page and is no secret.
+        "id": device.endpoint_id,
+        // What it is called here, then what the phone calls itself, then what was typed here.
+        "label": device.label(),
+        "name": device.name,
+        "nickname": device.nickname,
+        "app": device.app,
+        "paired_age_s": age(Some(device.paired_at)),
+        "last_sync_age_s": age(device.last_sync),
+        "last_seen_age_s": age(device.last_seen),
+        "items_received": device.items_received,
+        // Items in the library now that this phone delivered.
+        "items": items,
+        "last_path": device.last_path,
+        "appearance": device.appearance,
+        "accent": device.accent,
+    })
+}
+
+/// Gives a phone a name on this computer. An empty name goes back to the phone's own.
+fn rename_phone(db: &mut Db, body: &Value) -> Result<Value> {
+    let id = body.get("id").and_then(Value::as_str).context("id is required: the phone's id")?;
+    let nickname = body.get("nickname").and_then(Value::as_str);
+    if !db.set_device_nickname(id, nickname)? {
+        bail!("no such paired phone");
+    }
+    let device = db.device(id)?.context("no such paired phone")?;
+    Ok(json!({ "id": device.endpoint_id, "label": device.label(), "name": device.name, "nickname": device.nickname }))
+}
+
+/// Forgets a paired phone, as `zone unpair` does. Its items stay.
+fn unpair(db: &mut Db, body: &Value) -> Result<Value> {
+    let id = body.get("id").and_then(Value::as_str).context("id is required: the phone's id")?;
+    let device = db.device(id)?.context("no such paired phone")?;
+    db.remove_device(&device.endpoint_id)?;
+    crate::events::record(db, "unpaired", json!({ "device": device.name, "device_id": device.endpoint_id }));
+    Ok(json!({ "unpaired": device.endpoint_id, "label": device.label() }))
 }
 
 fn status(db: &mut Db, state: &WebState) -> Result<Value> {
     let clock = Clock::system();
     let now = unix(clock.now);
     let age = |t: Option<f64>| t.map(|t| (now - t).max(0.0).round());
-    let phones: Vec<Value> = db
-        .devices()?
-        .iter()
-        .map(|d| {
-            json!({
-                "name": d.name,
-                "app": d.app,
-                "last_sync_age_s": age(d.last_sync),
-                "items_received": d.items_received,
-                "last_path": d.last_path,
-            })
-        })
-        .collect();
+    // Words removed more than thirty days ago go now: the page asks this every few seconds
+    // while it is open, and every sync asks it too.
+    db.erase_old_removed(now)?;
+    let by_phone = db.counts_by_phone()?;
+    let devices = db.devices()?;
+    let count_of = |phone_id: &Option<String>| by_phone.iter().find(|(id, _)| id.is_some() && id == phone_id).map(|(_, n)| *n).unwrap_or(0);
+    let phones: Vec<Value> = devices.iter().map(|d| phone_json(d, count_of(&d.phone_id), now)).collect();
+    // Items no paired phone is recorded for: read from a backup folder, or sent by a phone
+    // that has since been unpaired.
+    let paired: Vec<&String> = devices.iter().filter_map(|d| d.phone_id.as_ref()).collect();
+    let from_none: i64 = by_phone.iter().filter(|(id, _)| id.is_none()).map(|(_, n)| *n).sum();
+    let from_unpaired: i64 = by_phone.iter().filter(|(id, _)| id.as_ref().is_some_and(|id| !paired.contains(&id))).map(|(_, n)| *n).sum();
+
+    // The page counts a voice note once: its recording is folded into the note.
+    let shown = Filter { fold_note_recordings: true, ..Filter::default() };
     let mut by_kind = Map::new();
-    for (kind, count) in db.counts_by_kind()? {
+    for (kind, count) in db.counts_by_kind_filtered(&shown)? {
         by_kind.insert(kind, json!(count));
     }
     let mut by_source = Map::new();
@@ -541,25 +998,46 @@ fn status(db: &mut Db, state: &WebState) -> Result<Value> {
                 by_source.insert(source, json!(count));
             }
     }
+    let folded = db.count_folded(&shown)?;
+    if folded > 0 && let Some(count) = by_source.get("note").and_then(Value::as_i64) {
+        if count > folded { by_source.insert("note".to_string(), json!(count - folded)); } else { by_source.remove("note"); }
+    }
+    let notes = Filter { kinds: vec!["note".to_string()], ..Filter::default() };
+    let notes_all = db.count(&notes)?;
+    let notes_done = db.count_processed(&notes)?;
     let link_sync = db.meta_f64("last_sync_link")?;
     let backup_sync = db.meta_f64("last_sync_backup")?;
-    let total = db.total_items()?;
+    let total = db.count(&shown)?;
+    let done = db.count_processed(&Filter::default())?;
+    let removed = db.removed_count()?;
     let backup_folder = db.meta_get("backup_folder")?;
     let (relay_connected, relay_url, backup_folder_state) = match state.info.lock() {
         Ok(info) => (info.relay_connected, info.relay_url.clone(), crate::tools::backup_folder_state(Some(&info), backup_folder.as_deref(), now)),
         Err(_) => (false, None, Value::Null),
     };
+    let look = Look::from(db.meta_get(SETTING_APPEARANCE)?, db.meta_get(SETTING_ACCENT)?, &devices);
     Ok(json!({
         "computer": { "name": state.computer_name, "endpoint_id": state.endpoint_id, "version": env!("CARGO_PKG_VERSION") },
         "relay": { "connected": relay_connected, "url": relay_url },
         "phones": phones,
+        "items_without_a_phone": { "none_recorded": from_none, "unpaired": from_unpaired },
         "last_sync": { "link_age_s": age(link_sync), "backup_age_s": age(backup_sync) },
         "backup_folder": backup_folder,
         "backup_folder_state": backup_folder_state,
-        "items": { "total": total, "by_kind": by_kind, "dictations_by_source": by_source },
-        // Changes whenever anything arrives, so the page knows to refresh.
+        "items": {
+            "total": total,
+            "by_kind": by_kind,
+            "dictations_by_source": by_source,
+            "folded": folded,
+            "notes_open": notes_all - notes_done,
+            "notes_done": notes_done,
+            "removed": removed,
+        },
+        "look": look.json(),
+        // Changes whenever anything arrives or is marked, here or by an agent, so the page
+        // knows to refresh.
         "revision": format!(
-            "{total}:{}:{}:{}",
+            "{total}:{done}:{removed}:{}:{}:{}",
             link_sync.unwrap_or(0.0),
             backup_sync.unwrap_or(0.0),
             db.meta_f64("last_sync_flash")?.unwrap_or(0.0)
@@ -821,7 +1299,7 @@ mod tests {
         // A phone that only scanned the pairing code flashes 25 items: some frames as camera
         // pictures, the rest as frame bytes, with frames missing.
         let key = seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
-        let phone = crate::db::PhoneInfo { id: Some("PHONE-W".into()), name: Some("Web phone".into()), app: None };
+        let phone = crate::db::PhoneInfo { id: Some("PHONE-W".into()), name: Some("Web phone".into()), app: None, ..Default::default() };
         let items = crate::fakephone::synthetic_items(1000, 25);
         let sealed = seal::seal(&key, &seal::flash_json(&phone, &items)).unwrap();
         let encoder = Encoder::new(0xC0FFEE, &sealed, 300).unwrap();
@@ -883,7 +1361,7 @@ mod tests {
         let secret = "cd".repeat(32);
         state.db.lock().unwrap().create_offer(&secret, paths::now_unix(), 600.0).unwrap();
         let key = seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
-        let phone = crate::db::PhoneInfo { id: Some("PHONE-P".into()), name: Some("Parallel phone".into()), app: None };
+        let phone = crate::db::PhoneInfo { id: Some("PHONE-P".into()), name: Some("Parallel phone".into()), app: None, ..Default::default() };
         let sealed = seal::seal(&key, &seal::flash_json(&phone, &crate::fakephone::synthetic_items(3000, 40))).unwrap();
         // Larger frames, as a phone may choose: 900 bytes each (version 21 codes).
         let encoder = Encoder::new(0xBEEF, &sealed, 900).unwrap();
@@ -919,7 +1397,7 @@ mod tests {
         let secret = "ef".repeat(32);
         state.db.lock().unwrap().create_offer(&secret, paths::now_unix(), 600.0).unwrap();
         let key = seal::key_bytes(&crate::flash::flash_key(&secret).unwrap()).unwrap();
-        let phone = crate::db::PhoneInfo { id: Some("PHONE-C".into()), name: Some("Color phone".into()), app: None };
+        let phone = crate::db::PhoneInfo { id: Some("PHONE-C".into()), name: Some("Color phone".into()), app: None, ..Default::default() };
         let sealed = seal::seal(&key, &seal::flash_json(&phone, &crate::fakephone::synthetic_items(5000, 300))).unwrap();
         let encoder = Encoder::new(0xC010, &sealed, 900).unwrap();
         let post = |target: &str, body: Vec<u8>| {
@@ -967,7 +1445,7 @@ mod tests {
         assert_eq!(status["items"]["by_kind"]["note"], 11);
         assert_eq!(status["computer"]["endpoint_id"], "7f".repeat(32));
 
-        let first = get("/api/items");
+        let first = get("/api/items?days=1");
         assert_eq!((first["total"].as_i64(), first["items"].as_array().unwrap().len()), (Some(130), PAGE_LIMIT));
         let cursor = first["next_cursor"].as_str().unwrap();
         let second = get(&format!("/api/items?cursor={cursor}"));
