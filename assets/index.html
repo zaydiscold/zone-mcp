@@ -816,9 +816,9 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     document.querySelectorAll("[data-open-count]").forEach((node) => { if (!S.phone) node.textContent = plural(S.status.items.notes_open, "open", "open"); });
     if (!quiet) toast(done ? plural(ids.length, "item", "items") + " marked done." : plural(ids.length, "item", "items") + " open again.", () => setDone(ids, !done, true));
   }
-  async function copyItems(ids) {
+  async function copyItems(ids, markdown) {
     if (!ids.length) return;
-    if (ids.length === 1 && S.items.get(ids[0])) {
+    if (!markdown && ids.length === 1 && S.items.get(ids[0])) {
       const item = S.items.get(ids[0]);
       if (item.kind === "meeting") { await copyText((await api("/api/export?" + qs({ ids: item.id, format: "txt" }))).content); }
       else await copyText(await wholeText(item));
@@ -852,7 +852,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     const ids = [...S.sel];
     bar.replaceChildren(h("span", null, plural(ids.length, "selected", "selected")),
       btn(null, "Done", () => { setDone(ids, true); clearSelection(); }),
-      btn(null, "Copy as Markdown", () => copyItems(ids.length === 1 ? ids.concat([""]).filter(Boolean) : ids).then(clearSelection)),
+      btn(null, "Copy as Markdown", () => copyItems(ids, true).then(clearSelection)),
       btn(null, "Export", () => openExport({ ids })),
       btn(null, "Remove", () => removeItems(ids)),
       btn(null, "Clear", clearSelection));

@@ -679,6 +679,12 @@ Every test runs in a temporary `ZONE_HOME` and a temporary home folder. A hidden
 reconnects with a saved identity, sends synthetic items or a JSONL file in frames, and prints the
 acks. `--relay-only` removes its IP transports so every packet goes through the relay.
 
+To look at the page without your own library, fill a throwaway one: `zone dev synthetic --demo
+--count 400 > demo.jsonl` writes a made-up library that reads like a real one (notes to tick off,
+meetings with several speakers, clips, voice notes with their recordings), and `zone dev fake-phone
+--file demo.jsonl` sends it. `--appearance` and `--accent` make the fake phone say how Zone looks
+on it. Run both with `ZONE_HOME` set to an empty folder and `zone serve --port` on another port.
+
 Flash can be tested without a phone or a camera. `zone dev flash-encode` draws the codes a phone
 would show as numbered PNG pictures, and `zone dev flash-decode` reads a folder of such pictures
 back, whatever the files are called and whatever size the codes are drawn at:
