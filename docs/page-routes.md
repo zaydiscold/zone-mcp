@@ -53,7 +53,8 @@ Examples: `#/history?kinds=meeting,note&range=7`, `#/history?q=ferry&done=open`,
 ## The phone
 
 `phone=<id>` on any address shows only what came from one paired phone, and `phone=none` only
-items no phone is on record for (read from a backup folder). `phone=all` clears it. The id is
+items no paired phone is on record for (read from a backup folder, or sent by a phone that has
+been unpaired since). `phone=all` clears it, and so does an id that is not a paired phone's. The id is
 the phone's `id` in `GET /api/status` (its endpoint id, as `zone devices` prints it). The page
 remembers the choice on this computer and takes the parameter out of the address, so a later
 link without `phone` keeps showing the chosen phone until it is changed in the bar's menu.
