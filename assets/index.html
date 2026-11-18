@@ -1439,7 +1439,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       h("div", { class: "line" }, h("div", { class: "l" }, "zone " + set.computer.version, h("small", null, "on " + set.computer.name)), versionLine), how,
       h("div", { class: "line" }, h("div", { class: "l" }, "Your library", h("small", { class: "path" }, set.data.library))),
       h("div", { class: "line" }, h("div", { class: "l" }, "Log", h("small", { class: "path" }, set.data.log))),
-      h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Everything is kept in that folder on this computer. This page loads nothing from the internet. Opening Settings lets zone ask GitHub, at most twice a day, whether a newer zone is out."))));
+      h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Everything is kept in that folder on this computer. This page loads nothing from the internet. While it is open, zone asks GitHub, at most twice a day, whether a newer zone is out."))));
     api("/api/update").then((u) => {
       if (my !== seq) return;
       versionLine.textContent = u.words;
@@ -1565,8 +1565,22 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     else if (key === "s" && S.cur && document.querySelector(".row.cur")) { done(); toggleSelect(S.cur); }
   });
 
-  refreshStatus(true).then(route);
+  // A newer zone is said once per version, to whoever has the page open, and stays until it is
+  // answered. zone keeps GitHub's answer for twelve hours, so this asks GitHub at most twice a
+  // day however often the page is opened (see /api/update).
+  async function tellOfUpdate() {
+    let u;
+    try { u = await api("/api/update"); } catch (_) { return; }
+    if (!u.newer || !u.latest || store.get("toldOf", "") === u.latest) return;
+    const box = $("toast"), told = () => { store.set("toldOf", u.latest); box.hidden = true; };
+    clearTimeout(toastTimer);
+    box.replaceChildren("zone " + u.latest + " is available.", btn(null, "How to update", () => { told(); go("settings"); }), btn(null, "Later", told));
+    box.hidden = false;
+  }
+
+  refreshStatus(true).then(route).then(tellOfUpdate);
   setInterval(refreshStatus, 5000);
+  setInterval(tellOfUpdate, 6 * 3600 * 1000);
 })();
 </script>
 </body>

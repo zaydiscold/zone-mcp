@@ -113,8 +113,10 @@ zone update            # is a newer zone out? If so, download it, check it and s
 zone update --check    # only say
 ```
 
-zone never looks for updates by itself. `zone update` and `zone doctor` ask GitHub once, when you
-run them, which release is the latest (`ZONE_NO_UPDATE_CHECK=1` turns even that off). An update is
+zone never installs an update by itself. `zone update` and `zone doctor` ask GitHub once, when you
+run them, which release is the latest, and while the web page is open zone asks at most twice a
+day and the page tells you once when a newer one is out (`ZONE_NO_UPDATE_CHECK=1` turns all of
+that off). With no page open and no command run, zone asks nobody. An update is
 the install script run again: same download, same checksum, and a zone that starts at login is
 restarted so the new one is the one running. On macOS and Linux a zone that is running also looks
 at its own program file every few seconds, and when another version has taken its place it stops
@@ -617,9 +619,9 @@ The four kinds of item:
 - **The web page is local.** It listens on 127.0.0.1 only, needs a random key that `zone open`
   passes to your browser, refuses requests under any other host name, and loads nothing from the
   internet. Everything it can change (done, remove, a phone's name, unpairing, its settings) is a
-  POST that needs that key and is refused when it comes from any other site. Opening its Settings
-  lets zone itself ask GitHub whether a newer zone is out, at most twice a day, as `zone update
-  --check` does (`ZONE_NO_UPDATE_CHECK=1` turns that off).
+  POST that needs that key and is refused when it comes from any other site. While the page is
+  open, zone itself asks GitHub whether a newer zone is out, at most twice a day, as `zone update
+  --check` does, and the page says so once per version (`ZONE_NO_UPDATE_CHECK=1` turns that off).
 - **Agents read what you let them, and what they read leaves your computer.** An MCP client that
   has zone registered can read the whole library unless you narrow it: `zone mcp install <client>
   --notes-only`, `--kinds note,meeting` or `--no-keyboard` (see [Choosing what an agent can

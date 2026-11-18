@@ -1774,6 +1774,8 @@ mod tests {
         let page = body(route(&with_cookie(head(Method::GET, "/"), &state), &state, "n"));
         assert!(page.contains(&format!("data-zone=\"{}\"", env!("CARGO_PKG_VERSION"))) && !page.contains("__VERSION__"));
         assert!(PAGE.contains("reloadIfReplaced(next.computer && next.computer.version)"));
+        // And it tells whoever has it open of a newer release, once per version.
+        assert!(PAGE.contains("refreshStatus(true).then(route).then(tellOfUpdate)") && PAGE.contains("store.set(\"toldOf\", u.latest)"));
         let status = get_json(&state, "/api/status");
         assert_eq!(status["computer"]["version"], env!("CARGO_PKG_VERSION"));
     }

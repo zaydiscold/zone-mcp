@@ -1,9 +1,10 @@
 //! `zone update`: is there a newer release, and if so, install it.
 //!
-//! Nothing here runs by itself. `zone update` and `zone doctor` ask GitHub once, when a person
-//! runs them, which release is the latest: one request, a few seconds at most, and when it
-//! cannot be answered (no network, no `curl`) zone says so and carries on. The daemon never
-//! asks.
+//! Nothing here installs anything by itself. `zone update` and `zone doctor` ask GitHub once,
+//! when a person runs them, which release is the latest: one request, a few seconds at most,
+//! and when it cannot be answered (no network, no `curl`) zone says so and carries on. The
+//! daemon asks only for the web page, while someone has it open, and keeps the answer for
+//! twelve hours (see `update_answer` in web.rs).
 //!
 //! The request is made with the `curl` every supported system has, rather than with a second
 //! TLS stack inside zone. Installing is done by the same script that installed zone
