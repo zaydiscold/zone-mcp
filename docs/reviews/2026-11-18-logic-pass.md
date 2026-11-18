@@ -17,7 +17,7 @@ Status is "fixed in" a commit, or "left" with the reason.
 
 | # | What | How to see it | Severity | Status |
 |---|---|---|---|---|
-| U1 | After an update the zone that is running is still the old one unless a login item restarts it, and nothing names the running version. | 0.1.1 `zone serve` on a spare port, `zone update` beside it: file is 0.1.3, process is the same pid, `zone status` says only "running". | high | open |
+| U1 | After an update the zone that is running is still the old one unless a login item restarts it, and nothing names the running version. | 0.1.1 `zone serve` on a spare port, `zone update` beside it: file is 0.1.3, process is the same pid, `zone status` says only "running". | high | fixed in 750a594 (`zone status` and `zone doctor` name the running version) and 6ce7468 (a running zone starts the version that replaced it, on macOS and Linux; test `a_running_zone_starts_the_version_that_replaced_it`). Reaches people from the release after 0.1.3: a 0.1.1 to 0.1.3 zone still has to be stopped and started once. |
 | U2 | A page left open never notices that zone was replaced. It keeps running the old page's script against the new zone. | Open the page, restart zone as another version, wait: nothing happens until a manual reload. | high | open |
 | U3 | Nobody is told a newer release exists unless they run `zone update` or `zone doctor` or open Settings. | Read `src/web.rs` (`/api/update` is asked by Settings only) and `src/update.rs`. | high | open |
 | U4 | `zone update` gives up at GitHub's API limit although the download needs no API. | `ZONE_UPDATE_URL=file://.../rate-limit.json zone update --check`: "GitHub answered: API rate limit exceeded", exit 1. | medium | open |
@@ -37,7 +37,7 @@ moved, never written into a running program; drafts and prereleases are never "l
 
 | # | What | How to see it | Severity | Status |
 |---|---|---|---|---|
-| P1 | Removing a note brings the recording behind it into view: the same words reappear as a dictation in History, in search, in exports and in the counts. | Remove one demo note: `folded` 50 to 49, dictations 327 to 328, "Note recording" 1 to 2, a search for the note's words still finds them. | high | open |
+| P1 | Removing a note brings the recording behind it into view: the same words reappear as a dictation in History, in search, in exports and in the counts. | Remove one demo note: `folded` 50 to 49, dictations 327 to 328, "Note recording" 1 to 2, a search for the note's words still finds them. | high | fixed in 108221a: removing a note takes the recording behind it along and putting it back returns both (test `removing_a_note_takes_the_recording_behind_it_along`). |
 | P2 | CSV exports let a spreadsheet run a formula: text beginning with `=`, `+`, `-` or `@` is written as it is. | Export an item whose text is `=HYPERLINK("http://evil","x")` as CSV and open it in a spreadsheet. | medium | open |
 | P3 | On Notes, the heading ("56 open, 0 done") does not change when a note is ticked, while the tab's count does. | Tick one note: tab says 55, heading still says 56 open, 0 done. | medium | open |
 | P4 | An open meeting does not change when the phone sends the finished transcript. | Open a meeting that is still transcribing, send it again with a title and text: six seconds later the page still shows the empty one. | medium | open |
