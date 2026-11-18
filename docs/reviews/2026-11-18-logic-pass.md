@@ -150,8 +150,11 @@ a zone older than the app is replaced at launch and one newer is kept (U6); `swi
 - **A real update from this build to a later release**: there is no later release. A copy of
   this checkout built as 0.1.4 stood in, and the test suite's stand-in release server.
 - **Flash by camera** for a removed item: unit test only.
-- **The page inside Zone for Mac's History window** was not driven by hand after the fixes; it
-  is the same page, and the app's own check of it is part of its build.
+- **The page inside Zone for Mac's History window** was asked what it showed, not looked at:
+  the sandbox keeps its windows out of sight. It is the same page. Seen there: it loads, and
+  after the zone under it was replaced it loaded that version's page by itself (between ten
+  and twenty seconds, slower than a browser tab in front because a page out of sight gets its
+  timers once a second at most; it now also asks the moment it is looked at again).
 - **The signed app**: the app was built unsigned into a folder of its own for the sandbox.
   `mac/build` (the notarized 0.1.3 disk image) was not touched, so the fixes to the app are in
   the source and not in that image.
