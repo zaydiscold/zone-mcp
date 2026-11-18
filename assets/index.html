@@ -649,7 +649,15 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
     R.view = parts[0] || "home";
     R.arg = parts.slice(1).map(decodeURIComponent).join("/");
     R.p = Object.fromEntries(new URLSearchParams(cut < 0 ? "" : raw.slice(cut + 1)));
-    if ("phone" in R.p) { S.phone = R.p.phone === "all" ? "" : R.p.phone; store.set("phone", S.phone); delete R.p.phone; }
+    if ("phone" in R.p) {
+      // A link can name a phone that has been unpaired since: then it shows every phone's
+      // items, and the view is not asked for a phone zone no longer knows.
+      const known = R.p.phone === "all" || R.p.phone === "none" || !S.status || S.status.phones.some((p) => p.id === R.p.phone);
+      const before = S.phone;
+      S.phone = known && R.p.phone !== "all" ? R.p.phone : ""; store.set("phone", S.phone); delete R.p.phone;
+      // The bar names the phone the link chose.
+      if (before !== S.phone && S.status) renderStatus();
+    }
   }
   function href(view, arg, params) {
     const out = new URLSearchParams();

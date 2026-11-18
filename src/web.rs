@@ -1791,6 +1791,8 @@ mod tests {
             assert!(accent == "violet" || PAGE.contains(&format!(":root[data-accent=\"{accent}\"]")), "{accent}");
         }
         assert!(!PAGE.contains(" style=\"") && !PAGE.contains("onclick="), "nothing the policy would block");
+        // A link that names a phone no longer paired shows everything, it does not fail.
+        assert!(PAGE.contains("S.status.phones.some((p) => p.id === R.p.phone)"));
     }
 
 }
