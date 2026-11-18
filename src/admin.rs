@@ -154,6 +154,23 @@ pub fn pair_check(id: &str, as_json: bool) -> Result<bool> {
     Ok(claimed)
 }
 
+/// What to say when the zone that is running is not the version of this program. None when
+/// it is the same one, or when the running zone did not say.
+///
+/// It happens after every update that could not restart zone (a `zone serve` in a terminal,
+/// a zone that Zone for Mac started), and when two copies of zone are on one computer.
+pub fn another_version_running(running: &str, this: &str) -> Option<String> {
+    let running = running.trim();
+    if running.is_empty() || running == this {
+        return None;
+    }
+    Some(if crate::update::is_newer(this, running) {
+        format!("zone {running} is still running. The program is {this} now: stop zone and start it again to run {this}.")
+    } else {
+        format!("zone {running} is running, and this copy of the program is {this}. There are two copies of zone on this computer.")
+    })
+}
+
 /// `zone status`
 pub fn status(as_json: bool) -> Result<()> {
     let dir = paths::data_dir()?;
@@ -166,6 +183,9 @@ pub fn status(as_json: bool) -> Result<()> {
         Some(d) => json!({
             "running": true,
             "pid": d.pid,
+            // The version that is running, which is not always this program's: an update
+            // replaces the file, and a zone nothing restarted carries on as the old one.
+            "version": d.version,
             "endpoint_id": d.endpoint_id,
             "web_page": format!("http://127.0.0.1:{}/", d.http_port),
             "relay_connected": d.relay_connected,
@@ -182,6 +202,9 @@ pub fn status(as_json: bool) -> Result<()> {
     match &daemon {
         Some(d) => {
             println!("Zone is running (pid {}).", d.pid);
+            if let Some(line) = another_version_running(&d.version, crate::update::current_version()) {
+                println!("  Version       {line}");
+            }
             println!("  Endpoint id   {}", d.endpoint_id);
             println!("  Web page      http://127.0.0.1:{}/  (open with `zone open`)", d.http_port);
             match (&d.relay_url, d.relay_connected) {
@@ -718,7 +741,10 @@ fn run_checks() -> Vec<Check> {
     let daemon = DaemonInfo::read_if_running(&dir);
     match &daemon {
         Some(d) => {
-            checks.push(ok("Daemon", format!("running, pid {}", d.pid)));
+            match another_version_running(&d.version, crate::update::current_version()) {
+                Some(line) => checks.push(warn("Daemon", format!("running, pid {}", d.pid), line)),
+                None => checks.push(ok("Daemon", format!("running, pid {}", d.pid))),
+            }
             match (&d.relay_url, d.relay_connected) {
                 (Some(url), true) => checks.push(ok("Relay", format!("connected to {url}"))),
                 _ if paths::now_unix() - d.started_at < 20.0 => {
@@ -822,5 +848,20 @@ fn version_check() -> Check {
         }
         Found::Unknown(why) => ok("Version", format!("zone {this} (could not ask whether a newer one is out: {why})")),
         Found::Off => ok("Version", format!("zone {this} (not asking whether a newer one is out)")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zone_left_running_after_an_update_is_named() {
+        assert_eq!(another_version_running("0.1.3", "0.1.3"), None);
+        assert_eq!(another_version_running("", "0.1.3"), None);
+        let old = another_version_running("0.1.1", "0.1.3").unwrap();
+        assert!(old.contains("zone 0.1.1 is still running") && old.contains("start it again to run 0.1.3"), "{old}");
+        let two = another_version_running("0.1.3", "0.1.2").unwrap();
+        assert!(two.contains("zone 0.1.3 is running") && two.contains("two copies"), "{two}");
     }
 }

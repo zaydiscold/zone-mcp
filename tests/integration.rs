@@ -232,6 +232,8 @@ fn link_pairing_and_sync_over_iroh() {
     assert_eq!(status["phones"][0]["name"], "Fake iPhone");
     assert_eq!(status["phones"][0]["items_received"], 600);
     assert_eq!(status["daemon"]["running"], true);
+    // The version that is running is said, so that a zone left running by an update shows.
+    assert_eq!(status["daemon"]["version"], env!("CARGO_PKG_VERSION"));
 
     // Reconnect with the saved identity and no secret: accepted.
     let report = phone(&sandbox, &["--identity", identity, "--count", "100", "--start-index", "600", "--addr", &addr]);
