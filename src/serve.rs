@@ -40,6 +40,8 @@ pub enum Stop {
     /// meant for a test copy) is not the person asking zone to stop, so zone exits the way a
     /// process ended by that signal reports it: 128 plus the signal. The login item's
     /// "restart unless it exited successfully" then brings zone back ten seconds later.
+    // Only Unix delivers these; on Windows a console close ends the process without telling it.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Signal(i32),
 }
 
