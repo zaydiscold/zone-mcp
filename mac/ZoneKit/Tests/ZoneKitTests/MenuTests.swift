@@ -8,6 +8,31 @@ final class MenuTests: XCTestCase {
         ZoneItem(id: id, kind: kind, createdAt: 1_794_000_000, text: text, title: title, processedAt: processed)
     }
 
+    func testAVoiceNoteIsListedAndCountedOnce() {
+        // A voice note is two items in the library: the recording (a dictation whose source
+        // is "note") and the note saved when it ended. The page shows the note alone.
+        let recording = ZoneItem(id: "r1", kind: "dictation", createdAt: 1000, text: "pick up the saffron", duration: 20, source: "note")
+        let note = ZoneItem(id: "n1", kind: "note", createdAt: 1021, text: "pick up the saffron")
+        let alone = ZoneItem(id: "r2", kind: "dictation", createdAt: 5000, text: "never saved as a note", duration: 20, source: "note")
+        let typed = ZoneItem(id: "k1", kind: "dictation", createdAt: 1010, text: "typed by voice", source: "keyboard")
+        let recent = [alone, note, typed, recording]
+        XCTAssertTrue(MenuContent.isRecording(recording, behindOneOf: [note]))
+        XCTAssertFalse(MenuContent.isRecording(alone, behindOneOf: [note]))
+        XCTAssertFalse(MenuContent.isRecording(typed, behindOneOf: [note]))
+        XCTAssertFalse(MenuContent.isRecording(recording, behindOneOf: [ZoneItem(id: "n2", kind: "note", createdAt: 1141, text: "saved too late")]))
+        XCTAssertEqual(MenuContent.rows(segment: .all, recent: recent, ofKind: nil, shownAbove: []).map(\.id), ["r2", "n1", "k1"])
+        XCTAssertEqual(MenuContent.rows(segment: .dictation, recent: recent, ofKind: nil, shownAbove: []).map(\.id), ["r2", "k1"])
+        // A list of one kind read by itself is folded against the notes the app knows.
+        XCTAssertEqual(MenuContent.rows(segment: .dictation, recent: [], ofKind: [alone, typed, recording], shownAbove: [], notes: [note]).map(\.id), ["r2", "k1"])
+        XCTAssertEqual(MenuContent.rows(segment: .dictation, recent: [], ofKind: [alone, typed, recording], shownAbove: []).map(\.id), ["r2", "k1", "r1"], "without its note, a recording stands by itself")
+        // And the numbers beside the kinds leave them out, as the page's do.
+        let items = StatusReport.Items(total: 12, byKind: ["dictation": 8, "note": 3, "meeting": 1], recordingsBehindNotes: 2)
+        XCTAssertEqual(ListSegment.all.count(in: items), 10)
+        XCTAssertEqual(ListSegment.dictation.count(in: items), 6)
+        XCTAssertEqual(ListSegment.note.count(in: items), 3)
+        XCTAssertEqual(ListSegment.all.count(in: StatusReport.Items(total: 12, byKind: ["dictation": 8])), 12, "an older zone does not say, and nothing is taken off")
+    }
+
     func testAllLeavesOutWhatIsShownAboveTheList() {
         let recent = [item("clip", "clip"), item("d1", "dictation"), item("n1", "note"), item("m1", "meeting"), item("d2", "dictation")]
         let rows = MenuContent.rows(segment: .all, recent: recent, ofKind: nil, shownAbove: ["clip", "n1", "m1"])

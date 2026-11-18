@@ -595,6 +595,17 @@ final class AppModel {
         if let list = try? await client.list(kinds: [kind], limit: 60) {
             kindLists[kind] = list.items
         }
+        // The dictations are listed without the recordings behind voice notes, and telling
+        // which those are takes the notes.
+        if kind == "dictation", kindLists["note"] == nil, let notes = try? await client.list(kinds: ["note"], limit: 60) {
+            kindLists["note"] = notes.items
+        }
+    }
+
+    /// The notes the app has read, whichever list they came in: what the menu folds the
+    /// recordings behind voice notes against.
+    var knownNotes: [ZoneItem] {
+        openNotes + (kindLists["note"] ?? [])
     }
 
     /// What is shown above the menu's list, so "All" does not list it a second time.

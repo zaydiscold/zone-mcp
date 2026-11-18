@@ -87,21 +87,28 @@ public struct StatusReport: Decodable, Equatable, Sendable {
     public struct Items: Decodable, Equatable, Sendable {
         public var total: Int
         public var byKind: [String: Int]
+        /// Dictations that are the recording behind a voice note which is itself in the
+        /// library: the same words a second time. The menu counts and lists a voice note
+        /// once, as the page does. Zero from a zone before 0.1.4, which does not say.
+        public var recordingsBehindNotes: Int
 
         enum CodingKeys: String, CodingKey {
             case total
             case byKind = "by_kind"
+            case recordingsBehindNotes = "recordings_behind_notes"
         }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
             byKind = try c.decodeIfPresent([String: Int].self, forKey: .byKind) ?? [:]
+            recordingsBehindNotes = try c.decodeIfPresent(Int.self, forKey: .recordingsBehindNotes) ?? 0
         }
 
-        public init(total: Int = 0, byKind: [String: Int] = [:]) {
+        public init(total: Int = 0, byKind: [String: Int] = [:], recordingsBehindNotes: Int = 0) {
             self.total = total
             self.byKind = byKind
+            self.recordingsBehindNotes = recordingsBehindNotes
         }
     }
 
@@ -297,9 +304,10 @@ public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
         lastSegmentEnd = (try? c.decodeIfPresent(Extra.self, forKey: .extra))?.segments?.compactMap(\.end).max()
     }
 
-    public init(id: String, kind: String, createdAt: Double, text: String, title: String? = nil, words: Int = 0, receivedAt: Double? = nil, duration: Double? = nil, processedAt: Double? = nil) {
+    public init(id: String, kind: String, createdAt: Double, text: String, title: String? = nil, words: Int = 0, receivedAt: Double? = nil, duration: Double? = nil, processedAt: Double? = nil, source: String? = nil) {
         self.id = id
         self.kind = kind
+        self.source = source
         self.createdAt = createdAt
         self.text = text
         self.title = title

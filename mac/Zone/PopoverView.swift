@@ -439,7 +439,8 @@ private struct MainPage: View {
             segment: navigation.segment,
             recent: model.recent,
             ofKind: navigation.segment.kind.flatMap { model.kindLists[$0] },
-            shownAbove: model.shownAboveList
+            shownAbove: model.shownAboveList,
+            notes: model.knownNotes
         )
     }
 
