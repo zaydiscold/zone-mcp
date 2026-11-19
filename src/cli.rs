@@ -186,14 +186,17 @@ pub fn search(db: &Db, query: &str, args: &FilterArgs, order: Option<&str>, limi
             .map(|hit| {
                 let mut value = item_json(&hit.row, &clock);
                 value["snippet"] = json!(hit.snippet);
+                value["matched"] = json!(hit.matched);
                 value
             })
             .collect();
-        writeln!(out, "{}", serde_json::to_string_pretty(&json!({ "total": result.total, "matched": result.matched, "next_cursor": next_cursor, "items": items }))?)?;
+        writeln!(out, "{}", serde_json::to_string_pretty(&json!({ "total": result.total, "matched": result.legacy_matched(), "next_cursor": next_cursor, "items": items }))?)?;
         return Ok(());
     }
     for hit in &result.hits {
-        print_card(&mut out, &hit.row, &clock, &hit.snippet.replace('\n', " "))?;
+        let snippet = hit.snippet.replace('\n', " ");
+        let body = if hit.matched == crate::db::CLOSE_SPELLING || hit.matched == crate::db::ANY_WORD { format!("({}) {snippet}", hit.matched) } else { snippet };
+        print_card(&mut out, &hit.row, &clock, &body)?;
     }
     if result.hits.is_empty() && offset == 0 {
         writeln!(out, "Nothing matches \"{query}\".")?;
@@ -210,8 +213,9 @@ pub fn search(db: &Db, query: &str, args: &FilterArgs, order: Option<&str>, limi
     } else {
         writeln!(out, "\n{} {}.", result.total, if result.total == 1 { "match" } else { "matches" })?;
     }
-    if result.matched == "prefix" {
-        writeln!(out, "No whole word matched, so words were matched by their beginnings.")?;
+    if !result.respelled.is_empty() {
+        let tried: Vec<String> = result.respelled.iter().map(|(word, spellings)| format!("\"{word}\" as {}", spellings.join(", "))).collect();
+        writeln!(out, "Found nowhere as typed, so tried {}.", tried.join("; "))?;
     }
     Ok(())
 }

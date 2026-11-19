@@ -161,7 +161,7 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         "query".into(),
         json!({
             "type": "string",
-            "description": "Words to find. Every word must appear. Use \"double quotes\" for an exact phrase, OR between alternatives, and a trailing * for the beginning of a word (transcri*). Case and accents do not matter."
+            "description": "Words to find. Items with every word (in any form: plural, tense) come first. When fewer than 3 items have them all, items with close spellings of a word found nowhere (speech recognition mishears names) and items with some of the words follow, each marked in \"matched\". \"Double quotes\" match an exact phrase, OR gives alternatives, a trailing * matches the beginning of a word (transcri*). Case and accents do not matter."
         }),
     );
     search_properties.extend(common_filters(scope));
@@ -191,7 +191,7 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         ToolDef {
             name: "search_items",
             title: "Search the spoken library",
-            description: format!("{}{limit}", "Full-text search over everything the person dictated: dictations (mostly messages typed by voice in other apps), voice notes, meeting transcripts and titles, and clips (text they sent to this computer on purpose). Returns the best matches with a snippet around the matching words (matches are wrapped in [brackets]), plus the total number of matches and a truncated flag when there are more than were returned. Narrow with start, end, kinds or sources."),
+            description: format!("{}{limit}", "Search everything the person said and sent (dictations, voice notes, meeting transcripts and titles, clips) for words, best match first. It copes with speech: other word forms always match, and when few items have every word it adds close spellings and items with some of the words, saying for each how it matched (all words, close spelling, any word). Returns snippets with the matching words in [brackets], the total, `more` and next_cursor when there is another page, and a note saying why when nothing matches. Narrow with when (\"last week\"), kinds or sources; get_items reads a match in full."),
             input_schema: json!({ "type": "object", "properties": search_properties, "required": ["query"], "additionalProperties": false }),
             read_only: true,
         },
@@ -610,7 +610,7 @@ fn empty_note(db: &Db, filter: &Filter, clock: &Clock, query: Option<&str>) -> R
 
 fn search_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
     let Some(query) = opt_string(args, "query")? else {
-        bail!("query is required: the words to look for");
+        bail!("query is required: the words to look for, for example {{\"query\": \"lease renewal\"}}");
     };
     let clock = clock(args)?;
     let (filter, range) = filter(args, &clock, scope)?;
@@ -619,7 +619,7 @@ fn search_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result
         Some(text) => SearchCursor::decode(&text)?.0,
         None => 0,
     };
-    let result = db.search_page(&query, &filter, None, limit, offset)?;
+    let result = db.search_wide(&query, &filter, None, limit, offset, crate::db::BROADEN_BELOW)?;
     let next_cursor = SearchCursor::next(offset, result.hits.len(), result.total).map(|c| c.encode());
     let items: Vec<Value> = result
         .hits
@@ -634,38 +634,53 @@ fn search_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result
                 entry.insert("title".into(), json!(title));
             }
             entry.insert("words".into(), json!(hit.row.words));
+            entry.insert("matched".into(), json!(hit.matched));
             entry.insert("snippet".into(), json!(hit.snippet));
             entry.insert("processed".into(), json!(hit.row.processed_at.is_some()));
             Value::Object(entry)
         })
         .collect();
-    let truncated = next_cursor.is_some();
+    let more = next_cursor.is_some();
+    let mut notes = Vec::new();
+    if result.broadened && result.total > 0 {
+        let few = match result.all_words {
+            0 => "No item has every word".to_string(),
+            1 => "Only 1 item has every word".to_string(),
+            n => format!("Only {n} items have every word"),
+        };
+        notes.push(format!("{few}, so items with close spellings or some of the words follow, best first. Each item's \"matched\" says which: all words, close spelling or any word."));
+    }
+    if !result.respelled.is_empty() {
+        let tried: Vec<String> = result.respelled.iter().map(|(word, spellings)| format!("\"{word}\" as {}", spellings.join(", "))).collect();
+        notes.push(format!("Found nowhere as typed, so tried: {}. Speech recognition often writes a word this way.", tried.join("; ")));
+    }
+    if more {
+        let shown = if offset == 0 {
+            format!("This page has the {} best of {} matches.", items.len(), result.total)
+        } else {
+            format!("This page has matches {} to {} of {}.", offset + 1, offset + items.len(), result.total)
+        };
+        notes.push(format!("{shown} There are more: call search_items again with cursor set to next_cursor (keep the other arguments), or narrow with when, kinds or sources."));
+    }
+    if result.total == 0 {
+        notes.push(format!("{} Try other words or spellings: names and rare words are often misheard.", empty_note(db, &filter, &clock, Some(&query))?));
+    }
     let mut out = Map::new();
     out.insert("query".into(), json!(query));
     out.insert("range".into(), range);
     out.insert("total".into(), json!(result.total));
+    out.insert("all_words".into(), json!(result.all_words));
+    out.insert("matched".into(), json!(result.matched));
     out.insert("returned".into(), json!(items.len()));
-    out.insert("truncated".into(), json!(truncated));
+    out.insert("more".into(), json!(more));
+    out.insert("truncated".into(), json!(more));
     out.insert("next_cursor".into(), json!(next_cursor));
-    if truncated {
-        let shown = if offset == 0 {
-            format!("Showing the {} best of {} matches.", items.len(), result.total)
-        } else {
-            format!("Showing matches {} to {} of {}.", offset + 1, offset + items.len(), result.total)
-        };
-        out.insert(
-            "note".into(),
-            json!(format!("{shown} Pass next_cursor as cursor for the ones after, or narrow with start, end, kinds or sources.")),
-        );
+    if !result.respelled.is_empty() {
+        let map: Map<String, Value> = result.respelled.iter().map(|(word, spellings)| (word.clone(), json!(spellings))).collect();
+        out.insert("respelled".into(), Value::Object(map));
     }
-    match result.matched {
-        "prefix" => {
-            out.insert("matched".into(), json!("No whole-word match, so words were matched by their beginnings."));
-        }
-        "substring" => {
-            out.insert("matched".into(), json!("The query has no searchable words, so it was matched as literal text."));
-        }
-        _ => {}
+    if !notes.is_empty() {
+        out.insert("note".into(), json!(notes.join(" ")));
     }
     out.insert("items".into(), json!(items));
     Ok(Value::Object(out))
@@ -1197,6 +1212,26 @@ mod tests {
         assert_eq!((ids(&out), out["truncated"].as_bool()), (vec!["C-NOTE".to_string()], Some(false)));
         let out = call(&mut db, "search_items", &args(json!({ "query": "zebra" })), false).unwrap();
         assert_eq!(out["total"], 0);
+    }
+
+    #[test]
+    fn search_says_how_each_item_matched() {
+        let mut db = library();
+        // Another form of the word is still every word.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "harbors" })), false).unwrap();
+        assert_eq!((out["total"].as_i64(), out["matched"].as_str(), out["items"][0]["matched"].as_str()), (Some(2), Some("all words"), Some("all words")));
+        // One item has every word, so the ones with some follow, marked, with a note.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "harbor trip" })), false).unwrap();
+        assert_eq!((out["all_words"].as_i64(), out["items"][0]["id"].as_str(), out["items"][1]["matched"].as_str()), (Some(1), Some("C-NOTE"), Some("any word")));
+        assert!(out["note"].as_str().unwrap().contains("Only 1 item has every word"), "{out}");
+        // A word found nowhere is tried with the library's close spellings, and that is said.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "harbr" })), false).unwrap();
+        assert_eq!((out["matched"].as_str(), &out["respelled"]), (Some("close spelling"), &json!({ "harbr": ["harbor"] })));
+        assert!(out["note"].as_str().unwrap().contains("\"harbr\" as harbor"), "{out}");
+        // Nothing at all: why, and what to try.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "zebra", "kinds": ["note"] })), false).unwrap();
+        let note = out["note"].as_str().unwrap();
+        assert!(note.contains("the words \"zebra\"") && note.contains("misheard"), "{note}");
     }
 
     #[test]

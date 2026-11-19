@@ -625,7 +625,7 @@ fn items(db: &mut Db, query: &HashMap<String, String>) -> Result<Value> {
     if let Some(q) = search {
         let result = db.search(q, &filter, Some(order), SEARCH_LIMIT)?;
         let list: Vec<Value> = result.hits.iter().map(|hit| views.item(&hit.row, Some(&hit.snippet))).collect();
-        return Ok(json!({ "total": result.total, "items": list, "next_cursor": null, "matched": result.matched, "day_counts": {}, "rail": rail }));
+        return Ok(json!({ "total": result.total, "items": list, "next_cursor": null, "matched": result.legacy_matched(), "day_counts": {}, "rail": rail }));
     }
 
     // The calendar's dots, only when asked for: they take a pass over everything selected.
