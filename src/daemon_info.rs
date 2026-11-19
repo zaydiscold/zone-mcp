@@ -36,6 +36,10 @@ pub struct DaemonInfo {
     /// How the watch on the backup folder is going.
     #[serde(default)]
     pub backup: BackupWatch,
+    /// This zone ends when asked through `stop.request` (see background.rs). Zones from before
+    /// that existed leave it out, and are ended by their process id instead.
+    #[serde(default)]
+    pub stops_on_request: bool,
 }
 
 /// The state of the daemon's watch on the backup folder. It lives here, not in the library,
@@ -104,7 +108,25 @@ pub fn acquire(dir: &Path) -> Result<Option<DaemonLock>> {
 }
 
 fn acquire_once(dir: &Path) -> Result<Option<DaemonLock>> {
-    let path = paths::daemon_lock(dir);
+    acquire_file(&paths::daemon_lock(dir))
+}
+
+/// Takes the lock held in this file, waiting up to `patience` for whoever holds it to let go.
+pub fn acquire_waiting(path: &Path, patience: std::time::Duration) -> Result<Option<DaemonLock>> {
+    let deadline = std::time::Instant::now() + patience;
+    loop {
+        if let Some(lock) = acquire_file(path)? {
+            return Ok(Some(lock));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn acquire_file(path: &Path) -> Result<Option<DaemonLock>> {
+    let path = path.to_path_buf();
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -121,8 +143,12 @@ fn acquire_once(dir: &Path) -> Result<Option<DaemonLock>> {
 
 /// True when a daemon holds the lock right now.
 pub fn is_running(dir: &Path) -> bool {
-    let path = paths::daemon_lock(dir);
-    let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+    is_locked(&paths::daemon_lock(dir))
+}
+
+/// True when some process holds the lock in this file right now.
+pub fn is_locked(path: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
         return false;
     };
     match file.try_lock() {

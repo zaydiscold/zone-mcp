@@ -14,6 +14,13 @@ publish = false
 name = "zone"
 path = "src/main.rs"
 
+# Windows only (elsewhere it says so and does nothing): starts zone.exe with no console
+# window, for the login entry. A program of its own because Windows opens a console window for
+# a console program before that program can do anything about it.
+[[bin]]
+name = "zonew"
+path = "src/bin/zonew.rs"
+
 [dependencies]
 anyhow = "1"
 chacha20poly1305 = "0.11"
@@ -38,9 +45,22 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync", "signal"] }
 
-# Only to notice that whoever was reading `zone events --follow` has gone away.
+# Only to notice that whoever was reading `zone events --follow` has gone away, and to stop a
+# zone by its process id.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The clipboard and the person's own registry values (the login entry), called directly: see
+# src/win.rs. Already in the build through tokio and iroh, so this adds no new crate.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3"

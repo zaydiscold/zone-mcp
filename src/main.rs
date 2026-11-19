@@ -21,6 +21,7 @@ macro_rules! eprint {
 }
 
 mod admin;
+mod background;
 mod backup;
 mod cli;
 mod clients;
@@ -48,6 +49,8 @@ mod tools;
 mod update;
 mod watch;
 mod web;
+#[cfg(windows)]
+mod win;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -86,7 +89,18 @@ enum Command {
         /// Write the log file only, nothing to the terminal
         #[arg(long)]
         quiet: bool,
+        /// Run in the background with no window, and start zone again if it stops without
+        /// being asked to (`zone stop` stops it). What `zone install` starts at login on Windows
+        #[arg(long)]
+        background: bool,
+        /// Use this data folder (what ZONE_HOME says otherwise). For the Windows login entry
+        #[arg(long, value_name = "DIR", hide = true)]
+        home: Option<PathBuf>,
     },
+    /// Start zone in the background (through the login item, when there is one)
+    Start,
+    /// Stop zone until the next login or `zone start`. Nothing starts it again meanwhile
+    Stop,
     /// Show a one-use code (and link) to pair an iPhone. Valid for ten minutes
     Pair {
         /// Print the link without the QR code
@@ -305,6 +319,10 @@ enum Command {
         /// Do not register zone with AI clients, now or when it starts
         #[arg(long)]
         no_mcp: bool,
+        /// Only bring the login item up to date and run this version (what the installer does
+        /// after an update). AI clients are left as they are
+        #[arg(long, hide = true, conflicts_with = "no_mcp")]
+        only_login_item: bool,
     },
     /// Stop zone and no longer start it at login. Your library is kept
     Uninstall {
@@ -625,7 +643,23 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Serve { port, quiet } => return runtime()?.block_on(serve::run(serve::Options { port, quiet })),
+        Command::Serve { port, quiet, background, home } => {
+            if let Some(home) = home {
+                // SAFETY: nothing else runs yet. The main thread only waits for this one, and no
+                // other thread has been started.
+                unsafe { std::env::set_var(paths::ENV_HOME, home) };
+            }
+            if background {
+                return background::serve_background(port);
+            }
+            return runtime()?.block_on(serve::run(serve::Options { port, quiet }));
+        }
+        Command::Start => service::start()?,
+        Command::Stop => {
+            if !service::stop()? {
+                return Ok(ExitCode::from(1));
+            }
+        }
         Command::Pair { no_qr, qr, relay, wait, no_wait, check, json } => {
             let show = if no_qr { Some(false) } else if qr { Some(true) } else { None };
             let wait = if wait { Some(true) } else if no_wait { Some(false) } else { None };
@@ -688,7 +722,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Some(McpAction::Uninstall { clients, all }) => clients::uninstall(&clients, all)?,
             Some(McpAction::Status { json }) => clients::status(json)?,
         },
-        Command::Install { no_start, no_mcp } => {
+        Command::Install { only_login_item: true, no_start, .. } => {
+            service::adopt_item_home();
+            service::install(!no_start)?
+        }
+        Command::Install { no_start, no_mcp, .. } => {
             service::install(!no_start)?;
             if no_mcp {
                 clients::stop_registering_by_itself();

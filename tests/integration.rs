@@ -40,6 +40,13 @@ impl Sandbox {
         Sandbox { _dir: dir, zone_home, home }
     }
 
+    /// Where this sandbox's Windows login entry is, under HKEY_CURRENT_USER: a key of its own,
+    /// never the real Run key.
+    fn run_key(&self) -> String {
+        let name = self.home.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        format!(r"Software\zone-test\{name}")
+    }
+
     /// `zone` with every path that could reach the real machine pointed into the sandbox.
     fn zone(&self) -> Command {
         let mut command = Command::new(ZONE);
@@ -59,7 +66,8 @@ impl Sandbox {
             .env_remove("CODEX_HOME")
             .env_remove("HERMES_HOME")
             .env_remove("ZONE_PORT")
-            .env_remove("ZONE_RELAY_URL");
+            .env_remove("ZONE_RELAY_URL")
+            .env("ZONE_WINDOWS_RUN_KEY", self.run_key());
         command
     }
 
@@ -101,6 +109,13 @@ impl Sandbox {
     fn daemon_info(&self) -> Option<Value> {
         let bytes = std::fs::read(self.zone_home.join("daemon.json")).ok()?;
         serde_json::from_slice(&bytes).ok()
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let _ = Command::new("reg").args(["delete", &format!(r"HKCU\{}", self.run_key()), "/f"]).output();
     }
 }
 
@@ -560,6 +575,173 @@ fn a_running_zone_starts_the_version_that_replaced_it() {
     assert!(sandbox.daemon_info().is_none(), "the old zone left daemon.json behind");
     assert_eq!(daemon.child.id(), pid);
     assert!(daemon.child.try_wait().unwrap().is_none(), "the new program is not running");
+}
+
+/// Ends a process by its id, the way a person in Task Manager (or `kill -9`) would.
+fn end_by_pid(pid: u64) {
+    #[cfg(unix)]
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+    #[cfg(windows)]
+    let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+}
+
+fn keeper_info(sandbox: &Sandbox) -> Option<Value> {
+    serde_json::from_slice(&std::fs::read(sandbox.zone_home.join("supervisor.json")).ok()?).ok()
+}
+
+fn wait_until(seconds: u64, what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what} within {seconds} seconds");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Whatever a test started in the background, stopped when it ends however it ends.
+struct InBackground<'a>(&'a Sandbox);
+
+impl Drop for InBackground<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.run(&["stop"]);
+        for info in [keeper_info(self.0), self.0.daemon_info()].into_iter().flatten() {
+            if let Some(pid) = info["pid"].as_u64() {
+                end_by_pid(pid);
+            }
+        }
+    }
+}
+
+/// Windows has no service manager to start zone again when something ends it, so zone's own
+/// keeper does: `zone serve --background` (what the Windows login entry runs). A zone ended by
+/// anything but `zone stop` comes back. `zone stop` stops it and it stays stopped, and `zone
+/// start` starts it again. The same keeper runs on every system, so this runs everywhere.
+#[test]
+fn the_keeper_restarts_zone_until_it_is_stopped_on_purpose() {
+    let sandbox = Sandbox::new();
+    let _cleanup = InBackground(&sandbox);
+    let background = |args: &[&str]| -> Output { sandbox.zone().env("ZONE_RESTART_SECONDS", "0.3").args(args).output().unwrap() };
+    let text = |output: &Output| format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    let started = background(&["serve", "--background", "--port", "0"]);
+    assert!(started.status.success() && text(&started).contains("running in the background"), "{}", text(&started));
+    let first = sandbox.daemon_info().expect("zone is running")["pid"].as_u64().unwrap();
+    let keeper = keeper_info(&sandbox).expect("the keeper says who it is");
+    let keeper_pid = keeper["pid"].as_u64().unwrap();
+    assert_ne!(keeper_pid, first);
+    assert_eq!(keeper["version"], env!("CARGO_PKG_VERSION"));
+    // A second start finds it running.
+    let again = background(&["serve", "--background", "--port", "0"]);
+    assert!(text(&again).contains("already running"), "{}", text(&again));
+
+    // Ended from outside: back by itself, as another process.
+    end_by_pid(first);
+    wait_until(20, "zone did not come back", || sandbox.daemon_info().and_then(|d| d["pid"].as_u64()).is_some_and(|pid| pid != first));
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
+    assert!(log.contains("keeper: zone stopped without being asked to"), "{log}");
+    assert_eq!(keeper_info(&sandbox).unwrap()["pid"].as_u64(), Some(keeper_pid), "the same keeper carries on");
+
+    // Stopped on purpose: zone and its keeper end, and nothing starts zone again.
+    let stopped = sandbox.run(&["stop"]);
+    assert!(stopped.status.success() && text(&stopped).contains("Stopped zone"), "{}", text(&stopped));
+    assert!(sandbox.daemon_info().is_none() && !sandbox.json(&["status", "--json"])["daemon"]["running"].as_bool().unwrap());
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(!sandbox.json(&["status", "--json"])["daemon"]["running"].as_bool().unwrap(), "zone came back after `zone stop`");
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
+    assert!(log.contains("zone is stopping, as asked") && log.contains("keeper: zone was stopped on purpose"), "{log}");
+    let not_running = sandbox.run(&["stop"]);
+    assert!(not_running.status.success() && text(&not_running).contains("not running"), "{}", text(&not_running));
+
+    // `zone start` brings it back, kept running again.
+    let start = background(&["start"]);
+    assert!(start.status.success() && text(&start).contains("zone is running"), "{}", text(&start));
+    assert!(keeper_info(&sandbox).is_some());
+    assert!(sandbox.run(&["stop"]).status.success());
+    wait_until(10, "the keeper did not end", || !sandbox.zone_home.join("supervisor.json").exists());
+
+    // A `zone serve` in a terminal stops too, and calls it a success.
+    let mut daemon = Daemon::start(&sandbox);
+    assert!(sandbox.run(&["stop"]).status.success());
+    let status = daemon.child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
+}
+
+/// The login entry in this sandbox's own registry key, as `reg query` prints it.
+#[cfg(windows)]
+fn login_entry(sandbox: &Sandbox) -> Option<String> {
+    let out = Command::new("reg").args(["query", &format!(r"HKCU\{}", sandbox.run_key()), "/v", "Zone"]).output().unwrap();
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.lines().find_map(|line| line.split_once("REG_SZ").map(|(_, value)| value.trim().to_string()))
+}
+
+/// A Windows computer that had zone 0.1.3: its login entry ran a VBScript through wscript.exe.
+/// `zone install` replaces it with zonew.exe and no script, keeps the data folder the script
+/// gave, runs zone under its keeper (which brings zone back when something ends it), and
+/// `zone uninstall` removes exactly what it added and stops zone for good.
+#[cfg(windows)]
+#[test]
+fn the_windows_login_entry_replaces_the_vbscript_and_keeps_zone_running() {
+    let sandbox = Sandbox::new();
+    let _cleanup = InBackground(&sandbox);
+    std::fs::create_dir_all(&sandbox.zone_home).unwrap();
+    let exe = zone_exe();
+    // What zone 0.1.3 wrote.
+    let script = sandbox.zone_home.join("zone-serve.vbs");
+    std::fs::write(
+        &script,
+        format!(
+            "' Starts Zone Link at login without showing a window. Written by `zone install`.\r\nSet shell = CreateObject(\"WScript.Shell\")\r\nshell.Environment(\"PROCESS\")(\"ZONE_HOME\") = \"{}\"\r\nshell.Run \"\"\"{}\"\" serve --quiet\", 0, False\r\n",
+            sandbox.zone_home.display(),
+            exe.display()
+        ),
+    )
+    .unwrap();
+    let old = format!("wscript.exe \"{}\"", script.display());
+    let added = Command::new("reg").args(["add", &format!(r"HKCU\{}", sandbox.run_key()), "/v", "Zone", "/t", "REG_SZ", "/d", &old, "/f"]).output().unwrap();
+    assert!(added.status.success());
+
+    // `zone doctor` exits 1 while something is wrong, and says what.
+    let login_check = || -> Value {
+        let doctor: Value = serde_json::from_slice(&sandbox.run(&["doctor", "--json"]).stdout).unwrap();
+        doctor["checks"].as_array().unwrap().iter().find(|c| c["check"] == "Start at login").unwrap().clone()
+    };
+    let check = login_check();
+    assert!(check["result"] == "warn" && check["detail"].as_str().unwrap().contains("VBScript"), "{check}");
+
+    let install = |extra: &[(&str, &str)]| sandbox.zone().env("ZONE_PORT", "0").env("ZONE_RESTART_SECONDS", "0.3").envs(extra.iter().copied()).args(["install", "--no-mcp"]).output().unwrap();
+    let installed = install(&[]);
+    let out = String::from_utf8_lossy(&installed.stdout).to_string();
+    assert!(installed.status.success() && out.contains("Removed the old launcher script") && out.contains("it is running"), "{out}\n{}", String::from_utf8_lossy(&installed.stderr));
+    let entry = login_entry(&sandbox).expect("the login entry is there");
+    assert_eq!(entry, format!("\"{}\" serve --background --home \"{}\"", exe.with_file_name("zonew.exe").display(), sandbox.zone_home.display()));
+    assert!(!script.exists(), "the old script is still there");
+    let check = login_check();
+    assert_eq!(check["result"], "ok", "{check}");
+    let first = sandbox.daemon_info().unwrap()["pid"].as_u64().unwrap();
+    assert!(keeper_info(&sandbox).is_some());
+
+    // What zonew.exe starts: zone, kept running, with nothing to show for it.
+    end_by_pid(first);
+    wait_until(20, "zone did not come back", || sandbox.daemon_info().and_then(|d| d["pid"].as_u64()).is_some_and(|pid| pid != first));
+
+    // The installer after an update: whatever data folder it was started with, the login
+    // entry's is the one brought up to date, and the zone of this version is left running.
+    let elsewhere = sandbox.home.join("elsewhere");
+    let refreshed = sandbox.zone().env("ZONE_HOME", &elsewhere).args(["install", "--only-login-item"]).output().unwrap();
+    assert!(refreshed.status.success(), "{}", String::from_utf8_lossy(&refreshed.stderr));
+    assert!(!elsewhere.exists(), "the refresh used another data folder");
+    assert_eq!(login_entry(&sandbox).as_deref(), Some(entry.as_str()));
+
+    // Gone, and it stays gone.
+    let removed = sandbox.ok(&["uninstall"]);
+    assert!(removed.contains("Removed the login entry") && removed.contains("has been stopped"), "{removed}");
+    assert_eq!(login_entry(&sandbox), None);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(sandbox.daemon_info().is_none() && keeper_info(&sandbox).is_none());
+    let log = std::fs::read_to_string(sandbox.zone_home.join("zone.log")).unwrap();
+    assert!(log.contains("keeper: zone was stopped on purpose"), "{log}");
 }
 
 #[cfg(unix)]
@@ -1913,13 +2095,15 @@ fn install_ps1_installs_checks_and_updates() {
     let staging = folder.join("staging");
     std::fs::create_dir_all(&staging).unwrap();
     std::fs::copy(ZONE, staging.join("zone.exe")).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_zonew"), staging.join("zonew.exe")).unwrap();
     let asset = "zone-99.0.0-windows-x86_64.zip";
     let made = Command::new("powershell")
         .env_remove("PSModulePath")
         .args(["-NoProfile", "-Command"])
         .arg(format!(
-            "$ErrorActionPreference='Stop'; Compress-Archive -Path '{}' -DestinationPath '{}'; (Get-FileHash -LiteralPath '{}' -Algorithm SHA256).Hash",
+            "$ErrorActionPreference='Stop'; Compress-Archive -Path '{}','{}' -DestinationPath '{}'; (Get-FileHash -LiteralPath '{}' -Algorithm SHA256).Hash",
             staging.join("zone.exe").display(),
+            staging.join("zonew.exe").display(),
             folder.join(asset).display(),
             folder.join(asset).display()
         ))
@@ -1968,6 +2152,7 @@ fn install_ps1_installs_checks_and_updates() {
         let out = String::from_utf8_lossy(&first.stdout).to_string();
         assert!(first.status.success(), "{shell}: {out}\n{}", String::from_utf8_lossy(&first.stderr));
         assert!(out.contains("Downloading zone 99.0.0 for windows-x86_64") && out.contains(&format!("Installed zone {}", env!("CARGO_PKG_VERSION"))), "{shell}: {out}");
+        assert!(!out.contains("emulation"), "{shell}: {out}");
         assert!(out.contains("Next:") && out.contains("zone pair") && !out.contains("PATH"), "{shell}: {out}");
         assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(ZONE).unwrap(), "{shell}");
 
@@ -1975,8 +2160,18 @@ fn install_ps1_installs_checks_and_updates() {
         let again = run(&[("ZONE_VERSION", "v99.0.0")]);
         let out = String::from_utf8_lossy(&again.stdout).to_string();
         assert!(again.status.success() && out.contains("stop it and start it again"), "{shell}: {out}\n{}", String::from_utf8_lossy(&again.stderr));
-        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
-        assert_eq!(left, ["zone.exe"], "{shell}");
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        left.sort();
+        assert_eq!(left, ["zone.exe", "zonew.exe"], "{shell}");
+        assert_eq!(std::fs::read(dir.join("zonew.exe")).unwrap(), std::fs::read(env!("CARGO_BIN_EXE_zonew")).unwrap(), "{shell}");
+
+        // On ARM, a release without an ARM build installs the Intel one, and says so.
+        let arm = run(&[("ZONE_VERSION", "99.0.0"), ("ZONE_INSTALL_ARCH", "ARM64")]);
+        let out = String::from_utf8_lossy(&arm.stdout).to_string();
+        assert!(arm.status.success() && out.contains("no build for windows-aarch64") && out.contains("Downloading zone 99.0.0 for windows-x86_64"), "{shell}: {out}");
+        // A processor there is no build for at all is refused before anything is downloaded.
+        let other = run(&[("ZONE_INSTALL_ARCH", "x86")]);
+        assert!(!other.status.success() && String::from_utf8_lossy(&other.stderr).contains("no ready-made zone for Windows on x86"), "{shell}");
 
         // A version that was never released, and a server that is not there.
         let missing = run(&[("ZONE_VERSION", "1.2.3")]);
@@ -2364,35 +2559,48 @@ fn install_writes_the_login_item_without_loading_it() {
     let out = sandbox.ok(&["install", "--no-start"]);
     assert!(out.contains("Not started"), "{out}");
 
-    #[cfg(target_os = "macos")]
-    let path = sandbox.home.join("Library/LaunchAgents/wtf.zayd.zone.link.plist");
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let path = sandbox.home.join(".config/systemd/user/zone.service");
+    // On Windows nothing is written: the command to add the login entry is printed instead.
     #[cfg(windows)]
-    let path = sandbox.zone_home.join("zone-serve.vbs");
-
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} was not written", path.display()));
-    let exe = zone_exe();
-    assert!(text.contains(&*exe.to_string_lossy()), "the login item starts this program");
-    assert!(text.contains("serve"));
-    // ZONE_HOME was overridden, so the login item carries it.
-    assert!(text.contains("ZONE_HOME"));
-    assert!(text.contains(&*sandbox.zone_home.to_string_lossy()));
-
-    #[cfg(target_os = "macos")]
     {
-        assert!(text.contains("<key>RunAtLoad</key>"));
-        let lint = Command::new("plutil").arg("-lint").arg(&path).output().unwrap();
-        assert!(lint.status.success(), "{}", String::from_utf8_lossy(&lint.stdout));
+        assert!(out.contains("reg add HKCU") && out.contains(r#"zonew.exe\" serve --background --home \""#), "{out}");
+        assert!(out.contains(&*sandbox.zone_home.to_string_lossy()), "{out}");
+        let query = Command::new("reg").args(["query", &format!(r"HKCU\{}", sandbox.run_key()), "/v", "Zone"]).output().unwrap();
+        assert!(!query.status.success(), "the login entry was written");
+        assert_eq!(sandbox.json(&["status", "--json"])["daemon"]["running"], false);
+        let out = sandbox.ok(&["uninstall", "--no-stop"]);
+        assert!(out.contains("not set to start at login"), "{out}");
     }
 
-    // Nothing was started.
-    assert_eq!(sandbox.json(&["status", "--json"])["daemon"]["running"], false);
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "macos")]
+        let path = sandbox.home.join("Library/LaunchAgents/wtf.zayd.zone.link.plist");
+        #[cfg(not(target_os = "macos"))]
+        let path = sandbox.home.join(".config/systemd/user/zone.service");
 
-    // Removing it again, without touching anything that is running.
-    let out = sandbox.ok(&["uninstall", "--no-stop"]);
-    assert!(out.contains("no longer starts at login"), "{out}");
-    assert!(!path.exists());
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} was not written", path.display()));
+        let exe = zone_exe();
+        assert!(text.contains(&*exe.to_string_lossy()), "the login item starts this program");
+        assert!(text.contains("serve"));
+        // ZONE_HOME was overridden, so the login item carries it.
+        assert!(text.contains("ZONE_HOME"));
+        assert!(text.contains(&*sandbox.zone_home.to_string_lossy()));
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(text.contains("<key>RunAtLoad</key>"));
+            let lint = Command::new("plutil").arg("-lint").arg(&path).output().unwrap();
+            assert!(lint.status.success(), "{}", String::from_utf8_lossy(&lint.stdout));
+        }
+
+        // Nothing was started.
+        assert_eq!(sandbox.json(&["status", "--json"])["daemon"]["running"], false);
+
+        // Removing it again, without touching anything that is running.
+        let out = sandbox.ok(&["uninstall", "--no-stop"]);
+        assert!(out.contains("no longer starts at login"), "{out}");
+        assert!(!path.exists());
+    }
 }
 
 #[test]
