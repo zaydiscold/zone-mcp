@@ -53,6 +53,45 @@ jobs:
       - name: Test
         run: cargo test --locked --no-fail-fast
 
+  # Windows on ARM (many new laptops): the release builds zone there too. The image may lack
+  # rustup, and ring (under iroh) compiles its arm64 code for Windows with clang only.
+  test-windows-arm:
+    name: Test (Windows on ARM)
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rustup and clang
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            $init = Join-Path $env:RUNNER_TEMP 'rustup-init.exe'
+            Invoke-WebRequest https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe -OutFile $init
+            & $init -y --profile minimal --default-toolchain none --no-modify-path
+            Add-Content $env:GITHUB_PATH (Join-Path $env:USERPROFILE '.cargo\bin')
+          }
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            $llvm = 'C:\Program Files\LLVM\bin'
+            if (-not (Test-Path (Join-Path $llvm 'clang.exe'))) { choco install llvm --yes --no-progress }
+            Add-Content $env:GITHUB_PATH $llvm
+          }
+
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      - name: Test
+        run: cargo test --locked --no-fail-fast
+
   # The linter runs with the oldest Rust the project supports (rust-version in Cargo.toml), so
   # it also proves that version still builds everything, and a new Rust release with new lints
   # cannot turn a green build red by itself.
