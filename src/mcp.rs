@@ -17,8 +17,10 @@ use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse,
-        GetPromptResult, Implementation, JsonObject, ListPromptsResult, ListToolsResult, PaginatedRequestParams, Prompt,
-        PromptArgument, PromptMessage, Role, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+        GetPromptResult, Implementation, JsonObject, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+        ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, ReadResourceRequestParams,
+        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate, Role, ServerCapabilities,
+        ServerConfig, Tool, ToolAnnotations,
     },
     service::{NotificationContext, RequestContext, RoleServer},
     transport::stdio,
@@ -28,6 +30,7 @@ use serde_json::json;
 use crate::agents;
 use crate::db::Db;
 use crate::prompts;
+use crate::resources;
 use crate::tools::{self, Access};
 
 /// How often a running server looks at the agents switch, to tell its client when it changed.
@@ -112,8 +115,14 @@ fn off_tool() -> Tool {
 
 impl ServerHandler for ZoneServer {
     fn get_info(&self) -> ServerConfig {
-        let capabilities =
-            ServerCapabilities::builder().enable_tools().enable_tool_list_changed().enable_prompts().enable_prompts_list_changed().build();
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_tool_list_changed()
+            .enable_prompts()
+            .enable_prompts_list_changed()
+            .enable_resources()
+            .enable_resources_list_changed()
+            .build();
         let instructions = if self.agents_on() { tools::instructions(&self.access.scope) } else { agents::off_message() };
         ServerConfig::new(capabilities)
             .with_server_info(
@@ -132,7 +141,9 @@ impl ServerHandler for ZoneServer {
                 tokio::time::sleep(WATCH_EVERY).await;
                 let Ok(on) = db.lock().map(|db| agents::enabled(&db)) else { return };
                 if told_on.swap(on, Ordering::SeqCst) != on
-                    && (peer.notify_tool_list_changed().await.is_err() || peer.notify_prompt_list_changed().await.is_err())
+                    && (peer.notify_tool_list_changed().await.is_err()
+                        || peer.notify_prompt_list_changed().await.is_err()
+                        || peer.notify_resource_list_changed().await.is_err())
                 {
                     // The client has gone.
                     return;
@@ -181,6 +192,52 @@ impl ServerHandler for ZoneServer {
         }
         let text = prompts::render(def, &given, &self.access, false).map_err(|error| ErrorData::invalid_params(format!("{error:#}"), None))?;
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).with_description(def.description).into())
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        if !self.agents_on() {
+            return Ok(ListResourcesResult::default());
+        }
+        let list = resources::listed(&self.access.scope)
+            .into_iter()
+            .map(|r| Resource::new(r.uri, r.name).with_title(r.title).with_description(r.description).with_mime_type("text/markdown"))
+            .collect();
+        Ok(ListResourcesResult::with_all_items(list))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        if !self.agents_on() {
+            return Ok(ListResourceTemplatesResult::default());
+        }
+        let list = resources::TEMPLATES
+            .iter()
+            .map(|t| ResourceTemplate::new(t.uri_template, t.name).with_title(t.title).with_description(t.description).with_mime_type("text/markdown"))
+            .collect();
+        Ok(ListResourceTemplatesResult::with_all_items(list))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        if !self.agents_on() {
+            return Err(ErrorData::invalid_request(agents::off_message(), None));
+        }
+        let text = {
+            let db = self.db.lock().map_err(|_| ErrorData::internal_error("the library is unavailable", None))?;
+            resources::read(&db, &request.uri, &self.access.scope)
+        }
+        .map_err(|error| ErrorData::resource_not_found(format!("{error:#}"), None))?;
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(text, request.uri).with_mime_type("text/markdown")]).into())
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {

@@ -41,6 +41,7 @@ mod out;
 mod pairing;
 mod paths;
 mod prompts;
+mod resources;
 mod scope;
 mod serve;
 mod service;
