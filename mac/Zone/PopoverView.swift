@@ -29,6 +29,8 @@ final class PopoverNavigation {
     var focusSearch = 0
     /// True while the Agents page shows what to paste into another app.
     var otherAppOpen = false
+    /// True while every thing to ask is listed, not the first three.
+    var allPrompts = false
 }
 
 /// What opens when the Z in the menu bar is clicked.

@@ -483,6 +483,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 Task { await model.setAgentView(agent, view) }
             }
+        case "read":
+            // read:keyboard=off unticks one of What agents can read (keyboard, inzone, notes,
+            // meetings, clips), as a click on it does.
+            if let argument, let equals = argument.firstIndex(of: "=") {
+                var choices = model.sharedChoices ?? ReadChoices()
+                let on = argument[argument.index(after: equals)...] != "off"
+                switch argument[..<equals] {
+                case "keyboard": choices.keyboard = on
+                case "inzone": choices.inZone = on
+                case "notes": choices.notes = on
+                case "meetings": choices.meetings = on
+                case "clips": choices.clips = on
+                default: break
+                }
+                if !choices.isEmpty { Task { await model.setSharedView(choices.view(knowsClips: model.hasClips)) } }
+            }
         case "clipboard":
             // clipboard:on puts arriving clips on the clipboard, clipboard:off stops.
             model.setClipboardCopy(argument != "off")
@@ -557,6 +573,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "otherapp":
             // otherapp opens what to paste into an app zone does not know, otherapp:off closes it.
             statusItem.navigation.otherAppOpen = argument != "off"
+        case "prompts":
+            // prompts:all lists every thing to ask, prompts:few the first three,
+            // prompts:copy=ID copies one as its Copy button does.
+            switch argument {
+            case "all": statusItem.navigation.allPrompts = true
+            case "few": statusItem.navigation.allPrompts = false
+            case let value? where value.hasPrefix("copy="):
+                if let prompt = model.prompts?.prompts.first(where: { $0.id == value.dropFirst(5) }) {
+                    model.copyText(prompt.text, id: "prompt-\(prompt.id)")
+                }
+            default: break
+            }
         case "access":
             // access:off turns agent access off for every agent, access:on back on.
             Task { await model.setAgentAccess(argument != "off") }

@@ -85,7 +85,6 @@ final class ConnectMenu: NSObject {
 struct AgentsPage: View {
     let model: AppModel
     let navigation: PopoverNavigation
-    @State private var allPrompts = false
     @State private var contentHeight: CGFloat = 400
     @Environment(\.colorScheme) private var scheme
 
@@ -95,13 +94,20 @@ struct AgentsPage: View {
     var body: some View {
         VStack(spacing: 0) {
             PageHeader(title: "AI agents", navigation: navigation)
-            ScrollView {
-                content
-                    .background(GeometryReader { proxy in
-                        Color.clear.preference(key: ContentHeight.self, value: proxy.size.height)
-                    })
+            ScrollViewReader { proxy in
+                ScrollView {
+                    content
+                        .background(GeometryReader { proxy in
+                            Color.clear.preference(key: ContentHeight.self, value: proxy.size.height)
+                        })
+                }
+                .scrollIndicators(.automatic)
+                // Opening the whole list of things to ask brings it into view.
+                .onChange(of: navigation.allPrompts) { _, all in
+                    guard all else { return }
+                    withAnimation(Zone.motion) { proxy.scrollTo("prompts", anchor: .top) }
+                }
             }
-            .scrollIndicators(.automatic)
             .frame(height: min(contentHeight, room))
             .onPreferenceChange(ContentHeight.self) { height in
                 if height > 0 { contentHeight = height }
@@ -116,19 +122,24 @@ struct AgentsPage: View {
                 masterSwitch(access)
                 InsetHairline()
             }
-            if model.agentsLoaded {
-                readSection
-                InsetHairline()
+            // With the switch off, what is under it still works and is kept, and looks it.
+            VStack(alignment: .leading, spacing: 0) {
+                if model.agentsLoaded {
+                    readSection
+                    InsetHairline()
+                }
+                appsSection
+                if let prompts = model.prompts, !prompts.prompts.isEmpty {
+                    InsetHairline()
+                    promptsSection(prompts.prompts)
+                        .id("prompts")
+                }
             }
-            appsSection
-            if let prompts = model.prompts, !prompts.prompts.isEmpty {
-                InsetHairline()
-                promptsSection(prompts.prompts)
-            }
+            .opacity(model.agentAccess?.enabled == false ? 0.5 : 1)
         }
         .padding(.bottom, 8)
         .animation(Zone.motion, value: navigation.otherAppOpen)
-        .animation(Zone.motion, value: allPrompts)
+        .animation(Zone.motion, value: navigation.allPrompts)
         .animation(Zone.motion, value: model.agentAccess)
     }
 
@@ -367,7 +378,7 @@ struct AgentsPage: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close")
             }
-            Text("Paste this where the app lists its MCP servers: usually a file named mcp.json, or a Settings page called MCP. It reads what the apps above read.")
+            Text("Paste this where the app lists its MCP servers: usually a file named mcp.json, or a Settings page called MCP. It reads what you chose above.")
                 .font(.system(size: 11))
                 .foregroundStyle(Zone.muted(scheme))
                 .fixedSize(horizontal: false, vertical: true)
@@ -426,13 +437,13 @@ struct AgentsPage: View {
     // MARK: Things to ask
 
     private func promptsSection(_ prompts: [PromptList.Prompt]) -> some View {
-        let shown = allPrompts ? prompts : Array(prompts.prefix(3))
+        let shown = navigation.allPrompts ? prompts : Array(prompts.prefix(3))
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
                 Eyebrow("Things to ask")
                 Spacer(minLength: 8)
                 if prompts.count > 3 {
-                    Button(allPrompts ? "Fewer" : "All \(prompts.count)") { allPrompts.toggle() }
+                    Button(navigation.allPrompts ? "Fewer" : "All \(prompts.count)") { navigation.allPrompts.toggle() }
                         .buttonStyle(ZoneLinkButtonStyle(size: 12))
                 }
             }

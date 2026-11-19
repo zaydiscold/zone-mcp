@@ -202,6 +202,7 @@ final class StatusItemController: NSObject {
         }
         navigation.page = .main
         navigation.otherAppOpen = false
+        navigation.allPrompts = false
         model.search.clear()
         navigation.cursor = ListCursor()
     }
