@@ -62,12 +62,16 @@ pub struct Plan {
     pub data_dir: PathBuf,
     /// `ZONE_HOME`, when the person overrode the data directory.
     pub zone_home: Option<PathBuf>,
+    /// `ZONE_PORT`, when the person chose another port for the page. Carried by the Windows
+    /// login entry, which has no environment of its own.
+    pub port: Option<u16>,
 }
 
 impl Plan {
     pub fn current() -> Result<Plan> {
         let exe = paths::current_exe()?;
-        Ok(Plan { exe, data_dir: paths::ensure_data_dir()?, zone_home: paths::env_path(paths::ENV_HOME) })
+        let port = std::env::var("ZONE_PORT").ok().and_then(|value| value.trim().parse().ok());
+        Ok(Plan { exe, data_dir: paths::ensure_data_dir()?, zone_home: paths::env_path(paths::ENV_HOME), port })
     }
 }
 
@@ -141,10 +145,13 @@ pub fn systemd_unit(plan: &Plan) -> String {
 
 /// The command the Windows login entry runs: `zonew.exe`, which starts zone with no window,
 /// when it is beside zone (`zone.exe` itself otherwise, which shows a console for a moment).
-pub fn windows_run_command(exe: &Path, windowless: Option<&Path>, zone_home: Option<&Path>) -> String {
+pub fn windows_run_command(exe: &Path, windowless: Option<&Path>, zone_home: Option<&Path>, port: Option<u16>) -> String {
     // A Windows path cannot hold a double quote, so quoting is only putting it in quotes.
     let program = windowless.unwrap_or(exe);
     let mut command = format!("\"{}\" serve --background", program.to_string_lossy());
+    if let Some(port) = port {
+        command.push_str(&format!(" --port {port}"));
+    }
     if let Some(home) = zone_home {
         command.push_str(&format!(" --home \"{}\"", home.to_string_lossy().trim_end_matches('\\')));
     }
@@ -154,6 +161,11 @@ pub fn windows_run_command(exe: &Path, windowless: Option<&Path>, zone_home: Opt
 /// `zonew.exe` beside this zone, when it is there.
 pub fn windowless_launcher(exe: &Path) -> Option<PathBuf> {
     Some(exe.with_file_name("zonew.exe")).filter(|path| path.is_file())
+}
+
+/// The port a Windows login entry gives zone (`--port`), if any.
+pub fn windows_run_port(command: &str) -> Option<u16> {
+    command.split_once(" --port ")?.1.split_whitespace().next()?.parse().ok()
 }
 
 /// The program a login entry starts, and the data folder it gives zone (`--home`), if any.
@@ -271,6 +283,10 @@ pub fn adopt_item_home() {
         Some(home) => unsafe { std::env::set_var(paths::ENV_HOME, home) },
         None => unsafe { std::env::remove_var(paths::ENV_HOME) },
     }
+    match windows_run_port(&text) {
+        Some(port) => unsafe { std::env::set_var("ZONE_PORT", port.to_string()) },
+        None => unsafe { std::env::remove_var("ZONE_PORT") },
+    }
 }
 
 /// The login item, when it is this data folder's.
@@ -342,7 +358,7 @@ fn install_plan(plan: &Plan, start: bool) -> Result<()> {
 #[cfg(windows)]
 fn install_plan(plan: &Plan, start: bool) -> Result<()> {
     let windowless = windowless_launcher(&plan.exe);
-    let command = windows_run_command(&plan.exe, windowless.as_deref(), plan.zone_home.as_deref());
+    let command = windows_run_command(&plan.exe, windowless.as_deref(), plan.zone_home.as_deref(), plan.port);
     if !start {
         println!("Not started (--no-start). To start at login: reg add HKCU\\{} /v {WINDOWS_RUN_VALUE} /t REG_SZ /d \"{}\" /f", run_subkey(), command.replace('"', "\\\""));
         return Ok(());
@@ -629,6 +645,7 @@ mod tests {
             exe: PathBuf::from("/Users/zed/My Tools/zone & co/zone"),
             data_dir: PathBuf::from("/Users/zed/Library/Application Support/Zone"),
             zone_home: zone_home.map(PathBuf::from),
+            port: None,
         }
     }
 
@@ -681,17 +698,18 @@ mod tests {
         let exe = PathBuf::from("C:\\Users\\Zo\u{eb}\\AppData\\Local\\Zone\\bin\\zone.exe");
         // Spelled out: off Windows a backslash does not separate folders.
         let zonew = PathBuf::from("C:\\Users\\Zo\u{eb}\\AppData\\Local\\Zone\\bin\\zonew.exe");
-        let command = windows_run_command(&exe, Some(&zonew), None);
+        let command = windows_run_command(&exe, Some(&zonew), None, None);
         assert_eq!(command, "\"C:\\Users\\Zo\u{eb}\\AppData\\Local\\Zone\\bin\\zonew.exe\" serve --background");
         assert_eq!(windows_run_parts(&command), (Some(zonew.clone()), None));
         assert!(!is_vbs_command(&command));
         // A data folder of its own goes with it. A trailing backslash would escape the quote.
-        let with_home = windows_run_command(&exe, Some(&zonew), Some(Path::new(r"D:\zone data\")));
-        assert!(with_home.ends_with(r#" serve --background --home "D:\zone data""#), "{with_home}");
+        let with_home = windows_run_command(&exe, Some(&zonew), Some(Path::new(r"D:\zone data\")), Some(47913));
+        assert!(with_home.ends_with(r#" serve --background --port 47913 --home "D:\zone data""#), "{with_home}");
+        assert_eq!((windows_run_port(&with_home), windows_run_port(&command)), (Some(47913), None));
         assert_eq!(windows_run_parts(&with_home).1.as_deref(), Some(r"D:\zone data"));
         assert_eq!(item_home(&with_home).as_deref(), Some(r"D:\zone data"));
         // Without zonew.exe, zone.exe itself.
-        assert!(windows_run_command(&exe, None, None).starts_with("\"C:\\Users\\Zo\u{eb}\\AppData\\Local\\Zone\\bin\\zone.exe\" "));
+        assert!(windows_run_command(&exe, None, None, None).starts_with("\"C:\\Users\\Zo\u{eb}\\AppData\\Local\\Zone\\bin\\zone.exe\" "));
     }
 
     #[test]
