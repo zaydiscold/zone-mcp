@@ -40,6 +40,7 @@ mod mcp;
 mod out;
 mod pairing;
 mod paths;
+mod prompts;
 mod scope;
 mod serve;
 mod service;
@@ -207,6 +208,24 @@ enum Command {
         /// Print JSON instead of text
         #[arg(long, global = true)]
         json: bool,
+    },
+    /// Things to ask your agent: example prompts that use your library, to copy into any agent
+    #[command(
+        long_about = "Things to ask your agent: example prompts that use your library, to copy into any agent. Agents that \
+                      support MCP prompts offer the same ones as slash commands.\n\n  zone prompts                 the list\n  \
+                      zone prompts show <id>       one prompt's text, ready to paste\n  \
+                      zone prompts show what-did-i-say day=\"Wednesday 12pm to 5pm\"\n\n\
+                      The view flags (--notes-only, --kinds, --no-keyboard, --read-only) show the prompts, and the wording, \
+                      that an agent with that view gets."
+    )]
+    Prompts {
+        #[command(flatten)]
+        view: scope::ViewArgs,
+        /// Print JSON instead of text
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: Option<PromptsAction>,
     },
     /// Check the setup and explain how to fix anything that is wrong
     Doctor {
@@ -380,6 +399,19 @@ enum ClipboardAction {
     Off,
     /// Say whether it is on, and which clipboard tool zone would use
     Status,
+}
+
+#[derive(Subcommand)]
+enum PromptsAction {
+    /// Print one prompt's text, ready to paste. Arguments are name=value: day=Wednesday, topic="the lease"
+    Show {
+        /// The prompt's id from `zone prompts`
+        id: String,
+        /// name=value pairs for the prompt's arguments
+        args: Vec<String>,
+        #[command(flatten)]
+        view: scope::ViewArgs,
+    },
 }
 
 #[derive(Subcommand)]
@@ -692,6 +724,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             };
             agents::run(action, json)?
         }
+        Command::Prompts { view, json, action } => match action {
+            None => prompts::list(&tools::Access { read_only: view.read_only, scope: view.scope()? }, json)?,
+            Some(PromptsAction::Show { id, args, view: inner }) => {
+                let view = inner.or(&view);
+                prompts::show(&id, &args, &tools::Access { read_only: view.read_only, scope: view.scope()? }, json)?
+            }
+        },
         Command::Doctor { json } => {
             if !admin::doctor(json)? {
                 return Ok(ExitCode::from(1));

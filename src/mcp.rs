@@ -16,8 +16,9 @@ use anyhow::{Result, anyhow};
 use rmcp::{
     ErrorData, ServerHandler, ServiceExt,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, JsonObject,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse,
+        GetPromptResult, Implementation, JsonObject, ListPromptsResult, ListToolsResult, PaginatedRequestParams, Prompt,
+        PromptArgument, PromptMessage, Role, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
     },
     service::{NotificationContext, RequestContext, RoleServer},
     transport::stdio,
@@ -26,6 +27,7 @@ use serde_json::json;
 
 use crate::agents;
 use crate::db::Db;
+use crate::prompts;
 use crate::tools::{self, Access};
 
 /// How often a running server looks at the agents switch, to tell its client when it changed.
@@ -74,6 +76,27 @@ impl ZoneServer {
     }
 }
 
+/// The prompts this server offers, as MCP has them. None while agent access is off.
+fn prompt_list(access: &Access) -> Vec<Prompt> {
+    prompts::offered(&access.scope)
+        .into_iter()
+        .map(|def| {
+            let arguments: Vec<PromptArgument> = def
+                .args
+                .iter()
+                .map(|arg| {
+                    let description = match arg.default {
+                        Some(default) => format!("{} Default: {default}", arg.description),
+                        None => arg.description.to_string(),
+                    };
+                    PromptArgument::new(arg.name).with_description(description).with_required(arg.required)
+                })
+                .collect();
+            Prompt::new(def.id, Some(def.description), (!arguments.is_empty()).then_some(arguments)).with_title(def.title)
+        })
+        .collect()
+}
+
 /// The tool on offer while agent access is off.
 fn off_tool() -> Tool {
     let schema: JsonObject = json!({ "type": "object", "properties": {}, "additionalProperties": false }).as_object().cloned().unwrap_or_default();
@@ -89,7 +112,8 @@ fn off_tool() -> Tool {
 
 impl ServerHandler for ZoneServer {
     fn get_info(&self) -> ServerConfig {
-        let capabilities = ServerCapabilities::builder().enable_tools().enable_tool_list_changed().build();
+        let capabilities =
+            ServerCapabilities::builder().enable_tools().enable_tool_list_changed().enable_prompts().enable_prompts_list_changed().build();
         let instructions = if self.agents_on() { tools::instructions(&self.access.scope) } else { agents::off_message() };
         ServerConfig::new(capabilities)
             .with_server_info(
@@ -107,7 +131,9 @@ impl ServerHandler for ZoneServer {
             loop {
                 tokio::time::sleep(WATCH_EVERY).await;
                 let Ok(on) = db.lock().map(|db| agents::enabled(&db)) else { return };
-                if told_on.swap(on, Ordering::SeqCst) != on && peer.notify_tool_list_changed().await.is_err() {
+                if told_on.swap(on, Ordering::SeqCst) != on
+                    && (peer.notify_tool_list_changed().await.is_err() || peer.notify_prompt_list_changed().await.is_err())
+                {
                     // The client has gone.
                     return;
                 }
@@ -121,6 +147,40 @@ impl ServerHandler for ZoneServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult::with_all_items(self.tool_list()))
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        let list = if self.agents_on() { prompt_list(&self.access) } else { Vec::new() };
+        Ok(ListPromptsResult::with_all_items(list))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        if !self.agents_on() {
+            return Err(ErrorData::invalid_request(agents::off_message(), None));
+        }
+        let Some(def) = prompts::find(&request.name).filter(|def| def.offered(&self.access.scope)) else {
+            let names: Vec<&str> = prompts::offered(&self.access.scope).iter().map(|def| def.id).collect();
+            return Err(ErrorData::invalid_params(format!("no prompt is called \"{}\". This server offers: {}", request.name, names.join(", ")), None));
+        };
+        let mut given = std::collections::BTreeMap::new();
+        for (name, value) in request.arguments.unwrap_or_default() {
+            let text = match value {
+                serde_json::Value::String(text) => text,
+                serde_json::Value::Null => continue,
+                other => other.to_string(),
+            };
+            given.insert(name, text);
+        }
+        let text = prompts::render(def, &given, &self.access, false).map_err(|error| ErrorData::invalid_params(format!("{error:#}"), None))?;
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).with_description(def.description).into())
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
