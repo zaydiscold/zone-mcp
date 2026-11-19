@@ -151,8 +151,19 @@ public struct AppState: Codable, Equatable, Sendable {
     /// True once Zone has looked whether it may reach the local network, which the first
     /// time is what makes macOS ask. After that, looking again never asks.
     public var localNetworkAsked = false
+    /// The key that opens the menu from anywhere. Nil while it is off, which it is until
+    /// the person turns it on.
+    public var hotKey: HotKey?
+    /// The last key the person recorded, kept while the switch is off so turning it on again
+    /// brings the same one back.
+    public var recordedHotKey: HotKey?
+    /// True once the person has been told what pasting into another app needs.
+    public var pasteExplained = false
 
     public init() {}
+
+    /// The key the switch turns on.
+    public var hotKeyChoice: HotKey { hotKey ?? recordedHotKey ?? .suggested }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -162,6 +173,9 @@ public struct AppState: Codable, Equatable, Sendable {
         declinedTakeover = try c.decodeIfPresent(Bool.self, forKey: .declinedTakeover) ?? false
         pretendLoginItem = try c.decodeIfPresent(Bool.self, forKey: .pretendLoginItem) ?? false
         localNetworkAsked = try c.decodeIfPresent(Bool.self, forKey: .localNetworkAsked) ?? false
+        hotKey = try? c.decodeIfPresent(HotKey.self, forKey: .hotKey)
+        recordedHotKey = try? c.decodeIfPresent(HotKey.self, forKey: .recordedHotKey)
+        pasteExplained = try c.decodeIfPresent(Bool.self, forKey: .pasteExplained) ?? false
     }
 
     public static func load(from file: URL) -> AppState {

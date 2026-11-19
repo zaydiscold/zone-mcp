@@ -273,9 +273,11 @@ public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
     public var processedAt: Double?
     /// A meeting's length when zone gives no duration: where its last line ends.
     public var lastSegmentEnd: Double?
+    /// From `zone search` only: the words around the match, each matched word in [brackets].
+    public var snippet: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, source, text, title, words, carrier, extra
+        case id, kind, source, text, title, words, carrier, extra, snippet
         case createdAt = "created_at"
         case duration = "duration_s"
         case receivedAt = "received_at"
@@ -300,6 +302,7 @@ public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
         carrier = try c.decodeIfPresent(String.self, forKey: .carrier)
         receivedAt = try c.decodeIfPresent(Double.self, forKey: .receivedAt)
         processedAt = try c.decodeIfPresent(Double.self, forKey: .processedAt)
+        snippet = try c.decodeIfPresent(String.self, forKey: .snippet)
         // A field of another shape here is zone's business: the item still reads.
         lastSegmentEnd = (try? c.decodeIfPresent(Extra.self, forKey: .extra))?.segments?.compactMap(\.end).max()
     }
@@ -347,18 +350,23 @@ public struct ZoneItem: Decodable, Equatable, Sendable, Identifiable {
 public struct ItemList: Decodable, Equatable, Sendable {
     public var total: Int
     public var items: [ZoneItem]
+    /// From `zone search` only: "words", "prefix" (no whole word matched, so words were
+    /// matched by their beginnings) or "substring".
+    public var matched: String?
 
-    enum CodingKeys: String, CodingKey { case total, items }
+    enum CodingKeys: String, CodingKey { case total, items, matched }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
         items = try c.decodeIfPresent([ZoneItem].self, forKey: .items) ?? []
+        matched = try c.decodeIfPresent(String.self, forKey: .matched)
     }
 
-    public init(total: Int = 0, items: [ZoneItem] = []) {
+    public init(total: Int = 0, items: [ZoneItem] = [], matched: String? = nil) {
         self.total = total
         self.items = items
+        self.matched = matched
     }
 }
 
