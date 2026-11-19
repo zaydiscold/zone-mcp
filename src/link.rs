@@ -78,6 +78,9 @@ pub fn endpoint_id_text(key: &SecretKey) -> String {
 }
 
 /// A custom relay from the environment, when one is set.
+/// Set to 1 to use only the relay, never a direct path.
+const ENV_RELAY_ONLY: &str = "ZONE_LINK_RELAY_ONLY";
+
 pub fn custom_relay() -> Result<Option<RelayUrl>> {
     match std::env::var(ENV_RELAY_URL) {
         Ok(url) if !url.trim().is_empty() => {
@@ -94,6 +97,24 @@ pub async fn bind(key: SecretKey) -> Result<Endpoint> {
     let mut builder = Endpoint::builder(presets::N0).secret_key(key).alpns(vec![ALPN.to_vec()]);
     if let Some(relay) = custom_relay()? {
         builder = builder.relay_mode(RelayMode::custom([relay]));
+    }
+    // The relay is reached over HTTPS, so through the proxy when there is one (proxy.rs).
+    match crate::proxy::proxy_url().map(|text| (text.parse::<url::Url>(), text)) {
+        Some((Ok(url), text)) => {
+            info!("link: reaching the relay through the proxy {}", crate::proxy::for_log(&text));
+            builder = builder.proxy_url(url);
+        }
+        Some((Err(error), text)) => warn!("link: the proxy {} is not an address ({error}), so it is not used", crate::proxy::for_log(&text)),
+        None if crate::proxy::uses_setup_script() => {
+            info!("link: Windows finds its proxy through a setup script, which zone cannot follow. If the relay cannot be reached, set HTTPS_PROXY.")
+        }
+        None => {}
+    }
+    // Only the relay, never a direct path: what a network that blocks UDP leaves. For trying
+    // that out; zone falls back to the relay by itself on such a network anyway.
+    if std::env::var(ENV_RELAY_ONLY).is_ok_and(|value| value == "1") {
+        info!("link: relay only ({ENV_RELAY_ONLY}=1): phones reach this computer through the relay");
+        builder = builder.clear_ip_transports();
     }
     builder.bind().await.map_err(|e| anyhow!("cannot start the iroh endpoint: {e}"))
 }

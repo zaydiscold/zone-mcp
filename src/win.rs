@@ -14,7 +14,7 @@ use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GetHan
 use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
 use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
-use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RRF_NOEXPAND, RRF_RT_REG_BINARY, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW};
+use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RRF_NOEXPAND, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW};
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, HWND_MESSAGE};
 
 /// Text as Windows wants it: UTF-16, ending in a zero.
@@ -54,6 +54,12 @@ pub fn reg_get_string(subkey: &str, name: &str) -> Option<String> {
     let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
     let end = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
     Some(String::from_utf16_lossy(&units[..end]))
+}
+
+/// A number (DWORD) value under `HKEY_CURRENT_USER`.
+pub fn reg_get_dword(subkey: &str, name: &str) -> Option<u32> {
+    let bytes = get_value(subkey, name, RRF_RT_REG_DWORD)?;
+    Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
 }
 
 /// A binary value under `HKEY_CURRENT_USER`.

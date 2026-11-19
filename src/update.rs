@@ -96,6 +96,18 @@ fn release_of_address(address: &str) -> Option<(String, String)> {
     Some((tag.trim_start_matches(['v', 'V']).to_string(), address.to_string()))
 }
 
+/// `curl`, with no window, and through the proxy Windows is set to use (curl itself follows the
+/// proxy environment variables, not that setting). With `--proxy-user :` a proxy that asks who
+/// is there gets the person's Windows sign-in.
+fn curl() -> Command {
+    let mut command = Command::new("curl");
+    crate::background::hide(&mut command);
+    if let Some(proxy) = crate::proxy::system_proxy_only() {
+        command.args(["--proxy", &proxy, "--proxy-anyauth", "--proxy-user", ":"]);
+    }
+    command
+}
+
 /// Asks the website, not the API, which release is the latest, the way the install script
 /// does. GitHub's API answers an address only sixty times an hour (an office or a campus
 /// shares one address), and then says nothing useful, while the website and the download
@@ -107,7 +119,7 @@ fn latest_from_website(asked_elsewhere: bool) -> Option<(String, String)> {
         None if asked_elsewhere => return None,
         None => format!("https://github.com/{REPO}/releases/latest"),
     };
-    let output = Command::new("curl")
+    let output = curl()
         .args(["--silent", "--fail", "--location", "--max-time", &PATIENCE_SECONDS.to_string()])
         .args(["--output", if cfg!(windows) { "NUL" } else { "/dev/null" }, "--write-out", "%{url_effective}"])
         .args(["--user-agent", &format!("zone/{}", current_version())])
@@ -129,7 +141,7 @@ pub fn check() -> Check {
     let elsewhere = std::env::var(ENV_URL).ok().filter(|url| !url.trim().is_empty());
     let asked_elsewhere = elsewhere.is_some();
     let url = elsewhere.unwrap_or_else(|| format!("https://api.github.com/repos/{REPO}/releases/latest"));
-    let asked = Command::new("curl")
+    let asked = curl()
         .args(["--silent", "--show-error", "--location", "--max-time", &PATIENCE_SECONDS.to_string()])
         .args(["--header", "Accept: application/vnd.github+json", "--user-agent", &format!("zone/{}", current_version())])
         .arg(&url)

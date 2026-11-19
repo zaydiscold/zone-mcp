@@ -43,6 +43,8 @@ serde = { version = "1", features = ["derive"] }
 # arrives to the last bit. Without it about one in five arrives one binary digit off.
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.11"
+# Only to hand iroh the proxy address (proxy.rs). Already in the build through iroh.
+url = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync", "signal"] }
 
 # Only to notice that whoever was reading `zone events --follow` has gone away, and to stop a

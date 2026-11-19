@@ -40,6 +40,7 @@ mod mcp;
 mod out;
 mod pairing;
 mod paths;
+mod proxy;
 mod scope;
 mod serve;
 mod service;
