@@ -858,6 +858,7 @@ fn settings(db: &mut Db, state: &WebState) -> Result<Value> {
     Ok(json!({
         "look": Look::of(db).json(),
         "clipboard": clipboard_json(db),
+        "agents": crate::agents::status_json(db),
         "backup": {
             "folder": backup_folder,
             "state": backup_state,
@@ -875,7 +876,7 @@ fn settings(db: &mut Db, state: &WebState) -> Result<Value> {
 
 /// Changes what the body names: `appearance`, `accent`, `clipboard`. Answers with the settings.
 fn change_settings(db: &mut Db, state: &WebState, body: &Value) -> Result<Value> {
-    let known = ["appearance", "accent", "clipboard"];
+    let known = ["appearance", "accent", "clipboard", "agents"];
     if let Some(other) = body.as_object().and_then(|o| o.keys().find(|k| !known.contains(&k.as_str()))) {
         bail!("{other} is not a setting this page can change");
     }
@@ -890,18 +891,24 @@ fn change_settings(db: &mut Db, state: &WebState, body: &Value) -> Result<Value>
     if let Some(value) = body.get("clipboard") {
         crate::clip::set_enabled(db, value.as_bool().context("clipboard must be true or false")?)?;
     }
+    if let Some(value) = body.get("agents") {
+        crate::agents::set_enabled(db, value.as_bool().context("agents must be true or false")?, "page")?;
+    }
     settings(db, state)
 }
 
 /// Which AI clients have zone registered, and what the agents there may do and see. Read
-/// from the clients' own settings, as `zone mcp status` does. Nothing is changed.
+/// from the clients' own settings, as `zone mcp status` does. Nothing is changed. With them,
+/// the things to ask (`zone prompts`) and what to paste into any other app (`zone mcp config`).
 fn agents() -> Result<Value> {
     let status = crate::clients::status_json()?;
     let shown: Vec<Value> = status["clients"]
         .as_array()
         .map(|list| list.iter().filter(|c| c["installed"] == true || c["state"] != "not_registered").cloned().collect())
         .unwrap_or_default();
-    Ok(json!({ "zone": status["zone"], "automatic": status["automatic"], "clients": shown }))
+    let prompts = crate::prompts::list_json(&crate::tools::Access::default())["prompts"].clone();
+    let other_app = crate::clients::Launch::current(false, &crate::scope::Scope::default()).map(|launch| crate::clients::generic_snippet(&launch).text).ok();
+    Ok(json!({ "zone": status["zone"], "automatic": status["automatic"], "clients": shown, "prompts": prompts, "other_app": other_app }))
 }
 
 /// Whether a newer zone is out: the same question `zone update --check` asks, asked at most
@@ -1801,6 +1808,15 @@ mod tests {
         assert!(crate::clip::enabled(&state.db.lock().unwrap()));
         post_json(&state, "/api/settings", json!({ "clipboard": false }));
         assert!(!crate::clip::enabled(&state.db.lock().unwrap()));
+        // The agents switch is the one `zone agents` changes, and a change is in the feed.
+        assert_eq!(get_json(&state, "/api/settings")["agents"]["enabled"], true);
+        assert_eq!(json_body(post_json(&state, "/api/settings", json!({ "agents": false })))["agents"]["agents"], "off");
+        assert!(!crate::agents::enabled(&state.db.lock().unwrap()));
+        assert_eq!(post_json(&state, "/api/settings", json!({ "agents": "off" })).status(), StatusCode::BAD_REQUEST);
+        post_json(&state, "/api/settings", json!({ "agents": true }));
+        assert!(crate::agents::enabled(&state.db.lock().unwrap()));
+        let switched = state.db.lock().unwrap().events(None, None, 50).unwrap().into_iter().filter(|e| e.event == "agents_switched").count();
+        assert_eq!(switched, 2);
         let settings = get_json(&state, "/api/settings");
         assert_eq!((settings["computer"]["name"].as_str(), settings["computer"]["version"].as_str(), settings["removed"].as_i64()), (Some("desk"), Some(env!("CARGO_PKG_VERSION")), Some(0)));
         assert!(settings["data"]["library"].as_str().unwrap().ends_with("zone.db"));
