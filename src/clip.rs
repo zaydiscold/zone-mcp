@@ -13,9 +13,11 @@
 //!   its text. The log never holds a clip's text either.
 //!
 //! Writing the clipboard is done by the tool the system already has, with the text on its
-//! standard input: `pbcopy` on macOS, `clip.exe` (then PowerShell's `Set-Clipboard`) on Windows,
-//! and `wl-copy`, `xclip` or `xsel` on Linux. `ZONE_CLIPBOARD_COMMAND` names another command to
-//! use instead (run by the shell, the text on its standard input).
+//! standard input: `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on Linux. On Windows zone
+//! writes the clipboard itself (src/win.rs), as Unicode text with Windows line ends, and only
+//! falls back to `clip.exe`, then PowerShell's `Set-Clipboard`, if that fails.
+//! `ZONE_CLIPBOARD_COMMAND` names another command to use instead (run by the shell, the text on
+//! its standard input).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -59,11 +61,16 @@ struct Tool {
     utf16: bool,
     /// A command line for the shell, instead of a program and its arguments.
     shell: Option<String>,
+    /// Not a program at all: zone writes the clipboard itself (Windows).
+    native: bool,
 }
+
+/// What `zone clipboard status` calls zone writing the Windows clipboard itself.
+const NATIVE: &str = "Windows clipboard";
 
 impl Tool {
     fn program(name: &str, program: PathBuf, args: &[&str]) -> Tool {
-        Tool { name: name.to_string(), program, args: args.iter().map(|a| a.to_string()).collect(), utf16: false, shell: None }
+        Tool { name: name.to_string(), program, args: args.iter().map(|a| a.to_string()).collect(), utf16: false, shell: None, native: false }
     }
 }
 
@@ -85,7 +92,7 @@ fn clip_exe() -> Option<Tool> {
 /// The ways of writing the clipboard on this computer, best first. Empty when there is none.
 fn tools() -> Vec<Tool> {
     if let Some(command) = std::env::var(ENV_COMMAND).ok().filter(|c| !c.trim().is_empty()) {
-        return vec![Tool { name: ENV_COMMAND.to_string(), program: PathBuf::new(), args: Vec::new(), utf16: false, shell: Some(command) }];
+        return vec![Tool { name: ENV_COMMAND.to_string(), program: PathBuf::new(), args: Vec::new(), utf16: false, shell: Some(command), native: false }];
     }
     let mut found = Vec::new();
     if cfg!(target_os = "macos") {
@@ -94,6 +101,7 @@ fn tools() -> Vec<Tool> {
             found.push(Tool::program("pbcopy", pbcopy, &[]));
         }
     } else if cfg!(windows) {
+        found.push(Tool { native: true, ..Tool::program(NATIVE, PathBuf::new(), &[]) });
         found.extend(clip_exe());
         let powershell = Some(crate::update::windows_powershell()).filter(|full| full.is_file()).or_else(|| on_path("powershell.exe")).or_else(|| on_path("pwsh.exe"));
         if let Some(powershell) = powershell {
@@ -135,7 +143,7 @@ pub fn how_to_get_a_tool() -> String {
     if cfg!(target_os = "macos") {
         "pbcopy comes with macOS at /usr/bin/pbcopy, and it is missing here.".to_string()
     } else if cfg!(windows) {
-        "clip.exe comes with Windows in System32, and it is missing here.".to_string()
+        "Windows always has a clipboard, so this should not happen. Set ZONE_CLIPBOARD_COMMAND to a command that reads the text on its standard input.".to_string()
     } else {
         format!("Install wl-clipboard (Wayland), xclip or xsel (X11), or set {ENV_COMMAND} to a command that reads the text on its standard input.")
     }
@@ -153,7 +161,30 @@ fn encode(text: &str, utf16: bool) -> Vec<u8> {
     bytes
 }
 
+/// Text with Windows line ends: every line feed that has no carriage return before it gets one.
+/// What the phone sends has line feeds only, and some Windows programs show such text as one
+/// line.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_line_ends(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.matches('\n').count());
+    let mut previous = None;
+    for c in text.chars() {
+        if c == '\n' && previous != Some('\r') {
+            out.push('\r');
+        }
+        out.push(c);
+        previous = Some(c);
+    }
+    out
+}
+
 fn run_tool(tool: &Tool, text: &str) -> Result<()> {
+    if tool.native {
+        #[cfg(windows)]
+        return crate::win::set_clipboard_text(&windows_line_ends(text)).map_err(|e| anyhow!("{e}"));
+        #[cfg(not(windows))]
+        bail!("only on Windows");
+    }
     let mut command = match &tool.shell {
         Some(line) => shell(line),
         None => {
@@ -174,6 +205,8 @@ fn run_tool(tool: &Tool, text: &str) -> Result<()> {
     }
     // Some of these tools stay behind to serve the clipboard, so nothing of theirs is waited on
     // but the program itself.
+    // A console program started by a zone that has no window would open a window of its own.
+    crate::background::hide(&mut command);
     let mut child = command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| anyhow!("cannot start it: {e}"))?;
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let bytes = encode(text, tool.utf16);
@@ -684,13 +717,34 @@ mod tests {
         assert_eq!(encode("\u{1F600}", true), [0xFF, 0xFE, 0x3D, 0xD8, 0x00, 0xDE]);
     }
 
+    #[test]
+    fn windows_line_ends_are_added_once() {
+        assert_eq!(windows_line_ends("one\ntwo\r\nthree\n"), "one\r\ntwo\r\nthree\r\n");
+        assert_eq!(windows_line_ends("\n\n"), "\r\n\r\n");
+        assert_eq!(windows_line_ends("no line end, caf\u{e9} \u{1F600}"), "no line end, caf\u{e9} \u{1F600}");
+        assert_eq!(windows_line_ends("a lone \r stays"), "a lone \r stays");
+    }
+
+    /// The real Windows clipboard: what goes on is what comes back. Run only where a person's
+    /// session is (the clipboard of a service or an SSH session belongs to nobody).
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn the_windows_clipboard_holds_the_text_exactly() {
+        let text = "line one\ncaf\u{e9} na\u{ef}ve \u{65e5}\u{672c}\u{8a9e} \u{1F600}\n";
+        let tool = tools().into_iter().find(|tool| tool.native).unwrap();
+        run_tool(&tool, text).unwrap();
+        let read = std::process::Command::new("powershell").env_remove("PSModulePath").args(["-NoProfile", "-Command", "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&read.stdout).trim_end_matches(['\r', '\n']), windows_line_ends(text).trim_end_matches(['\r', '\n']));
+    }
+
     /// The real path through a command, with a command that writes a file.
     #[cfg(unix)]
     #[test]
     fn a_command_gets_the_text_on_its_standard_input() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("clipboard.txt");
-        let tool = Tool { name: "test".into(), program: PathBuf::new(), args: Vec::new(), utf16: false, shell: Some(format!("cat > '{}'", file.display())) };
+        let tool = Tool { name: "test".into(), program: PathBuf::new(), args: Vec::new(), utf16: false, shell: Some(format!("cat > '{}'", file.display())), native: false };
         let text = "line one\ncaf\u{e9} \u{65e5}\u{672c}\u{8a9e} \u{1F600}\n";
         run_tool(&tool, text).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
