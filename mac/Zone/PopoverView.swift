@@ -27,6 +27,8 @@ final class PopoverNavigation {
     var cursor = ListCursor()
     /// Changed to put the cursor in the search field.
     var focusSearch = 0
+    /// True while the Agents page shows what to paste into another app.
+    var otherAppOpen = false
 }
 
 /// What opens when the Z in the menu bar is clicked.
@@ -837,7 +839,7 @@ private struct InsetRule: View {
 // MARK: Sub pages
 
 /// The top of a page inside the popover: a way back and a title.
-private struct PageHeader: View {
+struct PageHeader: View {
     let title: String
     let navigation: PopoverNavigation
     var onBack: () -> Void = {}
@@ -906,20 +908,6 @@ private struct PairPage: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 9)
         }
-    }
-}
-
-private struct AgentsPage: View {
-    let model: AppModel
-    let navigation: PopoverNavigation
-
-    var body: some View {
-        VStack(spacing: 0) {
-            PageHeader(title: "AI agents", navigation: navigation)
-            AgentsPanel(model: model, navigation: navigation)
-                .padding(14)
-        }
-        .task { await model.loadAgents() }
     }
 }
 

@@ -364,7 +364,7 @@ struct AgentsPanel: View {
 }
 
 /// What a check found, in one line: a tick and "Answers: 6 tools", or what went wrong.
-private struct TestLine: View {
+struct TestLine: View {
     let test: AgentTest
     var text: String?
     @Environment(\.colorScheme) private var scheme
@@ -394,10 +394,13 @@ private struct TestLine: View {
     }
 }
 
-private struct AgentRow: View {
+struct AgentRow: View {
     let model: AppModel
     let agent: Agent
     let state: PopoverNavigation
+    /// The Agents page's form: the app's own icon, a line that names a limit only when it
+    /// differs from the other apps', and a menu instead of a switch. The guide keeps the switch.
+    var calm = false
     @Environment(\.colorScheme) private var scheme
     /// True while the choices of what this agent may read are showing.
     @State private var choosing = false
@@ -409,7 +412,7 @@ private struct AgentRow: View {
         let busy = model.busyAgents.contains(agent.id)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                AgentBadge(id: agent.id)
+                AgentBadge(id: agent.id, appIcon: calm)
                 VStack(alignment: .leading, spacing: 1) {
                     Button {
                         withAnimation(Zone.motion) { state.openAgent = open ? nil : agent.id }
@@ -430,7 +433,12 @@ private struct AgentRow: View {
                     .buttonStyle(.plain)
                     .allowsHitTesting(agent.isOn)
                     .help(agent.places.count > 1 ? "Show its \(agent.places.count) profiles" : "Show where its settings are")
-                    if agent.canLimitView, !busy {
+                    if calm {
+                        Text(busy ? "Working" : calmNote)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Zone.muted(scheme))
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if agent.canLimitView, !busy {
                         Button {
                             withAnimation(Zone.motion) { choosing.toggle() }
                         } label: {
@@ -463,6 +471,8 @@ private struct AgentRow: View {
                 }
                 if busy {
                     ProgressView().controlSize(.small).frame(width: 34)
+                } else if calm {
+                    menu
                 } else {
                     Toggle("", isOn: Binding(
                         get: { agent.isOn },
@@ -497,6 +507,74 @@ private struct AgentRow: View {
         .onChange(of: agent.isOn) { _, on in
             if !on { choosing = false }
         }
+    }
+
+    /// Under the name on the Agents page: profiles, and what it reads only when that is not
+    /// what the other apps read.
+    private var calmNote: String {
+        let profiles = agent.places.count > 1 ? "\(agent.connectedPlaces.count) of \(agent.places.count) profiles" : nil
+        switch agent.standing {
+        case .connected:
+            var parts: [String] = []
+            if let profiles { parts.append(agent.connectedPlaces.count == agent.places.count ? "\(agent.places.count) profiles" : profiles) }
+            if agent.viewsDiffer {
+                parts.append("its profiles read different things")
+            } else if let view = agent.view, view != model.sharedView {
+                parts.append("its own limit: \(view.words)")
+            }
+            if agent.readOnly { parts.append("cannot mark items") }
+            let line = parts.joined(separator: ", ")
+            return line.isEmpty ? "Connected" : line.prefix(1).uppercased() + line.dropFirst()
+        default:
+            return agent.note
+        }
+    }
+
+    /// The Agents page's menu for one app: its profiles, what it reads, a check, disconnect.
+    private var menu: some View {
+        Menu {
+            if agent.isOn {
+                Button(open ? "Hide profiles" : (agent.places.count > 1 ? "Show its \(agent.places.count) profiles" : "Show where its settings are")) {
+                    withAnimation(Zone.motion) { state.openAgent = open ? nil : agent.id }
+                }
+                if agent.canLimitView {
+                    Menu("What it reads") {
+                        let shared = model.sharedView
+                        Button {
+                            Task { await model.setAgentView(agent, shared) }
+                        } label: {
+                            if agent.view == shared, !agent.viewsDiffer { Image(systemName: "checkmark") }
+                            Text("Same as the other apps")
+                        }
+                        Divider()
+                        ForEach(Array(AgentView.choices.enumerated()), id: \.offset) { _, view in
+                            Button {
+                                Task { await model.setAgentView(agent, view) }
+                            } label: {
+                                if agent.view == view, view != shared { Image(systemName: "checkmark") }
+                                Text("Only for this one: \(view.title.prefix(1).lowercased() + view.title.dropFirst())")
+                            }
+                        }
+                    }
+                }
+                Button("Test") { model.test(agent) }
+                Divider()
+                Button("Disconnect \(agent.title)") { Task { await model.setAgent(agent, connected: false) } }
+            } else {
+                Button("Connect \(agent.title)") { Task { await model.setAgent(agent, connected: true) } }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Zone.muted(scheme))
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Profiles, what it reads, disconnect")
+        .accessibilityLabel("\(agent.title): more")
     }
 
     private var needsFix: Bool {
@@ -618,9 +696,23 @@ private struct AgentRow: View {
 /// agents, a window for desktop apps, brackets for code editors. No logos are shipped.
 struct AgentBadge: View {
     let id: String
+    /// Use the installed app's own icon when there is one.
+    var appIcon = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        if appIcon, let icon = AppIcons.icon(for: id) {
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 26, height: 26)
+                .accessibilityHidden(true)
+        } else {
+            symbolBadge
+        }
+    }
+
+    private var symbolBadge: some View {
         Image(systemName: Self.symbol(for: id))
             .font(.system(size: 11.5, weight: .semibold))
             .foregroundStyle(Zone.ink(scheme))

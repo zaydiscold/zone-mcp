@@ -74,6 +74,14 @@ final class AppModel {
     var agentError: String?
     /// One plain line about the last change to an agent, when there is something to know.
     private(set) var agentNotice: String?
+    /// Whether agents may use the library at all. Nil from a zone without `zone agents`.
+    private(set) var agentAccess: AgentAccess?
+    /// The example prompts, for an agent with the shared view. Nil from a zone without them.
+    private(set) var prompts: PromptList?
+    /// What to paste into an app zone does not know. Nil from a zone without `mcp config`.
+    private(set) var otherAppConfig: McpConfig?
+    /// True while the shared view is being written into every app that follows it.
+    private(set) var applyingView = false
     private(set) var pairing: PairingState = .idle
     private(set) var syncingUntil = Date.distantPast
     /// One line shown for a few seconds after an action ("Copied").
@@ -762,6 +770,62 @@ final class AppModel {
             agentsZone = survey.zone ?? agentsBinary.path
         }
         agentsLoaded = true
+        // The newer commands. A zone without one answers nothing, and its part of the page
+        // is left out.
+        let client = agentsClient, shared = sharedView
+        agentAccess = await client.agentAccess()
+        prompts = await client.prompts(view: shared)
+        otherAppConfig = await client.mcpConfig(view: shared)
+    }
+
+    /// What most connected apps may read: what "What agents can read" shows, and what an app
+    /// connected next gets.
+    var sharedView: AgentView { SharedView.of(agents) }
+
+    /// The five choices for the shared view. Nil when it was set from the command line in a
+    /// way they cannot say.
+    var sharedChoices: ReadChoices? { ReadChoices(sharedView, knowsClips: hasClips) }
+
+    /// Turns agent access on or off for every agent at once.
+    func setAgentAccess(_ on: Bool) async {
+        agentError = nil
+        do {
+            agentAccess = try await agentsClient.setAgentAccess(on)
+        } catch {
+            agentError = error.localizedDescription
+        }
+    }
+
+    /// Writes a new shared view into every connected app that follows the shared one. Apps
+    /// with a limit of their own keep it.
+    func setSharedView(_ view: AgentView) async {
+        let old = sharedView
+        guard view != old, !applyingView else { return }
+        let followers = SharedView.followers(agents, shared: old)
+        guard !followers.isEmpty else { return }
+        applyingView = true
+        agentError = nil
+        agentNotice = nil
+        var failed: [String] = []
+        for agent in followers {
+            busyAgents.insert(agent.id)
+            do {
+                try await agentsClient.connect(agent, view: view)
+            } catch {
+                failed.append("\(agent.title): \(error.localizedDescription)")
+            }
+            busyAgents.remove(agent.id)
+            for place in agent.places { agentTests[place.path] = nil }
+        }
+        await loadAgents()
+        applyingView = false
+        if !failed.isEmpty { agentError = failed.joined(separator: "\n") }
+    }
+
+    /// Copies a prompt or a snippet, and marks it copied for a moment.
+    func copyText(_ text: String, id: String) {
+        putOnClipboard(text)
+        markCopied(id)
     }
 
     // MARK: Checking that an agent reaches the library
@@ -825,9 +889,11 @@ final class AppModel {
         // app cannot carry a limit over. It says so instead of widening it silently.
         var unknownView = false
         if connected, !agent.otherCopyPlaces.isEmpty, !agent.otherCopyKeepsView { unknownView = true }
+        // An app connected for the first time reads what the others read.
+        let firstView: AgentView? = connected && !agent.isOn ? sharedView : nil
         await changeAgent(agent) { [client = agentsClient] in
             if connected {
-                try await client.connect(agent)
+                try await client.connect(agent, view: firstView)
             } else {
                 try await client.disconnect(agent: agent.id)
             }

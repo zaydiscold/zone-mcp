@@ -50,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var quiet = false
     private var signals: [DispatchSourceSignal] = []
     private var testActivity: NSObjectProtocol?
+    /// The menu a test run opened, so it can be closed again (see `snapMenu`).
+    private var trackingMenu: NSMenu?
+    private var menuWatch: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let variables = ProcessInfo.processInfo.environment
@@ -551,12 +554,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let (code, flags) = argument.flatMap({ codes[$0] }), statusItem.isOpen {
                 _ = statusItem.handle(keyCode: code, command: flags.contains(.command))
             }
+        case "otherapp":
+            // otherapp opens what to paste into an app zone does not know, otherapp:off closes it.
+            statusItem.navigation.otherAppOpen = argument != "off"
+        case "access":
+            // access:off turns agent access off for every agent, access:on back on.
+            Task { await model.setAgentAccess(argument != "off") }
+        case "connectmenu":
+            // connectmenu:/path/picture.png opens the Agents page's Connect an app menu beside
+            // the window, photographs it and closes it again, within three seconds.
+            if let argument, let window = statusItem.window {
+                snapMenu(to: URL(fileURLWithPath: argument), tries: 20)
+                let frame = window.frame
+                ConnectMenu.show(model: model, navigation: statusItem.navigation, at: NSPoint(x: frame.minX, y: frame.maxY - 380))
+            }
         case "quit":
             NSApp.terminate(nil)
         default:
             break
         }
         writeWindowNumbers()
+    }
+
+    /// Waits for a menu of the app's to open, photographs it and closes it. The menu is
+    /// closed through NSMenu itself, and in any case within three seconds. Run loop timers in
+    /// the common modes, not the main queue: a menu that is open runs its own loop inside a
+    /// main queue job, and the main queue waits for it.
+    private func snapMenu(to file: URL, tries: Int) {
+        if menuWatch == nil {
+            menuWatch = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { [weak self] note in
+                let menu = note.object as? NSMenu
+                MainActor.assumeIsolated { self?.trackingMenu = menu }
+            }
+        }
+        let popover = statusItem.windowNumber
+        let started = Date()
+        var shot = false
+        let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                let elapsed = Date().timeIntervalSince(started)
+                if !shot, elapsed > 0.5, let number = WindowSnapshot.openMenus().first(where: { $0 != popover }) {
+                    shot = WindowSnapshot.capture(number: number, to: file)
+                }
+                if shot || elapsed > 3 {
+                    self.trackingMenu?.cancelTracking()
+                    self.trackingMenu = nil
+                    timer.invalidate()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     /// Splits "popover=/some/path" into the window meant and the rest.
