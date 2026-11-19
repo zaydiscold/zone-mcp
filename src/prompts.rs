@@ -79,7 +79,7 @@ pub const PROMPTS: &[PromptDef] = &[
         description: "Turns your open voice notes into one checklist, then marks the ones it covers as done.",
         kinds: &["note"],
         args: &[],
-        text: "Turn my open voice notes into a plan. Call list_items with kinds [\"note\"], unprocessed_only true and order oldest (follow next_cursor until there is none), then get_items for any note whose preview is cut off. Write one checklist grouped by theme: one line per action, starting with a verb, with the note's date in brackets. Put questions and ideas that are not actions in a short list at the end. Show me the plan, and once I agree, {done}. {speech}",
+        text: "Turn my open voice notes into a plan. Call list_items with kinds [\"note\"], unprocessed_only true and order oldest (follow next_cursor until there is none), then get_items for any note marked cut. Write one checklist grouped by theme: one line per action, starting with a verb, with the note's date in brackets. Put questions and ideas that are not actions in a short list at the end. Show me the plan, and once I agree, {done}. {speech}",
         done: Some((
             "call mark_processed with the ids of the notes the plan covers, so they do not come back",
             "list the ids of the notes the plan covers (this connection is read-only, so it cannot mark them done)",
@@ -91,7 +91,7 @@ pub const PROMPTS: &[PromptDef] = &[
         description: "Goes through your open voice notes one at a time and marks each done as you go.",
         kinds: &["note"],
         args: &[],
-        text: "Let's work through my open voice notes one at a time, newest first. Call list_items with kinds [\"note\"], unprocessed_only true, order newest and limit 1. Show me that note in full (get_items if its preview is cut off) with its date, and suggest in one line what to do with it. Wait for my answer. When we are done with it, {done}, and fetch the next one the same way. Stop when there are none left and tell me how many we handled. {speech}",
+        text: "Let's work through my open voice notes one at a time, newest first. Call list_items with kinds [\"note\"], unprocessed_only true, order newest and limit 1. Show me that note in full (get_items if it is marked cut) with its date, and suggest in one line what to do with it. Wait for my answer. When we are done with it, {done}, and fetch the next one the same way. Stop when there are none left and tell me how many we handled. {speech}",
         done: Some((
             "call mark_processed on it",
             "tell me its id and move on (this connection is read-only, so it cannot mark notes done; use a cursor to step past it)",
@@ -103,7 +103,7 @@ pub const PROMPTS: &[PromptDef] = &[
         description: "A recap of everything you said in a day or a window of time, grouped by topic.",
         kinds: SPOKEN,
         args: &[DAY],
-        text: "What did I say {day}? Call list_items for that window (start and end; times without an offset are read in this computer's time zone, and sync_status gives today's date) with kinds {kinds}, and follow next_cursor until there is none. Read the full text of anything cut off with get_items. Give me a recap grouped by topic, with times, then anything that sounds like a decision, a promise or a task. Dictations with source keyboard are messages I sent to people: summarize them, do not reproduce them. {speech}",
+        text: "What did I say {day}? Call list_items with when \"{day}\" and kinds {kinds}, check that its range is the window I mean, and follow next_cursor until there is none. Cards carry the full text when it fits; read any marked cut with get_items. Give me a recap grouped by topic, with times, then anything that sounds like a decision, a promise or a task. Dictations with source keyboard are messages I sent to people: summarize them, do not reproduce them. {speech}",
         done: None,
     },
     PromptDef {
@@ -145,7 +145,7 @@ pub const PROMPTS: &[PromptDef] = &[
         description: "What you said this week: the themes, the decisions and the loose ends.",
         kinds: SPOKEN,
         args: &[],
-        text: "Do my weekly review. Call library_stats with start 7d and group_by day to see the busy days, then list_items with start 7d and kinds {kinds} (follow next_cursor), reading in full with get_items whatever matters. Give me: the main themes of my week, decisions I made, things I said I would do and have not mentioned since, and three things to carry into next week. Keep it to one screen. {speech}",
+        text: "Do my weekly review. Call library_stats with when \"last 7 days\" and group_by day to see the busy days, then list_items with when \"last 7 days\" and kinds {kinds} (follow next_cursor), reading in full with get_items whatever is cut and matters. Give me: the main themes of my week, decisions I made, things I said I would do and have not mentioned since, and three things to carry into next week. Keep it to one screen. {speech}",
         done: None,
     },
     PromptDef {
@@ -157,7 +157,7 @@ pub const PROMPTS: &[PromptDef] = &[
             TOPIC,
             Arg { name: "day", description: "When I said it: today, yesterday, this week, Wednesday. Default today.", required: false, default: Some("today"), placeholder: "[day]" },
         ],
-        text: "Write a clean draft about {topic} from what I said {day}. Use list_items with kinds {kinds} for that window and search_items for the topic, then read the matching items in full with get_items, in the order I said them. Keep my points, my order and my way of putting things. Drop false starts, repeats and filler. Where a word looks misheard and you cannot tell what I meant, mark it [?] rather than guess. Show me the draft and the ids you used. {speech}",
+        text: "Write a clean draft about {topic} from what I said {day}. Use list_items with when \"{day}\" and kinds {kinds}, and search_items for the topic with the same when, then read the matching items in full with get_items, in the order I said them. Keep my points, my order and my way of putting things. Drop false starts, repeats and filler. Where a word looks misheard and you cannot tell what I meant, mark it [?] rather than guess. Show me the draft and the ids you used. {speech}",
         done: None,
     },
     PromptDef {
@@ -175,7 +175,7 @@ pub const PROMPTS: &[PromptDef] = &[
         description: "Finds the promises and to-dos in two weeks of what you said, and which are still open.",
         kinds: SPOKEN,
         args: &[],
-        text: "Find the things I said I would do in the last two weeks. Call list_items with start 14d and kinds {kinds} (follow next_cursor) and search_items for phrases like \"I'll\", \"I will\", \"remind me\", \"need to\" and \"follow up\". For each, give the date, what I committed to and to whom, and whether anything later suggests it is done. Put the open ones first. {speech}",
+        text: "Find the things I said I would do in the last two weeks. Call list_items with when \"last 14 days\" and kinds {kinds} (follow next_cursor) and search_items with the same when for phrases like \"I'll\", \"I will\", \"remind me\", \"need to\" and \"follow up\". For each, give the date, what I committed to and to whom, and whether anything later suggests it is done. Put the open ones first. {speech}",
         done: None,
     },
 ];

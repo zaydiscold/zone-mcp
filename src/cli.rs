@@ -13,6 +13,10 @@ use crate::tools::normalize_kind;
 
 #[derive(Args, Clone, Debug, Default)]
 pub struct FilterArgs {
+    /// A window in words, instead of --since and --until: "Wednesday 12pm to 5pm",
+    /// "yesterday afternoon", "last week", "3 days ago"
+    #[arg(long, value_name = "WORDS", conflicts_with_all = ["since", "until"])]
+    pub when: Option<String>,
     /// Only items created at or after this time: 2026-11-11, "2026-11-11 14:30",
     /// 2026-11-11T14:30:00-08:00, 2h, 3d, today, yesterday
     #[arg(long, value_name = "TIME")]
@@ -48,8 +52,16 @@ impl FilterArgs {
     }
 
     pub fn filter(&self, clock: &Clock) -> Result<Filter> {
-        let start = self.since.as_deref().map(|t| clock.parse(t, Bound::Start)).transpose()?;
-        let end = self.until.as_deref().map(|t| clock.parse(t, Bound::End)).transpose()?;
+        let (start, end) = match &self.when {
+            Some(words) => {
+                let window = clock.window(words)?;
+                (Some(window.start), Some(window.end))
+            }
+            None => (
+                self.since.as_deref().map(|t| clock.parse(t, Bound::Start)).transpose()?,
+                self.until.as_deref().map(|t| clock.parse(t, Bound::End)).transpose()?,
+            ),
+        };
         if let (Some(s), Some(e)) = (start, end)
             && s >= e {
                 bail!("--since ({}) is not before --until ({})", clock.full(s), clock.full(e));
