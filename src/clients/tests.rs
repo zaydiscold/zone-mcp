@@ -522,3 +522,47 @@ fn an_install_keeps_what_it_was_not_asked_to_change() {
     assert_eq!(base.with_view(true, &no_keyboard).view_words().unwrap(), "read-only, hides keyboard");
     assert_eq!(base.view_words(), None);
 }
+
+#[test]
+fn snippets_to_paste_are_what_an_install_would_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = env(dir.path());
+    let generic = generic_snippet(&with_home());
+    let value: Value = serde_json::from_str(&generic.text).unwrap();
+    assert_eq!(value, json!({ "mcpServers": { "zone": { "command": "/opt/zone/bin/zone", "args": ["mcp"], "env": { "ZONE_HOME": "/tmp/zone home" } } } }));
+    assert_eq!(generic.key_path, ["mcpServers", "zone"]);
+    // Each client's snippet, saved as its whole settings file, reads back as this zone.
+    for client in Client::ALL {
+        let snippet = client_snippet(client, &with_home(), &env);
+        let target = client.targets(&env).into_iter().next().unwrap();
+        assert_eq!(snippet.path.as_deref(), Some(target.path.as_path()), "{client:?}");
+        write(&target.path, &snippet.text);
+        assert_eq!(read_entry(&target, &env), Found::Present(with_home()), "{client:?}:\n{}", snippet.text);
+        assert_eq!(snippet.key_path.last().map(String::as_str), Some(SERVER_NAME));
+        let format = match target.format {
+            Format::Json(..) => "json",
+            Format::Toml => "toml",
+            Format::Yaml(..) => "yaml",
+        };
+        assert_eq!(snippet.format, format, "{client:?}");
+        assert_eq!(snippet.command_line.is_some(), client == Client::ClaudeCode);
+    }
+    // A limited, read-only view goes into the snippet.
+    let narrow = with_home().with_view(true, &Scope::new(&["note".to_string()], &[]).unwrap());
+    let text = generic_snippet(&narrow).text;
+    assert!(text.contains("\"--read-only\"") && text.contains("\"--kinds\"") && text.contains("\"note\""), "{text}");
+}
+
+#[test]
+fn status_says_what_each_place_launches() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = env(dir.path());
+    let target = only(Client::Cursor, &env);
+    register(&target, &with_home(), &env, &mut State::default(), Mode::Explicit);
+    let rows = survey(&env, &State::default(), &with_home());
+    let value = rows_json(&rows, &with_home(), &State::default());
+    let cursor = value["clients"].as_array().unwrap().iter().find(|c| c["client"] == "cursor").unwrap();
+    assert_eq!(cursor["launch"], json!({ "command": "/opt/zone/bin/zone", "args": ["mcp"], "env": { "ZONE_HOME": "/tmp/zone home" } }));
+    let zed = value["clients"].as_array().unwrap().iter().find(|c| c["client"] == "zed").unwrap();
+    assert_eq!(zed["launch"], Value::Null);
+}

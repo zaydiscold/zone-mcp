@@ -665,6 +665,11 @@ impl Launch {
         Scope::from_launch_args(&self.args)
     }
 
+    /// `{"command", "args", "env"}`: what a client starts, in one shape for every client.
+    pub fn to_json(&self) -> Value {
+        json!({ "command": self.command, "args": self.args, "env": self.env_object() })
+    }
+
     fn env_object(&self) -> Value {
         Value::Object(self.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect::<Map<_, _>>())
     }
@@ -1396,6 +1401,9 @@ fn rows_json(rows: &[Row], current: &Launch, state: &State) -> Value {
                     "detail": detail,
                     "read_only": read_only,
                     "scope": scope,
+                    // What this place's config starts, exactly as written there, whichever
+                    // program it is. Null when the place has no zone entry.
+                    "launch": row.entry.as_ref().map(Launch::to_json),
                 })
             })
             .collect();
@@ -1458,6 +1466,148 @@ pub fn status(as_json: bool) -> Result<()> {
         println!("zone install turned on registering by itself: when zone starts, it registers with clients installed since. It never touches a place you removed it from.");
     }
     Ok(())
+}
+
+// -------------------------------------------------------------------- what to paste
+
+/// One client's snippet: the text zone would write into a new, empty settings file.
+pub struct Snippet {
+    pub client: Option<Client>,
+    pub label: String,
+    /// `json`, `toml` or `yaml`.
+    pub format: &'static str,
+    /// Where the client reads it (its first place, when it has several). None for the
+    /// generic snippet.
+    pub path: Option<PathBuf>,
+    /// The keys the entry sits under, ending with `zone`.
+    pub key_path: Vec<String>,
+    pub text: String,
+    /// A command that does the same, when the client has one (Claude Code's `claude mcp add`).
+    pub command_line: Option<String>,
+}
+
+impl Snippet {
+    fn to_json(&self, env: &Env) -> Value {
+        json!({
+            "client": self.client.map(Client::name),
+            "label": self.label,
+            "format": self.format,
+            "path": self.path,
+            "path_shown": self.path.as_ref().map(|p| env.show(p)),
+            "key_path": self.key_path,
+            "snippet": self.text,
+            "command_line": self.command_line,
+        })
+    }
+}
+
+/// The generic `mcpServers` snippet most apps take, for "any other app".
+pub fn generic_snippet(launch: &Launch) -> Snippet {
+    let text = jsonc::set("", &["mcpServers", SERVER_NAME], &launch.json_entry(Style::Plain)).ok().flatten().unwrap_or_default();
+    Snippet {
+        client: None,
+        label: "Any other app".to_string(),
+        format: "json",
+        path: None,
+        key_path: vec!["mcpServers".to_string(), SERVER_NAME.to_string()],
+        text,
+        command_line: None,
+    }
+}
+
+/// What zone would write for `client` into an empty settings file.
+pub fn client_snippet(client: Client, launch: &Launch, env: &Env) -> Snippet {
+    let target = client.targets(env).into_iter().next();
+    let format = target.as_ref().map(|t| t.format).unwrap_or(Format::Json(&["mcpServers"], Style::Plain));
+    let (name, text, key_path) = match format {
+        Format::Json(keys, style) => {
+            let mut path: Vec<&str> = keys.to_vec();
+            path.push(SERVER_NAME);
+            let text = jsonc::set("", &path, &launch.json_entry(style)).ok().flatten().unwrap_or_default();
+            ("json", text, path.iter().map(|k| k.to_string()).collect())
+        }
+        Format::Toml => ("toml", toml::block(launch), vec!["mcp_servers".to_string(), SERVER_NAME.to_string()]),
+        Format::Yaml(key, style) => {
+            let text = yaml::set("", key, SERVER_NAME, &launch.yaml_fields(style)).ok().flatten().unwrap_or_default();
+            ("yaml", text, vec![key.to_string(), SERVER_NAME.to_string()])
+        }
+    };
+    let command_line = (client == Client::ClaudeCode).then(|| claude_code_manual(launch, None));
+    Snippet { client: Some(client), label: client.label().to_string(), format: name, path: target.map(|t| t.path), key_path, text, command_line }
+}
+
+/// `zone mcp config`: what to paste into an app's settings to use this zone. `client` is one
+/// client's name, or `other` (also `generic`) for the generic snippet alone.
+pub fn config(client: Option<&str>, read_only: bool, scope: &Scope, as_json: bool) -> Result<()> {
+    let launch = Launch::current(read_only, scope)?;
+    let env = Env::from_system()?;
+    let chosen = match client.map(|c| c.trim().to_ascii_lowercase()) {
+        None => None,
+        Some(name) if matches!(name.as_str(), "other" | "generic" | "any") => Some(None),
+        Some(name) => match Client::parse(&name) {
+            Ok(client) => Some(Some(client)),
+            Err(_) => {
+                let names: Vec<&str> = Client::ALL.iter().map(|c| c.name()).collect();
+                bail!("unknown client \"{name}\". Choose one of: {}, or other for the generic snippet.", names.join(", "))
+            }
+        },
+    };
+    let generic = generic_snippet(&launch);
+    let snippets: Vec<Snippet> = match chosen {
+        None => Client::ALL.iter().map(|c| client_snippet(*c, &launch, &env)).collect(),
+        Some(None) => Vec::new(),
+        Some(Some(client)) => vec![client_snippet(client, &launch, &env)],
+    };
+    if as_json {
+        let value = json!({
+            "name": SERVER_NAME,
+            "command": launch.command,
+            "args": launch.args,
+            "env": launch.env_object(),
+            "generic": generic.to_json(&env),
+            "clients": snippets.iter().map(|s| s.to_json(&env)).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    match chosen {
+        Some(Some(_)) => {
+            let snippet = &snippets[0];
+            if let Some(path) = &snippet.path {
+                println!("{} reads {} from {}:", snippet.label, snippet.key_path.join(" > "), env.show(path));
+            }
+            println!();
+            print!("{}", ensure_newline(&snippet.text));
+            if let Some(line) = &snippet.command_line {
+                println!();
+                println!("Or run: {line}");
+            }
+            println!();
+            println!("`zone mcp install {}` writes it for you and keeps everything else in the file.", snippet.client.map(Client::name).unwrap_or_default());
+        }
+        _ => {
+            println!("For any app that takes MCP servers as JSON (the usual \"mcpServers\" shape):");
+            println!();
+            print!("{}", ensure_newline(&generic.text));
+            if chosen.is_none() {
+                for client in [Client::Codex, Client::Hermes, Client::Goose] {
+                    let snippet = snippets.iter().find(|s| s.client == Some(client)).expect("every client has a snippet");
+                    println!();
+                    println!("{} ({}, {}):", snippet.label, snippet.format.to_uppercase(), snippet.path.as_ref().map(|p| env.show(p)).unwrap_or_default());
+                    println!();
+                    print!("{}", ensure_newline(&snippet.text));
+                }
+                println!();
+                println!("`zone mcp config --client <name>` prints the one for a client zone knows (`zone mcp status` lists them),");
+                println!("and `zone mcp install <name>` writes it for you.");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_newline(text: &str) -> String {
+    if text.ends_with('\n') { text.to_string() } else { format!("{text}\n") }
 }
 
 // -------------------------------------------------------------------- automatic

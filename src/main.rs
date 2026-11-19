@@ -453,6 +453,23 @@ enum McpAction {
         #[arg(long)]
         all: bool,
     },
+    /// Print what to paste into an app's MCP settings to use this zone: the generic JSON, or one
+    /// client's own format
+    #[command(long_about = "Print what to paste into an app's MCP settings to use this zone, with this program's full path.\n\n\
+                            Without --client: the generic \"mcpServers\" JSON that most apps take, and the TOML and YAML forms \
+                            Codex, Hermes and Goose use. --client <name> prints one client's own snippet and where it goes; \
+                            --client other prints only the generic JSON. --json prints every form at once.\n\n\
+                            The view flags (--notes-only, --kinds, --no-keyboard, --read-only) go into the snippet.")]
+    Config {
+        /// One client (a name from `zone mcp status`), or `other` for the generic snippet only
+        #[arg(long)]
+        client: Option<String>,
+        #[command(flatten)]
+        view: scope::ViewArgs,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Show which clients have zone registered
     Status {
         /// Print JSON instead of text
@@ -758,6 +775,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             Some(McpAction::Uninstall { clients, all }) => clients::uninstall(&clients, all)?,
             Some(McpAction::Status { json }) => clients::status(json)?,
+            Some(McpAction::Config { client, view: inner, json }) => {
+                let view = inner.or(&view);
+                clients::config(client.as_deref(), view.read_only, &view.scope()?, json)?
+            }
         },
         Command::Install { no_start, no_mcp } => {
             service::install(!no_start)?;
