@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var flash: FlashWindowController?
     private var history: HistoryWindowController?
     private let guide = PermissionGuide()
+    private let hotKeys = HotKeyCenter()
     private var commandTimer: Timer?
     /// A test run can ask the app to stay out of the way of whoever is using the Mac: its
     /// windows never take the keyboard and sit almost entirely off the edge of the screen
@@ -102,6 +103,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guide.parked = quiet
         guide.openLink = { [weak self] url in self?.model.open(url) }
         model.showGuide = { [weak self] request in self?.guide.show(request) }
+        model.appBehindMenu = { [weak self] in self?.statusItem.appBehind }
+        // The key that opens the menu. A test run never takes a key from the person using the
+        // Mac: it says yes without registering, and `hotkey:press` stands in for the key.
+        let registersKeys = !env.isSandbox || variables["ZONE_MAC_REAL_HOTKEY"] != nil
+        hotKeys.onPress = { [weak self] in self?.statusItem.toggleFromKey() }
+        model.registerHotKey = { [weak self] key in
+            guard registersKeys else { return true }
+            return self?.hotKeys.register(key) ?? false
+        }
+        model.restoreHotKey()
 
         Task {
             await model.start()
@@ -118,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hotKeys.unregister()
         flash?.window.close()
         history?.window.close()
         guide.close()
@@ -517,6 +529,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "icons":
             // icons:/path/picture.png draws the four faces of the menu bar icon.
             if let argument { drawIconSheet(to: URL(fileURLWithPath: argument)) }
+        case "hotkey":
+            // hotkey:press does what the key does. hotkey:on, hotkey:off, and
+            // hotkey:49,2048 (a key code and Carbon modifiers) set it as Settings does.
+            switch argument {
+            case "press": statusItem.toggleFromKey()
+            case "off": model.setHotKey(nil)
+            case "on", nil: model.setHotKey(model.state.hotKeyChoice)
+            case let value?:
+                let numbers = value.split(separator: ",").compactMap { UInt32($0) }
+                if numbers.count == 2 { model.setHotKey(HotKey(keyCode: numbers[0], modifiers: numbers[1])) }
+            }
+        case "search":
+            // search:lease types those words into the menu's search, search: empties it.
+            model.search.update(argument ?? "")
+        case "key":
+            // key:down, key:up, key:return, key:cmdreturn, key:escape press that key in the menu.
+            let codes: [String: (UInt16, NSEvent.ModifierFlags)] = [
+                "down": (125, []), "up": (126, []), "return": (36, []), "cmdreturn": (36, .command), "escape": (53, []),
+            ]
+            if let (code, flags) = argument.flatMap({ codes[$0] }), statusItem.isOpen {
+                _ = statusItem.handle(keyCode: code, command: flags.contains(.command))
+            }
         case "quit":
             NSApp.terminate(nil)
         default:

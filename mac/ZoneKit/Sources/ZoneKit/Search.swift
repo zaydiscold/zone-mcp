@@ -41,6 +41,19 @@ public enum SearchSnippet {
         return parts
     }
 
+    /// The parts with the text before the first match cut to its last `lead` characters (at a
+    /// word), so the matched word is on screen in a row of one line.
+    public static func leading(_ parts: [Part], lead: Int = 24) -> [Part] {
+        guard let first = parts.first, !first.matched, parts.count > 1, first.text.count > lead else { return parts }
+        let tail = first.text.suffix(lead)
+        // A word cut in half is dropped, unless the cut fell between words.
+        let atWord = first.text.dropLast(lead).last == " "
+        let cut = atWord ? tail : tail.firstIndex(of: " ").map { tail[tail.index(after: $0)...] } ?? tail
+        var trimmed = parts
+        trimmed[0].text = "\u{2026}" + cut
+        return trimmed
+    }
+
     /// The words that matched, each once, in the order they first appear: "lease, Wednesday".
     public static func matchedWords(_ snippet: String) -> [String] {
         var seen = Set<String>()
@@ -65,6 +78,9 @@ public final class LiveSearch {
 
     public private(set) var query = ""
     public private(set) var phase: Phase = .idle
+    /// The last answer, kept while the next words are searched so the list does not blink
+    /// empty on every key. Nil when the field is empty.
+    public private(set) var results: ItemList?
     /// How many times zone was actually asked. For tests and nothing else.
     @ObservationIgnored public private(set) var asked = 0
 
@@ -82,11 +98,8 @@ public final class LiveSearch {
 
     public var isActive: Bool { !words.isEmpty }
 
-    /// The items found for the words in the field, or nothing yet.
-    public var items: [ZoneItem] {
-        if case let .found(list) = phase { return list.items }
-        return []
-    }
+    /// The items found, for these words or (while those are searched) the ones before.
+    public var items: [ZoneItem] { results?.items ?? [] }
 
     public func update(_ text: String) {
         guard text != query else { return }
@@ -96,6 +109,7 @@ public final class LiveSearch {
         guard !words.isEmpty else {
             task = nil
             phase = .idle
+            results = nil
             return
         }
         phase = .searching
@@ -116,7 +130,9 @@ public final class LiveSearch {
             }
             guard let self, !Task.isCancelled, self.words == words else { return }
             switch result {
-            case let .success(list): self.phase = .found(list)
+            case let .success(list):
+                self.phase = .found(list)
+                self.results = list
             case let .failure(error): self.phase = .failed(error.localizedDescription)
             }
         }

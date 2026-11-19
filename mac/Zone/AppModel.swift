@@ -107,6 +107,11 @@ final class AppModel {
     /// Set by the windows: while someone is looking, the app asks zone more often.
     var watchers = 0
 
+    /// The search at the top of the menu.
+    let search: LiveSearch
+    /// Why the key that opens the menu could not be used. Nil when it works or is off.
+    private(set) var hotKeyTrouble: String?
+
     // MARK: Hooks the app delegate fills in
 
     @ObservationIgnored var showWelcome: () -> Void = {}
@@ -119,6 +124,10 @@ final class AppModel {
     @ObservationIgnored var showHistory: (PageRoute) -> Void = { _ in }
     /// Opens a page of System Settings with the card that says what to switch on.
     @ObservationIgnored var showGuide: (GuideRequest) -> Void = { _ in }
+    /// Registers the key that opens the menu (nil: none). False when the system refuses it.
+    @ObservationIgnored var registerHotKey: (HotKey?) -> Bool = { _ in true }
+    /// The app that was in front when the menu opened, for pasting into.
+    @ObservationIgnored var appBehindMenu: () -> NSRunningApplication? = { nil }
 
     // MARK: Private
 
@@ -162,6 +171,8 @@ final class AppModel {
         self.userPath = env.isSandbox
             ? "\(env.home.appendingPathComponent(".local/bin").path):/usr/bin:/bin"
             : env.searchPath
+        let searcher = ZoneClient(runner: ZoneProcessRunner(binary: env.stableBinary, environment: env.childEnvironment()))
+        self.search = LiveSearch { words in try await searcher.search(words, limit: 40) }
     }
 
     var client: ZoneClient {
@@ -856,11 +867,88 @@ final class AppModel {
         }
     }
 
+    // MARK: The key that opens the menu
+
+    /// Turns the key on (with this key) or off. A key the system refuses is turned off again,
+    /// and the reason is kept for Settings to show.
+    func setHotKey(_ key: HotKey?) {
+        hotKeyTrouble = nil
+        if let key { state.recordedHotKey = key }
+        guard let key else {
+            state.hotKey = nil
+            _ = registerHotKey(nil)
+            return
+        }
+        if let problem = key.problem {
+            hotKeyTrouble = problem
+            return
+        }
+        if registerHotKey(key) {
+            state.hotKey = key
+        } else {
+            state.hotKey = nil
+            hotKeyTrouble = "Another app already uses \(key.label). Choose another key."
+        }
+    }
+
+    /// At launch: the key the person chose last time, if any.
+    func restoreHotKey() {
+        guard let key = state.hotKey else { return }
+        if !registerHotKey(key) {
+            hotKeyTrouble = "Another app already uses \(key.label). Choose another key."
+        }
+    }
+
+    func setHotKeyTrouble(_ text: String?) {
+        hotKeyTrouble = text
+    }
+
     // MARK: Actions
 
     func copy(_ item: ZoneItem) {
         putOnClipboard(item.copyText)
         markCopied(item.id)
+    }
+
+    /// The app that Command-Return pastes into, by name, while the menu is open.
+    var pasteTargetName: String? {
+        appBehindMenu()?.localizedName
+    }
+
+    /// Command-Return: puts the item on the clipboard and pastes it into the app that was in
+    /// front before the menu opened. Without Accessibility it is copied instead, and the first
+    /// time macOS is asked. Returns true when the menu should close.
+    func paste(_ item: ZoneItem) -> Bool {
+        let target = appBehindMenu()
+        if env.isSandbox {
+            // A test run posts no keys: what would have been pasted, and where, is noted.
+            putOnClipboard(item.copyText)
+            let file = env.dataDirectory.deletingLastPathComponent().appendingPathComponent("pasted")
+            let allowed = ProcessInfo.processInfo.environment["ZONE_MAC_PRETEND_ACCESSIBILITY"] != nil
+            if allowed {
+                try? "\(target?.localizedName ?? "nothing"): \(item.id)\n".write(to: file, atomically: true, encoding: .utf8)
+                return true
+            }
+            return explainPaste(item, target: target)
+        }
+        putOnClipboard(item.copyText)
+        if Paster.allowed(ask: false) {
+            Paster.paste(into: target)
+            return true
+        }
+        return explainPaste(item, target: target)
+    }
+
+    /// Paste without Accessibility: copied instead. The first time, one line says why and
+    /// macOS asks; after that it is simply copied.
+    private func explainPaste(_ item: ZoneItem, target: NSRunningApplication?) -> Bool {
+        markCopied(item.id)
+        guard !state.pasteExplained else { return true }
+        state.pasteExplained = true
+        let app = target?.localizedName ?? "the app you were in"
+        say("Copied. Pasting into \(app) needs Zone switched on in Accessibility, which macOS is asking about now.")
+        if !env.isSandbox { _ = Paster.allowed(ask: true) }
+        return false
     }
 
     /// Copies text. A test run writes the sandbox's `clipboard` file instead, so it never

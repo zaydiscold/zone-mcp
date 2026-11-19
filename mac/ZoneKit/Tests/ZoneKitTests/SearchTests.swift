@@ -17,6 +17,15 @@ final class SearchTests: XCTestCase {
         XCTAssertEqual(SearchSnippet.parts(""), [])
     }
 
+    func testTheMatchStaysInViewOnOneLine() {
+        let long = SearchSnippet.parts("Groceries: oat milk, lemons, the good bread, [coffee] beans")
+        XCTAssertEqual(SearchSnippet.leading(long, lead: 24).map(\.text), ["\u{2026}lemons, the good bread, ", "coffee", " beans"])
+        // Short text before the match, or a match first, is left alone.
+        let short = SearchSnippet.parts("the [lease]")
+        XCTAssertEqual(SearchSnippet.leading(short), short)
+        XCTAssertEqual(SearchSnippet.leading(SearchSnippet.parts("[lease] and more")).first?.text, "lease")
+    }
+
     func testSearchOutputReadsSnippetAndHowItMatched() throws {
         let json = """
         {"total": 2, "matched": "prefix", "next_cursor": null, "items": [

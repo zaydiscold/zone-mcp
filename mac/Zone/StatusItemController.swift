@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ZoneKit
 
 /// A borderless window that can still take the keyboard, so Escape closes it.
 final class PopoverPanel: NSPanel {
@@ -24,6 +25,8 @@ final class StatusItemController: NSObject {
     private var phase = 0.0
     private var shownState: MenuBarState?
     private var height: CGFloat = 480
+    /// The app that was in front when the window opened: Command-Return pastes into it.
+    private(set) var appBehind: NSRunningApplication?
     /// A test run keeps the window open while other apps are clicked, and keeps it out of
     /// the way: see `parkedOrigin`.
     var parked = false
@@ -107,6 +110,8 @@ final class StatusItemController: NSObject {
     func show(page: PopoverNavigation.Page? = nil, takeKeyboard: Bool = true) {
         if let page { navigation.page = page }
         guard !isOpen else { return }
+        let front = NSWorkspace.shared.frontmostApplication
+        appBehind = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
         let panel = self.panel ?? makePanel()
         self.panel = panel
         model.watchers += 1
@@ -118,6 +123,18 @@ final class StatusItemController: NSObject {
             panel.orderFrontRegardless()
         }
         item.button?.highlight(!parked)
+        navigation.cursor = ListCursor()
+        navigation.focusSearch += 1
+        // The keys of the search: arrows move, Return copies, Command-Return pastes, Escape
+        // closes. Only on the main page, and only while this window has the keyboard.
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
+            guard let self, event.window === self.panel else { return event }
+            let code = event.keyCode, command = event.modifierFlags.contains(.command)
+            let used = MainActor.assumeIsolated { self.handle(keyCode: code, command: command) }
+            return used ? nil : event
+        }) {
+            monitors.append(monitor)
+        }
         guard !parked else { return }
         // A click anywhere else closes it, the way a menu closes.
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
@@ -136,6 +153,43 @@ final class StatusItemController: NSObject {
         }
     }
 
+    /// Opens the window from the key, with the cursor in the search field; pressed again
+    /// while it is open, closes it.
+    func toggleFromKey() {
+        if isOpen {
+            close()
+        } else {
+            // A test run never takes the keyboard from the person using the Mac.
+            show(page: .main, takeKeyboard: !parked)
+        }
+    }
+
+    /// A key pressed in the window. True when it was used here.
+    func handle(keyCode: UInt16, command: Bool) -> Bool {
+        guard navigation.page == .main else { return false }
+        let rows = navigation.keyRows
+        switch Int(keyCode) {
+        case 125: // down
+            navigation.cursor.move(1, count: rows.count)
+        case 126: // up
+            navigation.cursor.move(-1, count: rows.count)
+        case 36, 76: // Return, Enter
+            guard let index = navigation.cursor.index, rows.indices.contains(index) else { return model.search.isActive }
+            let item = rows[index]
+            if command {
+                if model.paste(item) { close() }
+            } else {
+                model.copy(item)
+                close()
+            }
+        case 53: // Escape
+            close()
+        default:
+            return false
+        }
+        return true
+    }
+
     func close() {
         guard isOpen else { return }
         panel?.orderOut(nil)
@@ -147,6 +201,8 @@ final class StatusItemController: NSObject {
             model.stopPairing()
         }
         navigation.page = .main
+        model.search.clear()
+        navigation.cursor = ListCursor()
     }
 
     private func makePanel() -> PopoverPanel {
