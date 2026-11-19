@@ -483,6 +483,7 @@ line, in this order:
 | `clip` | A clip arrived: `id`, `device`, `device_id`, `carrier` (`link` or `flash`), `source` (`clipboard`, `share`, `shortcut`, `typed`), `length` (characters), `bytes`, `copied` (it was put on the clipboard), `not_copied` (why not: `off`, `carrier`, `old`, `newer_clip`, `failed`, or null), `tool`. Never the text. |
 | `backup_import` | `trigger` (`watch`: zone saw the backup change, or the command: `import`, `backup-folder`), `items`, `new`, `changed`, `unchanged`, `notes`, `dictations`, `meetings`, `skipped` |
 | `resync_requested` | `device` (null for every phone), `phones` |
+| `agents_switched` | `on` (true: agents may use the library again, false: turned off), `by` (`cli`, `page` or `mac`) |
 
 ```json
 {"seq":5,"at":1794772842.9,"time":"2026-11-15T12:00:42-08:00","event":"link_session","device":"My iPhone","device_id":"7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f","items":600,"new":600,"changed":0,"deleted":0,"unchanged":0,"rejected":0,"frames":4,"path":"relay then direct","duration_s":1.2,"paired":true,"end":"bye"}

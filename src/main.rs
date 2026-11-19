@@ -21,6 +21,7 @@ macro_rules! eprint {
 }
 
 mod admin;
+mod agents;
 mod backup;
 mod cli;
 mod clients;
@@ -190,6 +191,19 @@ enum Command {
     Clipboard {
         #[command(subcommand)]
         action: ClipboardAction,
+        /// Print JSON instead of text
+        #[arg(long, global = true)]
+        json: bool,
+    },
+    /// Let AI agents use your library, or stop every one of them at once: on, off, status
+    #[command(long_about = "One switch for every AI agent on this computer. On until you turn it off.\n\n  zone agents off\n  \
+                            zone agents on\n  zone agents status [--json]\n\n\
+                            Off does not unregister zone from any client. Each client still starts zone and connects, and is \
+                            told that agent access is turned off on this computer and how to turn it back on. Servers that are \
+                            already running notice within a few seconds. Each switch is recorded in `zone events`.")]
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
         /// Print JSON instead of text
         #[arg(long, global = true)]
         json: bool,
@@ -365,6 +379,16 @@ enum ClipboardAction {
     /// Leave the clipboard alone (clips are still kept)
     Off,
     /// Say whether it is on, and which clipboard tool zone would use
+    Status,
+}
+
+#[derive(Subcommand)]
+enum AgentsAction {
+    /// Let AI agents use the library (each within the view it was registered with)
+    On,
+    /// Stop every AI agent from reading the library, without unregistering anything
+    Off,
+    /// Say whether agents can use the library
     Status,
 }
 
@@ -659,6 +683,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 ClipboardAction::Status => clip::Setting::Status,
             };
             clip::clipboard(action, json)?
+        }
+        Command::Agents { action, json } => {
+            let action = match action {
+                AgentsAction::On => agents::Action::On,
+                AgentsAction::Off => agents::Action::Off,
+                AgentsAction::Status => agents::Action::Status,
+            };
+            agents::run(action, json)?
         }
         Command::Doctor { json } => {
             if !admin::doctor(json)? {

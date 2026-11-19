@@ -179,6 +179,7 @@ pub fn status(as_json: bool) -> Result<()> {
     let mut value = tools::sync_status(&mut db, &Default::default())?;
     value["data_directory"] = json!(dir);
     value["database"] = json!(paths::database(&dir));
+    value["agents"] = crate::agents::status_json(&db);
     value["daemon"] = match &daemon {
         Some(d) => json!({
             "running": true,
@@ -818,6 +819,11 @@ fn run_checks() -> Vec<Check> {
             checks.push(ok("Backup folder", "not used"));
         }
         checks.push(clipboard_check(db));
+        checks.push(if crate::agents::enabled(db) {
+            ok("AI agents", "on: agents with zone registered can use the library (`zone agents off` stops them all)")
+        } else {
+            warn("AI agents", "off: every zone server tells its agent that access is turned off", "Run `zone agents on` when you want agents to use the library again.")
+        });
     }
 
     let clock = Clock::system();

@@ -143,6 +143,19 @@ pub fn describe(event: &Value) -> String {
             };
             format!("{device} sent a clip: {}{from}{then}", plural(length, "character", "characters"))
         }
+        "agents_switched" => {
+            let by = match text("by") {
+                "page" => " on the page",
+                "mac" => " in Zone for Mac",
+                "cli" => " with zone agents",
+                _ => "",
+            };
+            if event["on"] == true {
+                format!("AI agents were let back in{by}")
+            } else {
+                format!("AI agents were turned off{by}: every zone server now says access is off")
+            }
+        }
         "resync_requested" => match event["device"].as_str() {
             Some(name) => format!("{name} was asked to send everything again"),
             None => "Every phone was asked to send everything again".to_string(),
