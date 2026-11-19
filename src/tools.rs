@@ -20,6 +20,8 @@ pub const MAX_SEARCH_LIMIT: usize = 100;
 pub const DEFAULT_MAX_CHARS: usize = 20_000;
 pub const MAX_MAX_CHARS: usize = 200_000;
 pub const MAX_GET_IDS: usize = 50;
+/// The most text one get_items call returns, over all its items.
+pub const MAX_GET_TOTAL: usize = 100_000;
 pub const MAX_MARK_IDS: usize = 500;
 const PREVIEW_CHARS: usize = 200;
 
@@ -198,7 +200,7 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         ToolDef {
             name: "get_items",
             title: "Read full items",
-            description: "Return the full text of items by id (ids come from list_items or search_items). Long texts such as meeting transcripts are cut at max_chars and marked truncated, with next_offset to continue reading. For a meeting, text is the transcript with one \"Speaker: words\" line per turn.".to_string(),
+            description: format!("Return the full text of items by id (ids come from list_items or search_items). Long texts such as meeting transcripts are cut at max_chars (and at {MAX_GET_TOTAL} characters for the whole call) and marked truncated, with next_offset: call again with offset to read on. For a meeting, text is the transcript with one \"Speaker: words\" line per turn. An id that is not in the library comes back in not_found."),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -253,14 +255,38 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
 /// counted or flagged, and asking for it by id answers as if it did not exist.
 pub fn call(db: &mut Db, name: &str, args: &Map<String, Value>, access: &Access) -> Result<Value> {
     let scope = &access.scope;
+    let definitions = definitions(access);
+    let Some(def) = definitions.iter().find(|d| d.name == name) else {
+        if name == "mark_processed" {
+            bail!("this server was started with --read-only, so mark_processed is not available. Tell the person which items you handled instead.");
+        }
+        let names: Vec<&str> = definitions.iter().map(|d| d.name).collect();
+        bail!("unknown tool \"{name}\". The tools are: {}.", names.join(", "));
+    };
+    // An argument a tool does not take is named, with what it does take, rather than ignored:
+    // an agent that sends `date` must not get the whole library and think it is that day's.
+    if let Some(properties) = def.input_schema["properties"].as_object()
+        && let Some(unknown) = args.keys().find(|key| !properties.contains_key(key.as_str()))
+    {
+        let takes: Vec<&str> = properties.keys().map(String::as_str).collect();
+        let hint = match unknown.as_str() {
+            "date" | "day" | "time" | "window" | "range" | "since" | "until" | "from" | "to" if properties.contains_key("when") => {
+                " For a time, send when with words such as \"Wednesday 12pm to 5pm\", or start and end."
+            }
+            "kind" | "type" if properties.contains_key("kinds") => " Send kinds as a list: [\"note\"].",
+            "id" if properties.contains_key("ids") => " Send ids as a list: [\"<id>\"].",
+            "q" | "text" | "search" if properties.contains_key("query") => " Send the words as query.",
+            _ => "",
+        };
+        bail!("{name} does not take \"{unknown}\". It takes: {}.{hint}", takes.join(", "));
+    }
     match name {
         "list_items" => list_items(db, args, scope),
         "search_items" => search_items(db, args, scope),
         "get_items" => get_items(db, args, scope),
         "library_stats" => library_stats(db, args, scope),
         "sync_status" => sync_status(db, scope),
-        "mark_processed" if !access.read_only => mark_processed(db, args, scope),
-        "mark_processed" => bail!("this server was started with --read-only, so mark_processed is not available"),
+        "mark_processed" => mark_processed(db, args, scope),
         other => bail!("unknown tool \"{other}\""),
     }
 }
@@ -700,6 +726,9 @@ fn get_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Va
 
     let mut items = Vec::new();
     let mut not_found = Vec::new();
+    // What is left of the whole call's text. An item past it comes back empty, with where to
+    // start reading it.
+    let mut left = MAX_GET_TOTAL;
     for id in &ids {
         let Some(row) = db.get(id)? else {
             not_found.push(id.clone());
@@ -712,8 +741,9 @@ fn get_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Va
         }
         let total_chars = row.text.chars().count();
         let start = offset.min(total_chars);
-        let text: String = row.text.chars().skip(start).take(max_chars).collect();
+        let text: String = row.text.chars().skip(start).take(max_chars.min(left)).collect();
         let returned = text.chars().count();
+        left -= returned;
         let truncated = start + returned < total_chars;
         let mut entry = Map::new();
         entry.insert("id".into(), json!(row.id));
@@ -742,7 +772,18 @@ fn get_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Va
         entry.insert("text".into(), json!(text));
         items.push(Value::Object(entry));
     }
-    Ok(json!({ "items": items, "not_found": not_found }))
+    let mut out = json!({ "items": items, "not_found": not_found });
+    if items_cut(&out) {
+        out["note"] = json!(format!(
+            "Some text was cut (\"truncated\": true): at most {} characters per item (max_chars) and {MAX_GET_TOTAL} per call. Call get_items again with that id and offset set to its next_offset.",
+            max_chars
+        ));
+    }
+    Ok(out)
+}
+
+fn items_cut(out: &Value) -> bool {
+    out["items"].as_array().is_some_and(|items| items.iter().any(|i| i["truncated"] == true))
 }
 
 fn library_stats(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
@@ -1181,6 +1222,33 @@ mod tests {
         assert!(err("get_items", json!({})).contains("ids is required"));
         assert!(err("library_stats", json!({ "group_by": "moon" })).contains("group_by must be"));
         assert!(err("nope", json!({})).contains("unknown tool"));
+    }
+
+    #[test]
+    fn arguments_a_tool_does_not_take_are_named_with_what_to_send() {
+        let mut db = library();
+        let error = call(&mut db, "list_items", &args(json!({ "date": "2026-11-11" })), false).unwrap_err().to_string();
+        assert!(error.starts_with("list_items does not take \"date\". It takes: ") && error.contains("send when"), "{error}");
+        let error = call(&mut db, "get_items", &args(json!({ "id": "B-NOON" })), false).unwrap_err().to_string();
+        assert!(error.contains("Send ids as a list"), "{error}");
+        let error = call(&mut db, "search_items", &args(json!({ "q": "harbor" })), false).unwrap_err().to_string();
+        assert!(error.contains("Send the words as query"), "{error}");
+        let error = call(&mut db, "list_everything", &args(json!({})), false).unwrap_err().to_string();
+        assert!(error.contains("The tools are: list_items, search_items"), "{error}");
+    }
+
+    #[test]
+    fn get_items_never_returns_more_than_its_budget() {
+        let mut db = library();
+        let long: Vec<Item> = (0..6).map(|n| make(&format!("BIG{n}"), "meeting", None, "2026-11-13T18:00:00Z", &"x".repeat(30_000))).collect();
+        db.apply_items(&long, &Delivery { carrier: Carrier::Link, device_id: None, received_at: 1.0 }).unwrap();
+        let ids: Vec<String> = (0..6).map(|n| format!("BIG{n}")).collect();
+        let out = call(&mut db, "get_items", &args(json!({ "ids": ids, "max_chars": 200000 })), false).unwrap();
+        let total: usize = out["items"].as_array().unwrap().iter().map(|i| i["text"].as_str().unwrap().chars().count()).sum();
+        assert_eq!(total, MAX_GET_TOTAL);
+        let last = &out["items"][5];
+        assert_eq!((last["truncated"].as_bool(), last["next_offset"].as_u64()), (Some(true), Some(0)));
+        assert!(out["note"].as_str().unwrap().contains("offset set to its next_offset"));
     }
 
     #[test]

@@ -1092,9 +1092,7 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         // The best tier there is at all, not only on this page.
-        let matched = if total == 0 || plan.all == plan.broad {
-            ALL_WORDS
-        } else if self.fts_count(table, &plan.all, filter, phrases)? > 0 {
+        let matched = if total == 0 || plan.all == plan.broad || self.fts_count(table, &plan.all, filter, phrases)? > 0 {
             ALL_WORDS
         } else if plan.close.as_ref().is_some_and(|close| self.fts_count(table, close, filter, phrases).unwrap_or(0) > 0) {
             CLOSE_SPELLING

@@ -260,9 +260,6 @@ impl ServerHandler for ZoneServer {
             };
             return Ok(result.into());
         }
-        if !tools::definitions(&self.access).iter().any(|def| def.name == name) {
-            return Err(ErrorData::invalid_params(format!("unknown tool: {name}"), None));
-        }
         let arguments = request.arguments.unwrap_or_default();
         let outcome = {
             let mut db = self.db.lock().map_err(|_| ErrorData::internal_error("the library is unavailable", None))?;
