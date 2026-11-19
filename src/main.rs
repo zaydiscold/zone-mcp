@@ -431,7 +431,9 @@ enum McpAction {
     #[command(long_about = "Register zone with AI clients: name them, or use --all for every one on this computer.\n\n\
                             Clients: claude-code (every profile), claude-desktop, codex (every CODEX_HOME), cursor, hermes \
                             (every profile), gemini, qwen, opencode, windsurf, vscode, zed, kiro, droid, copilot, lm-studio, \
-                            goose, crush, amp, cline, roo.\n\n\
+                            goose, crush, amp, cline, roo, antigravity, warp, junie. The ChatGPT desktop app reads Codex's \
+                            settings, so `codex` (or `chatgpt`) covers it. For Raycast, `zone mcp config --client raycast` \
+                            prints the link that installs zone there.\n\n\
                             Only zone's own entry is written. Everything else in each file is kept, and the original is saved \
                             beside it as <file>.before-zone the first time.")]
     Install {
