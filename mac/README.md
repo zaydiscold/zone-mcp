@@ -44,6 +44,17 @@ dot: zone is not running. An exclamation mark: something needs you.
   the time gives way to "Copied". What already has a place above (the clip, the meeting, the
   three notes) is not listed a second time under All.
 - History, Flash, Agents and Settings.
+- A search field under the top line. Typing searches the whole library (`zone search`, a moment
+  after the typing stops; a search typed past is given up). Each row shows the words around the
+  match with the matched words in the accent. Up and Down move, Return copies the row and closes,
+  Command-Return pastes it into the app that was in front, Escape closes. Pasting needs
+  Accessibility: the first time, the row is copied instead, one line says why and macOS asks;
+  after that, without it, Command-Return copies.
+- **Open Zone with a key**, in Settings and on the guide's last page: off until turned on,
+  Control-Option-Z unless another key is recorded (click the key, press the new one). It opens
+  the window with the cursor in the search field. It is off by default because a shortcut an app
+  uses inside its own menus cannot be found out beforehand; a key another app registered is
+  refused, and Settings says so.
 - Only when something needs you, a line at the top says what: no iPhone paired yet
   (**Pair**), something macOS has to allow (**Allow**, see below), or zone that keeps
   stopping (**Start again**, **Show the log**).
@@ -53,12 +64,33 @@ window of the app (**Open in browser** shows it in the browser instead). That is
 the menu open it at a place: a meeting (`#/meeting/<id>`), the notes (`#/notes`). The links
 are made in one function, `PageRoutes` in `ZoneKit/Menu.swift`.
 
-**Agents.** Every AI app on this Mac once, however many profiles it has ("Claude Code: 7
-profiles, reads everything"), with a switch. Click its name for each profile as `zone mcp
-status` reports it: connected, starts another copy of zone, removed by you, not connected.
-Click the line under its name to choose what it may read: everything, notes and meetings
-only, or all but keyboard dictations (what you typed by voice into other apps). The apps
-that are not connected fold under one line.
+**Agents**, top to bottom:
+
+- **Let AI agents read my library**, one switch for every agent (`zone agents on|off`). Off,
+  every connected app still starts zone and is told access is off, and gets nothing. What is
+  under the switch stays as it was and is dimmed.
+- **What agents can read**: Dictations into other apps, Dictations in Zone, Notes, Meetings,
+  Clips. These are applied to every connected app that reads the same as most of them, and given
+  to any app connected next. Each is an exact flag of `zone mcp install`: unticking "Dictations
+  into other apps" is `--exclude-sources keyboard`, unticking "Dictations in Zone" is
+  `--exclude-sources app,note` (`note` is the recording behind a voice note), unticking both drops
+  `dictation` from `--kinds`, and the other three are kinds. The line under the list says how many
+  apps a change is written into, that each reads that way from its next new chat or session, and
+  which apps keep a limit of their own. The last tick cannot be taken away: zone reads no kinds as
+  every kind, and the switch is what turns agents off. A view set from the command line that the
+  five cannot say is shown in words and only replaced when a box is clicked.
+- **Connected apps**, each once however many profiles it has, with the app's own icon when it is
+  installed as an app. The line under its name names a limit only when it is not what the others
+  read ("Its own limit: notes and meetings only"). **...** shows its profiles as `zone mcp
+  status` reports each one, sets what this one app reads ("Only for this one: ...", or "Same as
+  the other apps"), tests it, or disconnects it. **Connect an app** lists the apps zone knows that
+  are on this Mac and not connected, then **Other app...**, which shows `zone mcp config --client
+  other` (with the same view) and a Copy button.
+- **Things to ask**: three of `zone prompts`, then all of them, each with a title, one line and
+  Copy.
+
+Any part whose command an older zone lacks (`zone agents`, `zone prompts`, `zone mcp config`) is
+left out, with no error. The guide's agents step keeps a switch per app.
 
 **Test** does not take zone's word for it. It reads from the app's own settings file which
 program and arguments that app would start (`AgentConfig`: JSON with or without comments,
@@ -404,8 +436,15 @@ mac/scripts/dev-sandbox.sh cmd popover:agents test:zone test:cursor agent:claude
 mac/scripts/dev-sandbox.sh cmd history:notes "snap:history=/tmp/history.png"   # History at a place (also history:meeting=ID)
 mac/scripts/dev-sandbox.sh cmd guide:camera "snap:guide=/tmp/card.png"    # the permission card
 mac/scripts/dev-sandbox.sh cmd "pretend:localNetwork=denied" popover      # what a refusal looks like
+mac/scripts/dev-sandbox.sh cmd hotkey:press search:lease key:down key:return  # the key, a search, the keys
+mac/scripts/dev-sandbox.sh cmd popover:agents read:keyboard=off access:off otherapp prompts:all
+mac/scripts/dev-sandbox.sh cmd "connectmenu:/tmp/menu.png"              # opens, photographs and closes Connect an app
 mac/scripts/dev-sandbox.sh stop
 ```
+
+A test run never registers a real key (`hotkey:press` stands in for it) and never posts
+Command-V: what would be pasted, and into which app, goes to the file `pasted`, and only with
+`ZONE_MAC_PRETEND_ACCESSIBILITY` set (without it, the first-paste explanation shows).
 
 `snapdrawn:` in place of `snap:` has the app draw the window itself, for a run behind the
 lock screen, where the window server hands back an empty picture. `start --update-feed URL`
@@ -427,10 +466,11 @@ this file was taken this way.
 
 | | |
 | --- | --- |
-| `ZoneKit/` | A Swift package with everything that is not a view, and its tests: what zone prints as Swift values (`Models`, `Agents`, `Clips`), what the menu shows and the links into the history page (`Menu`), reading an agent's settings and checking that what it starts answers (`AgentCheck`), running zone (`ZoneClient`), the event feed (`Events`, `ActivitySources`), who runs the service and the app's copy of zone (`Daemon`), the `zone` command and update check (`CommandLink`), where files are (`ZoneEnvironment`). |
+| `ZoneKit/` | A Swift package with everything that is not a view, and its tests: what zone prints as Swift values (`Models`, `Agents`, `Clips`), what the menu shows and the links into the history page (`Menu`), reading an agent's settings and checking that what it starts answers (`AgentCheck`), running zone (`ZoneClient`), the event feed (`Events`, `ActivitySources`), who runs the service and the app's copy of zone (`Daemon`), the `zone` command and update check (`CommandLink`), where files are (`ZoneEnvironment`), the menu's search and its matched words (`Search`), the key that opens the menu (`HotKey`), the agents switch, prompts, paste snippet and the five reading choices (`AgentAccess`). |
 | `Zone/AppModel.swift` | The one object the views read and call. |
 | `Zone/StatusItemController.swift`, `MenuBarIcon.swift` | The Z and the window under it. |
 | `Zone/PopoverView.swift`, `SharedPanels.swift` | The popover's pages, and the pairing and agents panels the guide also uses. |
+| `Zone/AgentsPage.swift`, `SearchViews.swift`, `GlobalKey.swift` | The Agents page and its Connect an app menu; the search field and its results; the key that opens the menu (Carbon's `RegisterEventHotKey`), pasting with Command-V, and the key recorder. |
 | `Zone/WelcomeView.swift`, `FloatingView.swift` | The guide and the floating window. |
 | `Zone/FlashWindow.swift`, `HistoryWindow.swift` | Flash and History in Zone windows: the web view, the bar above the page, and for Flash the camera. |
 | `Zone/PermissionGuide.swift`, `LocalNetworkProbe.swift` | The card beside System Settings (from Hex) and asking whether the local network is allowed. What can be tested without windows (which list, where the card goes, when to bring the page back) is `ZoneKit/Permissions.swift`. |
