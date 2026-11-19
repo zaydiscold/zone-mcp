@@ -48,11 +48,12 @@
     }
     if (-not $arch) { $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE } }
     # The builds to look for, best first. Windows 11 on ARM also runs the Intel one, emulated.
-    $platforms = switch ($arch.ToUpperInvariant()) {
-        'AMD64' { @('windows-x86_64') }
-        'ARM64' { @('windows-aarch64', 'windows-x86_64') }
+    # (In @() so that a list of one stays a list.)
+    $platforms = @(switch ($arch.ToUpperInvariant()) {
+        'AMD64' { 'windows-x86_64' }
+        'ARM64' { 'windows-aarch64', 'windows-x86_64' }
         default { Fail "there is no ready-made zone for Windows on $arch. Build it from source: https://github.com/$repo#from-source" }
-    }
+    })
 
     # Which version is the latest: GitHub sends /releases/latest on to /releases/tag/v<version>.
     if (-not $version) {

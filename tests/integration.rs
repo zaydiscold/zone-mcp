@@ -44,7 +44,7 @@ impl Sandbox {
     /// never the real Run key.
     fn run_key(&self) -> String {
         let name = self.home.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        format!(r"Software\zone-test\{name}")
+        format!(r"Software\zone-test-{name}")
     }
 
     /// `zone` with every path that could reach the real machine pointed into the sandbox.
