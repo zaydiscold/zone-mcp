@@ -125,7 +125,7 @@ More may be added.
           "default": "today"
         }
       ],
-      "text": "What did I say today? Call list_items with when \"today\" ..."
+      "text": "What did I say today? Call list_items with when \"today\" and kinds [\"dictation\",\"note\",\"meeting\"], check that its range is the window I mean, ..."
     }
   ]
 }
