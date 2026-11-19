@@ -388,6 +388,7 @@ fn arrived_with(db: &Db, items: &[Item], changed: &[usize], arrival: &Arrival<'_
         let length = clip.text.chars().count();
         let who = arrival.device.unwrap_or("a phone");
         let source = clip.source.as_deref().unwrap_or("unknown");
+        let started = Instant::now();
         let (copied, tool, why_not) = if !on {
             (false, None, Some("off"))
         } else if !over_link {
@@ -406,7 +407,7 @@ fn arrived_with(db: &Db, items: &[Item], changed: &[usize], arrival: &Arrival<'_
             }
         };
         match (&tool, why_not) {
-            (Some(tool), _) => info!("clip: {length} characters from {who} ({source}), put on the clipboard with {tool}"),
+            (Some(tool), _) => info!("clip: {length} characters from {who} ({source}), put on the clipboard with {tool} in {} ms", started.elapsed().as_millis()),
             (None, Some("off") | None) => info!("clip: {length} characters from {who} ({source}), kept"),
             (None, Some(why)) => info!("clip: {length} characters from {who} ({source}), kept and not copied ({why})"),
         }
@@ -736,6 +737,25 @@ mod tests {
         run_tool(&tool, text).unwrap();
         let read = std::process::Command::new("powershell").env_remove("PSModulePath").args(["-NoProfile", "-Command", "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&read.stdout).trim_end_matches(['\r', '\n']), windows_line_ends(text).trim_end_matches(['\r', '\n']));
+    }
+
+    /// How long each way of writing the Windows clipboard takes. Prints, asserts nothing but
+    /// that each one works: `cargo test clipboard_ways -- --ignored --nocapture`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn clipboard_ways_on_windows_timed() {
+        let text = "caf\u{e9} \u{65e5}\u{672c}\u{8a9e} \u{1F600}\nsecond line";
+        for tool in tools() {
+            let mut times = Vec::new();
+            for _ in 0..5 {
+                let started = Instant::now();
+                run_tool(&tool, text).unwrap_or_else(|e| panic!("{}: {e:#}", tool.name));
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            times.sort_by(f64::total_cmp);
+            println!("{:>18}: median {:.1} ms, slowest {:.1} ms", tool.name, times[2], times[4]);
+        }
     }
 
     /// The real path through a command, with a command that writes a file.

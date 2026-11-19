@@ -246,7 +246,7 @@ pub fn computer_name() -> String {
             }
         }
     }
-    let from_command = std::process::Command::new("hostname")
+    let from_command = crate::background::hide(&mut std::process::Command::new("hostname"))
         .output()
         .ok()
         .filter(|out| out.status.success())

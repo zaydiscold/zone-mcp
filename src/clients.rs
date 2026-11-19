@@ -910,6 +910,8 @@ fn claude_code_manual(launch: &Launch, dir: Option<&Path>) -> String {
 
 fn claude_command(claude: &Path, dir: &Option<PathBuf>) -> std::process::Command {
     let mut command = std::process::Command::new(claude);
+    // The daemon runs this too, and on Windows it has no window to lend.
+    crate::background::hide(&mut command);
     match dir {
         Some(dir) => command.env("CLAUDE_CONFIG_DIR", dir),
         None => command.env_remove("CLAUDE_CONFIG_DIR"),
