@@ -21,6 +21,9 @@ public struct AgentSurvey: Decodable, Equatable, Sendable {
         /// What the agent there may see. Nil when this zone is too old to say (it then
         /// cannot limit a view either).
         public var scope: Scope?
+        /// What the entry there starts, as written. Nil without an entry, or from a zone
+        /// before `mcp status` said.
+        public var launch: Launch?
 
         public init(client: String, label: String, profile: String? = nil, path: String = "", installed: Bool = true, state: String, detail: String? = nil, readOnly: Bool = false, scope: Scope? = nil) {
             self.client = client
@@ -45,10 +48,11 @@ public struct AgentSurvey: Decodable, Equatable, Sendable {
             detail = try c.decodeIfPresent(String.self, forKey: .detail)
             readOnly = try c.decodeIfPresent(Bool.self, forKey: .readOnly) ?? (state == "registered_read_only")
             scope = try c.decodeIfPresent(Scope.self, forKey: .scope)
+            launch = try? c.decodeIfPresent(Launch.self, forKey: .launch)
         }
 
         enum CodingKeys: String, CodingKey {
-            case client, label, profile, path, installed, state, detail, scope
+            case client, label, profile, path, installed, state, detail, scope, launch
             case readOnly = "read_only"
         }
 
@@ -102,6 +106,25 @@ public struct AgentSurvey: Decodable, Equatable, Sendable {
             guard hasZone, let scope else { return nil }
             let reads = "reads \(AgentView(scope, knowsClips: knowsClips).words)"
             return readOnly ? reads + ", cannot mark items" : reads
+        }
+    }
+
+    /// A program and its arguments, as an app's settings start it.
+    public struct Launch: Decodable, Equatable, Sendable {
+        public var command: String
+        public var args: [String]
+
+        public init(command: String, args: [String] = []) {
+            self.command = command
+            self.args = args
+        }
+
+        enum CodingKeys: String, CodingKey { case command, args }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            command = try c.decode(String.self, forKey: .command)
+            args = try c.decodeIfPresent([String].self, forKey: .args) ?? []
         }
     }
 
