@@ -21,6 +21,7 @@ macro_rules! eprint {
 }
 
 mod admin;
+mod agents;
 mod background;
 mod backup;
 mod cli;
@@ -40,7 +41,9 @@ mod mcp;
 mod out;
 mod pairing;
 mod paths;
+mod prompts;
 mod proxy;
+mod resources;
 mod scope;
 mod serve;
 mod service;
@@ -208,6 +211,37 @@ enum Command {
         /// Print JSON instead of text
         #[arg(long, global = true)]
         json: bool,
+    },
+    /// Let AI agents use your library, or stop every one of them at once: on, off, status
+    #[command(long_about = "One switch for every AI agent on this computer. On until you turn it off.\n\n  zone agents off\n  \
+                            zone agents on\n  zone agents status [--json]\n\n\
+                            Off does not unregister zone from any client. Each client still starts zone and connects, and is \
+                            told that agent access is turned off on this computer and how to turn it back on. Servers that are \
+                            already running notice within a few seconds. Each switch is recorded in `zone events`.")]
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
+        /// Print JSON instead of text
+        #[arg(long, global = true)]
+        json: bool,
+    },
+    /// Things to ask your agent: example prompts that use your library, to copy into any agent
+    #[command(
+        long_about = "Things to ask your agent: example prompts that use your library, to copy into any agent. Agents that \
+                      support MCP prompts offer the same ones as slash commands.\n\n  zone prompts                 the list\n  \
+                      zone prompts show <id>       one prompt's text, ready to paste\n  \
+                      zone prompts show what-did-i-say day=\"Wednesday 12pm to 5pm\"\n\n\
+                      The view flags (--notes-only, --kinds, --no-keyboard, --read-only) show the prompts, and the wording, \
+                      that an agent with that view gets."
+    )]
+    Prompts {
+        #[command(flatten)]
+        view: scope::ViewArgs,
+        /// Print JSON instead of text
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: Option<PromptsAction>,
     },
     /// Check the setup and explain how to fix anything that is wrong
     Doctor {
@@ -388,12 +422,37 @@ enum ClipboardAction {
 }
 
 #[derive(Subcommand)]
+enum PromptsAction {
+    /// Print one prompt's text, ready to paste. Arguments are name=value: day=Wednesday, topic="the lease"
+    Show {
+        /// The prompt's id from `zone prompts`
+        id: String,
+        /// name=value pairs for the prompt's arguments
+        args: Vec<String>,
+        #[command(flatten)]
+        view: scope::ViewArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentsAction {
+    /// Let AI agents use the library (each within the view it was registered with)
+    On,
+    /// Stop every AI agent from reading the library, without unregistering anything
+    Off,
+    /// Say whether agents can use the library
+    Status,
+}
+
+#[derive(Subcommand)]
 enum McpAction {
     /// Register zone with AI clients: name them, or --all for every one on this computer
     #[command(long_about = "Register zone with AI clients: name them, or use --all for every one on this computer.\n\n\
                             Clients: claude-code (every profile), claude-desktop, codex (every CODEX_HOME), cursor, hermes \
                             (every profile), gemini, qwen, opencode, windsurf, vscode, zed, kiro, droid, copilot, lm-studio, \
-                            goose, crush, amp, cline, roo.\n\n\
+                            goose, crush, amp, cline, roo, antigravity, warp, junie. The ChatGPT desktop app reads Codex's \
+                            settings, so `codex` (or `chatgpt`) covers it. For Raycast, `zone mcp config --client raycast` \
+                            prints the link that installs zone there.\n\n\
                             Only zone's own entry is written. Everything else in each file is kept, and the original is saved \
                             beside it as <file>.before-zone the first time.")]
     Install {
@@ -415,6 +474,23 @@ enum McpAction {
         /// Every client, and stop registering by itself
         #[arg(long)]
         all: bool,
+    },
+    /// Print what to paste into an app's MCP settings to use this zone: the generic JSON, or one
+    /// client's own format
+    #[command(long_about = "Print what to paste into an app's MCP settings to use this zone, with this program's full path.\n\n\
+                            Without --client: the generic \"mcpServers\" JSON that most apps take, and the TOML and YAML forms \
+                            Codex, Hermes and Goose use. --client <name> prints one client's own snippet and where it goes; \
+                            --client other prints only the generic JSON. --json prints every form at once.\n\n\
+                            The view flags (--notes-only, --kinds, --no-keyboard, --read-only) go into the snippet.")]
+    Config {
+        /// One client (a name from `zone mcp status`), or `other` for the generic snippet only
+        #[arg(long)]
+        client: Option<String>,
+        #[command(flatten)]
+        view: scope::ViewArgs,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
     /// Show which clients have zone registered
     Status {
@@ -695,6 +771,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
             };
             clip::clipboard(action, json)?
         }
+        Command::Agents { action, json } => {
+            let action = match action {
+                AgentsAction::On => agents::Action::On,
+                AgentsAction::Off => agents::Action::Off,
+                AgentsAction::Status => agents::Action::Status,
+            };
+            agents::run(action, json)?
+        }
+        Command::Prompts { view, json, action } => match action {
+            None => prompts::list(&tools::Access { read_only: view.read_only, scope: view.scope()? }, json)?,
+            Some(PromptsAction::Show { id, args, view: inner }) => {
+                let view = inner.or(&view);
+                prompts::show(&id, &args, &tools::Access { read_only: view.read_only, scope: view.scope()? }, json)?
+            }
+        },
         Command::Doctor { json } => {
             if !admin::doctor(json)? {
                 return Ok(ExitCode::from(1));
@@ -722,6 +813,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
             }
             Some(McpAction::Uninstall { clients, all }) => clients::uninstall(&clients, all)?,
             Some(McpAction::Status { json }) => clients::status(json)?,
+            Some(McpAction::Config { client, view: inner, json }) => {
+                let view = inner.or(&view);
+                clients::config(client.as_deref(), view.read_only, &view.scope()?, json)?
+            }
         },
         Command::Install { only_login_item: true, no_start, .. } => {
             service::adopt_item_home();

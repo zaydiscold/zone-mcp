@@ -1475,7 +1475,11 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       h("div", { class: "line" }, h("div", { class: "l" }, bk.folder ? h("span", { class: "path" }, bk.folder) : "Not set", h("small", null, !bk.folder ? "" : bstate.state === "waiting" ? bstate.message : bstate.state === "error" ? "It cannot be read. Run zone doctor in a terminal." : "Last read " + ago(bk.last_read_age_s) + ".")), null),
       h("div", { class: "cmd" }, h("code", null, bk.folder ? "zone backup-folder --clear" : "zone backup-folder <path>"), h("small", null, bk.folder ? "stops watching" : "starts watching")));
 
-    const agentsBox = h("section", { class: "box" }, h("h2", null, "AI agents"), h("p", null, "The AI apps on this computer that can read your library through zone. They can mark items done and nothing else: no agent can change or delete your words."), h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Looking…"))));
+    const access = set.agents;
+    const accessLine = h("div", { class: "line" }, h("div", { class: "l" }, access.enabled ? "On" : "Off", h("small", null, access.enabled ? "Agents can use your library, each within what it was connected with." : "Every agent is told that access is off on this computer. Nothing is unregistered.")),
+      btn("button" + (access.enabled ? "" : " primary"), access.enabled ? "Turn off" : "Turn on", () => change({ agents: !access.enabled }), { "aria-pressed": String(access.enabled), title: access.enabled ? "Stop every AI agent from reading your library" : "Let AI agents use your library again" }));
+    const agentsBox = h("section", { class: "box" }, h("h2", null, "AI agents"), h("p", null, "The AI apps on this computer that can read your library through zone. They can mark items done and nothing else: no agent can change or delete your words."), accessLine, h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Looking…"))));
+    const askBox = h("section", { class: "box" }, h("h2", null, "Things to ask"), h("p", null, "Prompts that put your spoken library to work. Copy one into any agent; apps that support MCP prompts also offer them as slash commands."), h("div", { class: "line" }, h("div", { class: "l" }, h("small", null, "Looking…"))));
     api("/api/agents").then((data) => {
       if (my !== seq) return;
       const words = { registered: "Connected", registered_read_only: "Connected, read only", other_copy: "Connected to another copy of zone", not_registered: "Not connected", removed_by_you: "Removed by you", unreadable: "Cannot tell" };
@@ -1486,9 +1490,12 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
         else if (c.scope) limits.push("sees everything");
         return h("div", { class: "line" }, h("div", { class: "l" }, c.label, h("small", null, limits.join(" · ") || (c.state === "not_registered" ? "zone mcp install " + c.client : c.detail || ""))), h("div", { class: "r" }, words[c.state] || c.state));
       });
-      agentsBox.replaceChildren(agentsBox.children[0], agentsBox.children[1], ...(lines.length ? lines : [h("div", { class: "line" }, h("div", { class: "l" }, "No AI apps were found on this computer."))]),
+      const other = data.other_app ? [h("div", { class: "line" }, h("div", { class: "l" }, "Another app", h("small", null, "The settings to paste into an AI app zone does not know (zone mcp config).")), btn("button", "Copy", async () => { await copyText(data.other_app); toast("Copied. Paste it into the app's MCP settings."); }))] : [];
+      agentsBox.replaceChildren(agentsBox.children[0], agentsBox.children[1], accessLine, ...(lines.length ? lines : [h("div", { class: "line" }, h("div", { class: "l" }, "No AI apps were found on this computer."))]), ...other,
         h("div", { class: "cmd" }, h("code", null, "zone mcp install --all"), h("small", null, "connects them; --notes-only and --no-keyboard limit what they see")));
-    }).catch(() => { agentsBox.lastChild.replaceChildren(h("div", { class: "l" }, "Could not read the AI apps' settings.")); });
+      askBox.replaceChildren(askBox.children[0], askBox.children[1], ...(data.prompts || []).map((p) => h("div", { class: "line" }, h("div", { class: "l" }, p.title, h("small", null, p.description)),
+        btn("button", "Copy", async () => { await copyText(p.text); toast("Copied. Paste it into your agent" + ((p.arguments || []).some((a) => a.required && !a.default) ? " and fill in the part in brackets." : ".")); }, { "aria-label": "Copy the prompt: " + p.title }))));
+    }).catch(() => { agentsBox.lastChild.replaceChildren(h("div", { class: "l" }, "Could not read the AI apps' settings.")); askBox.lastChild.replaceChildren(h("div", { class: "l" }, "Could not load the prompts.")); });
 
     const removed = h("section", { class: "box", id: "removed" }, h("h2", null, "Removed from this computer"), h("p", null, "Removing an item here hides it on this computer only: from this page, from agents, from the command line and from exports. Nothing is ever deleted on your iPhone. An item can be put back for " + gone.kept_days + " days; after that its words are erased here. It stays away through later syncs unless you edit it on the phone."),
       gone.items.length ? gone.items.map((item) => h("div", { class: "line kc-" + item.kind }, h("div", { class: "l" }, h("span", { class: "meta" }, h("span", { class: "kind k-" + item.kind }, KIND_ONE[item.kind] || item.kind), h("span", null, item.day_label), h("span", null, "removed " + ago(item.removed_age_s)), h("span", null, plural(item.days_left, "day", "days") + " left")), h("div", { class: "text clamp l2" }, item.title ? item.title + ": " + item.preview : item.preview)),
@@ -1511,7 +1518,7 @@ pre.preview { margin: 0; height: 240px; overflow: auto; padding: 12px 14px; bord
       }
     }).catch(() => { versionLine.textContent = "Could not check"; });
 
-    return h("div", null, h("div", { class: "vhead" }, h("h1", null, "Settings")), h("div", { class: "grid2" }, appearance, phones, clipboard, backup, agentsBox, about, removed));
+    return h("div", null, h("div", { class: "vhead" }, h("h1", null, "Settings")), h("div", { class: "grid2" }, appearance, phones, clipboard, backup, agentsBox, askBox, about, removed));
   };
 
   // ---------------------------------------------------------------- export

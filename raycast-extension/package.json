@@ -1,0 +1,186 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "zone",
+  "title": "Zone",
+  "description": "Search your Zone for iPhone dictations, voice notes, meetings and clips on your Mac, paste the latest clip, and tick off open notes.",
+  "icon": "icon.png",
+  "author": "zaydiscold",
+  "platforms": [
+    "macOS"
+  ],
+  "categories": [
+    "Productivity"
+  ],
+  "keywords": [
+    "dictation",
+    "voice notes",
+    "transcription",
+    "meetings",
+    "clipboard",
+    "iphone"
+  ],
+  "license": "MIT",
+  "preferences": [
+    {
+      "name": "zonePath",
+      "type": "textfield",
+      "title": "zone Path",
+      "description": "Where the zone program is. Leave empty to look in ~/.local/bin, /usr/local/bin, /opt/homebrew/bin and Zone.app.",
+      "placeholder": "Auto-detect",
+      "required": false
+    },
+    {
+      "name": "libraryFolder",
+      "type": "directory",
+      "title": "Library Folder",
+      "description": "Read another zone library (zone's ZONE_HOME). Leave empty for the usual one.",
+      "required": false
+    }
+  ],
+  "commands": [
+    {
+      "name": "search-zone",
+      "title": "Search Zone",
+      "description": "Search your dictations, voice notes, meetings and clips, by day.",
+      "mode": "view",
+      "keywords": [
+        "dictation",
+        "transcript",
+        "history"
+      ]
+    },
+    {
+      "name": "open-notes",
+      "title": "Open Notes",
+      "description": "Your voice notes that are not done yet, to tick off.",
+      "mode": "view",
+      "keywords": [
+        "todo",
+        "to-do",
+        "voice notes"
+      ]
+    },
+    {
+      "name": "latest-clip",
+      "title": "Paste Latest Clip",
+      "description": "Paste, or copy, the newest text you sent from your iPhone.",
+      "mode": "no-view",
+      "keywords": [
+        "clipboard",
+        "phone"
+      ],
+      "preferences": [
+        {
+          "name": "clipAction",
+          "type": "dropdown",
+          "title": "Action",
+          "description": "What to do with the newest clip.",
+          "required": false,
+          "default": "paste",
+          "data": [
+            {
+              "title": "Paste to Active App",
+              "value": "paste"
+            },
+            {
+              "title": "Copy to Clipboard",
+              "value": "copy"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "recent-clips",
+      "title": "Recent Clips",
+      "description": "Text you sent from your iPhone to this Mac, newest first.",
+      "mode": "view",
+      "keywords": [
+        "clipboard",
+        "phone"
+      ]
+    },
+    {
+      "name": "meetings",
+      "title": "Search Meetings",
+      "description": "Your recorded meetings with their transcripts by speaker.",
+      "mode": "view",
+      "keywords": [
+        "transcript"
+      ]
+    },
+    {
+      "name": "zone-status",
+      "title": "Zone Status",
+      "description": "Whether zone is running, which phones are paired, the last sync and the counts.",
+      "mode": "view"
+    }
+  ],
+  "tools": [
+    {
+      "name": "search-zone",
+      "title": "Search Zone",
+      "description": "Full-text search of the person's Zone library (dictations, voice notes, meetings, clips), newest first, with snippets and a cursor for more."
+    },
+    {
+      "name": "list-zone-items",
+      "title": "List Zone Items",
+      "description": "List the person's Zone items in a time window, optionally only some kinds, as short cards newest or oldest first."
+    },
+    {
+      "name": "get-zone-items",
+      "title": "Get Zone Items",
+      "description": "Get the full text of Zone items by id, for ids taken from search or list results."
+    },
+    {
+      "name": "get-latest-clip",
+      "title": "Get Latest Clip",
+      "description": "Get the newest clip: text the person sent from their iPhone to this Mac on purpose, \"the thing I just sent you\"."
+    },
+    {
+      "name": "get-open-notes",
+      "title": "Get Open Notes",
+      "description": "Get the person's voice notes that are not marked done yet: their to-do list."
+    },
+    {
+      "name": "get-latest-meeting",
+      "title": "Get Latest Meeting",
+      "description": "Get the most recent meeting with its title, time, speakers and full transcript."
+    },
+    {
+      "name": "mark-notes-done",
+      "title": "Mark Notes Done",
+      "description": "Mark voice notes as done, or as not done again. It only sets the done flag and never changes any text."
+    },
+    {
+      "name": "search-zone-mentions",
+      "title": "Zone Items",
+      "description": "Search Zone dictations, voice notes, meetings and clips to mention in AI Chat. Shows the newest items when the query is empty.",
+      "functionalities": [
+        "AI mention search"
+      ]
+    }
+  ],
+  "resourceProvider": "read-zone-item",
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mts",
+    "prepublishOnly": "echo \"\\n\\nIt seems like you are trying to publish the Raycast extension to npm.\\n\\nIf you did intend to publish it to npm, remove the \\`prepublishOnly\\` script and rerun \\`npm publish\\` again.\\nIf you wanted to publish it to the Raycast Store instead, use \\`npm run publish\\` instead.\\n\\n\" && exit 1",
+    "publish": "npx @raycast/api@latest publish"
+  },
+  "dependencies": {
+    "@raycast/api": "^2.13.1",
+    "@raycast/utils": "^2.3.3"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.2.0",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "eslint": "^9.22.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  }
+}

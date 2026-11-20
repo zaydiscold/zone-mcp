@@ -190,6 +190,27 @@ public struct ZoneClient: Sendable {
         try await json(AgentSurvey.self, ["mcp", "status", "--json"])
     }
 
+    /// Whether agents may use the library. Nil from a zone without `zone agents`.
+    public func agentAccess() async -> AgentAccess? {
+        try? await json(AgentAccess.self, ["agents", "status", "--json"])
+    }
+
+    /// Lets every agent use the library, or none, and returns how it stands afterwards.
+    public func setAgentAccess(_ on: Bool) async throws -> AgentAccess {
+        try await json(AgentAccess.self, ["agents", on ? "on" : "off", "--json"])
+    }
+
+    /// The example prompts for an agent with this view. Nil from a zone without `zone prompts`.
+    public func prompts(view: AgentView = .everything) async -> PromptList? {
+        try? await json(PromptList.self, ["prompts", "--json"] + view.arguments)
+    }
+
+    /// What to paste into an app zone does not know, with this view. Nil from a zone without
+    /// `zone mcp config`.
+    public func mcpConfig(view: AgentView = .everything) async -> McpConfig? {
+        try? await json(McpConfig.self, ["mcp", "config", "--client", "other", "--json"] + view.arguments)
+    }
+
     public func version() async throws -> String {
         let text = try await run(["--version"]).text.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.hasPrefix("zone ") ? String(text.dropFirst(5)) : text

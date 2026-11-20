@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var flash: FlashWindowController?
     private var history: HistoryWindowController?
     private let guide = PermissionGuide()
+    private let hotKeys = HotKeyCenter()
     private var commandTimer: Timer?
     /// A test run can ask the app to stay out of the way of whoever is using the Mac: its
     /// windows never take the keyboard and sit almost entirely off the edge of the screen
@@ -49,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var quiet = false
     private var signals: [DispatchSourceSignal] = []
     private var testActivity: NSObjectProtocol?
+    /// The menu a test run opened, so it can be closed again (see `snapMenu`).
+    private var trackingMenu: NSMenu?
+    private var menuWatch: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let variables = ProcessInfo.processInfo.environment
@@ -102,6 +106,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guide.parked = quiet
         guide.openLink = { [weak self] url in self?.model.open(url) }
         model.showGuide = { [weak self] request in self?.guide.show(request) }
+        model.appBehindMenu = { [weak self] in self?.statusItem.appBehind }
+        // The key that opens the menu. A test run never takes a key from the person using the
+        // Mac: it says yes without registering, and `hotkey:press` stands in for the key.
+        let registersKeys = !env.isSandbox || variables["ZONE_MAC_REAL_HOTKEY"] != nil
+        hotKeys.onPress = { [weak self] in self?.statusItem.toggleFromKey() }
+        model.registerHotKey = { [weak self] key in
+            guard registersKeys else { return true }
+            return self?.hotKeys.register(key) ?? false
+        }
+        model.restoreHotKey()
 
         Task {
             await model.start()
@@ -118,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        hotKeys.unregister()
         flash?.window.close()
         history?.window.close()
         guide.close()
@@ -468,6 +483,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 Task { await model.setAgentView(agent, view) }
             }
+        case "read":
+            // read:keyboard=off unticks one of What agents can read (keyboard, inzone, notes,
+            // meetings, clips), as a click on it does.
+            if let argument, let equals = argument.firstIndex(of: "=") {
+                var choices = model.sharedChoices ?? ReadChoices()
+                let on = argument[argument.index(after: equals)...] != "off"
+                switch argument[..<equals] {
+                case "keyboard": choices.keyboard = on
+                case "inzone": choices.inZone = on
+                case "notes": choices.notes = on
+                case "meetings": choices.meetings = on
+                case "clips": choices.clips = on
+                default: break
+                }
+                if !choices.isEmpty { Task { await model.setSharedView(choices.view(knowsClips: model.hasClips)) } }
+            }
         case "clipboard":
             // clipboard:on puts arriving clips on the clipboard, clipboard:off stops.
             model.setClipboardCopy(argument != "off")
@@ -517,12 +548,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "icons":
             // icons:/path/picture.png draws the four faces of the menu bar icon.
             if let argument { drawIconSheet(to: URL(fileURLWithPath: argument)) }
+        case "hotkey":
+            // hotkey:press does what the key does. hotkey:on, hotkey:off, and
+            // hotkey:49,2048 (a key code and Carbon modifiers) set it as Settings does.
+            switch argument {
+            case "press": statusItem.toggleFromKey()
+            case "off": model.setHotKey(nil)
+            case "on", nil: model.setHotKey(model.state.hotKeyChoice)
+            case let value?:
+                let numbers = value.split(separator: ",").compactMap { UInt32($0) }
+                if numbers.count == 2 { model.setHotKey(HotKey(keyCode: numbers[0], modifiers: numbers[1])) }
+            }
+        case "search":
+            // search:lease types those words into the menu's search, search: empties it.
+            model.search.update(argument ?? "")
+        case "key":
+            // key:down, key:up, key:return, key:cmdreturn, key:escape press that key in the menu.
+            let codes: [String: (UInt16, NSEvent.ModifierFlags)] = [
+                "down": (125, []), "up": (126, []), "return": (36, []), "cmdreturn": (36, .command), "escape": (53, []),
+            ]
+            if let (code, flags) = argument.flatMap({ codes[$0] }), statusItem.isOpen {
+                _ = statusItem.handle(keyCode: code, command: flags.contains(.command))
+            }
+        case "otherapp":
+            // otherapp opens what to paste into an app zone does not know, otherapp:off closes it.
+            statusItem.navigation.otherAppOpen = argument != "off"
+        case "prompts":
+            // prompts:all lists every thing to ask, prompts:few the first three,
+            // prompts:copy=ID copies one as its Copy button does.
+            switch argument {
+            case "all": statusItem.navigation.allPrompts = true
+            case "few": statusItem.navigation.allPrompts = false
+            case let value? where value.hasPrefix("copy="):
+                if let prompt = model.prompts?.prompts.first(where: { $0.id == value.dropFirst(5) }) {
+                    model.copyText(prompt.text, id: "prompt-\(prompt.id)")
+                }
+            default: break
+            }
+        case "access":
+            // access:off turns agent access off for every agent, access:on back on.
+            Task { await model.setAgentAccess(argument != "off") }
+        case "connectmenu":
+            // connectmenu:/path/picture.png opens the Agents page's Connect an app menu beside
+            // the window, photographs it and closes it again, within three seconds.
+            if let argument, let window = statusItem.window {
+                snapMenu(to: URL(fileURLWithPath: argument), tries: 20)
+                let frame = window.frame
+                ConnectMenu.show(model: model, navigation: statusItem.navigation, at: NSPoint(x: frame.minX, y: frame.maxY - 380))
+            }
         case "quit":
             NSApp.terminate(nil)
         default:
             break
         }
         writeWindowNumbers()
+    }
+
+    /// Waits for a menu of the app's to open, photographs it and closes it. The menu is
+    /// closed through NSMenu itself, and in any case within three seconds. Run loop timers in
+    /// the common modes, not the main queue: a menu that is open runs its own loop inside a
+    /// main queue job, and the main queue waits for it.
+    private func snapMenu(to file: URL, tries: Int) {
+        if menuWatch == nil {
+            menuWatch = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil) { [weak self] note in
+                let menu = note.object as? NSMenu
+                MainActor.assumeIsolated { self?.trackingMenu = menu }
+            }
+        }
+        let popover = statusItem.windowNumber
+        let started = Date()
+        var shot = false
+        let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                let elapsed = Date().timeIntervalSince(started)
+                if !shot, elapsed > 0.5, let number = WindowSnapshot.openMenus().first(where: { $0 != popover }) {
+                    shot = WindowSnapshot.capture(number: number, to: file)
+                }
+                if shot || elapsed > 3 {
+                    self.trackingMenu?.cancelTracking()
+                    self.trackingMenu = nil
+                    timer.invalidate()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     /// Splits "popover=/some/path" into the window meant and the rest.

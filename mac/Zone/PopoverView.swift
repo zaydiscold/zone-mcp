@@ -21,6 +21,16 @@ final class PopoverNavigation {
     var offAgentsOpen = false
     /// The tallest the window may be on this screen. The list gives way first.
     var maxHeight: CGFloat = 900
+    /// The rows the arrow keys move through: the search's results, or the main list.
+    var keyRows: [ZoneItem] = []
+    /// The row the arrow keys are on.
+    var cursor = ListCursor()
+    /// Changed to put the cursor in the search field.
+    var focusSearch = 0
+    /// True while the Agents page shows what to paste into another app.
+    var otherAppOpen = false
+    /// True while every thing to ask is listed, not the first three.
+    var allPrompts = false
 }
 
 /// What opens when the Z in the menu bar is clicked.
@@ -103,30 +113,12 @@ private struct MainPage: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
             }
-            VStack(alignment: .leading, spacing: 0) {
-                if model.status?.phones.isEmpty == true {
-                    noPhone
-                    InsetRule()
-                }
-                if let clip = model.leadingClip {
-                    ClipSection(model: model, clip: clip)
-                        .transition(.opacity.combined(with: .offset(y: -6)))
-                    InsetRule()
-                }
-                if let meeting = model.latestMeeting {
-                    meetingSection(meeting)
-                    InsetRule()
-                }
-                if !model.openNotes.isEmpty {
-                    notesSection
-                    InsetRule()
-                }
-                list
-                    .padding(.horizontal, 8)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+            SearchField(model: model, navigation: navigation)
+            if model.search.isActive {
+                SearchResults(model: model, navigation: navigation)
+            } else {
+                library
             }
-            .animation(Zone.settle, value: model.leadingClip?.id)
             if let notice = model.notice {
                 Text(notice)
                     .font(.system(size: 11.5))
@@ -142,6 +134,44 @@ private struct MainPage: View {
         }
         .animation(Zone.motion, value: model.notice)
         .animation(Zone.motion, value: navigation.detailsOpen)
+        .onChange(of: rows.map(\.id), initial: true) { _, _ in
+            guard !model.search.isActive else { return }
+            navigation.keyRows = rows
+            navigation.cursor.clamp(count: rows.count)
+        }
+        .onChange(of: model.search.isActive) { _, active in
+            guard !active else { return }
+            navigation.keyRows = rows
+            navigation.cursor = ListCursor()
+        }
+    }
+
+    /// What the window shows with nothing in the search field.
+    private var library: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if model.status?.phones.isEmpty == true {
+                noPhone
+                InsetRule()
+            }
+            if let clip = model.leadingClip {
+                ClipSection(model: model, clip: clip)
+                    .transition(.opacity.combined(with: .offset(y: -6)))
+                InsetRule()
+            }
+            if let meeting = model.latestMeeting {
+                meetingSection(meeting)
+                InsetRule()
+            }
+            if !model.openNotes.isEmpty {
+                notesSection
+                InsetRule()
+            }
+            list
+                .padding(.horizontal, 8)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+        }
+        .animation(Zone.settle, value: model.leadingClip?.id)
     }
 
     // MARK: Header
@@ -461,8 +491,8 @@ private struct MainPage: View {
     /// How many rows show without scrolling: nine with everything above the list, up to
     /// twelve when there is less above it, fewer on a small screen.
     private var visibleRows: Int {
-        // The header, the kinds, the buttons and the space between them.
-        var above: CGFloat = 178
+        // The header, the search field, the kinds, the buttons and the space between them.
+        var above: CGFloat = 178 + SearchField.height
         if model.leadingClip != nil { above += 82 }
         if model.latestMeeting != nil { above += 74 }
         if !model.openNotes.isEmpty { above += CGFloat(model.openNotes.count) * Self.rowHeight + 42 }
@@ -487,8 +517,8 @@ private struct MainPage: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(items) { item in
-                            CompactRow(model: model, item: item, opens: item.kind == "meeting")
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            CompactRow(model: model, item: item, opens: item.kind == "meeting", selected: navigation.cursor.index == index)
                         }
                     }
                 }
@@ -585,6 +615,8 @@ private struct CompactRow: View {
     let item: ZoneItem
     /// True for a row that can also be opened in History.
     var opens = false
+    /// True while the arrow keys are on this row.
+    var selected = false
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -633,6 +665,18 @@ private struct CompactRow: View {
                 }
             }
         }
+        .background(KeyCursor(on: selected))
+    }
+}
+
+/// The mark under the row the arrow keys are on: the hover tone, a little stronger.
+private struct KeyCursor: View {
+    let on: Bool
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(Zone.ink(scheme).opacity(on ? 0.1 : 0))
     }
 }
 
@@ -797,7 +841,7 @@ private struct InsetRule: View {
 // MARK: Sub pages
 
 /// The top of a page inside the popover: a way back and a title.
-private struct PageHeader: View {
+struct PageHeader: View {
     let title: String
     let navigation: PopoverNavigation
     var onBack: () -> Void = {}
@@ -869,20 +913,6 @@ private struct PairPage: View {
     }
 }
 
-private struct AgentsPage: View {
-    let model: AppModel
-    let navigation: PopoverNavigation
-
-    var body: some View {
-        VStack(spacing: 0) {
-            PageHeader(title: "AI agents", navigation: navigation)
-            AgentsPanel(model: model, navigation: navigation)
-                .padding(14)
-        }
-        .task { await model.loadAgents() }
-    }
-}
-
 private struct SettingsPage: View {
     let model: AppModel
     let navigation: PopoverNavigation
@@ -949,6 +979,8 @@ private struct SettingsPage: View {
                         .padding(.vertical, 8)
                         .padding(.horizontal, 10)
                     }
+                    Hairline().padding(.leading, 38)
+                    hotKeyRow
                     if let other = otherStarter {
                         // Only when something besides this app keeps the syncing going.
                         Hairline().padding(.leading, 38)
@@ -1062,6 +1094,31 @@ private struct SettingsPage: View {
                 : "On, but the last one could not be put on the clipboard (\(Formats.ago(last.date, now: model.now)))."
         }
         return "On. Try it: send text to this Mac from Zone on your iPhone, then paste here."
+    }
+
+    /// The key that opens this window from any app: a switch, and the key itself, which a
+    /// click lets the person change.
+    private var hotKeyRow: some View {
+        let on = model.state.hotKey != nil
+        return HStack(alignment: .center, spacing: 8) {
+            label("keyboard", "Open Zone with a key", hotKeyLine)
+            Spacer(minLength: 6)
+            HotKeyRecorder(model: model)
+            Toggle("", isOn: Binding(get: { on }, set: { model.setHotKey($0 ? model.state.hotKeyChoice : nil) }))
+                .toggleStyle(ZoneToggleStyle())
+                .labelsHidden()
+                .fixedSize()
+                .accessibilityLabel("Open Zone with \(model.state.hotKeyChoice.label)")
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+    }
+
+    private var hotKeyLine: String {
+        if let trouble = model.hotKeyTrouble { return trouble }
+        return model.state.hotKey != nil
+            ? "From any app, ready to search. Return copies, \u{2318}Return pastes."
+            : "Off. Opens this window from any app, ready to search."
     }
 
     private var loginLine: String {

@@ -14,6 +14,7 @@ struct WelcomeView: View {
     @State private var startAtLogin = true
     @State private var addCommand = false
     @State private var copyClips = false
+    @State private var openWithKey = false
 
     static let size = CGSize(width: 820, height: 590)
     static let appStore = "https://apps.apple.com/app/id6830955448"
@@ -33,7 +34,7 @@ struct WelcomeView: View {
                 case 1: PhoneStep(model: model).transition(slide)
                 case 2: PairStep(model: model).transition(slide)
                 case 3: AgentsStep(model: model).transition(slide)
-                default: DoneStep(model: model, startAtLogin: $startAtLogin, addCommand: $addCommand, copyClips: $copyClips).transition(slide)
+                default: DoneStep(model: model, startAtLogin: $startAtLogin, addCommand: $addCommand, copyClips: $copyClips, openWithKey: $openWithKey).transition(slide)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -49,6 +50,7 @@ struct WelcomeView: View {
             startAtLogin = model.loginItemOn || !model.state.welcomeDone
             addCommand = model.commandLinked
             copyClips = model.clipboardCopyOn
+            openWithKey = model.state.hotKey != nil
         }
     }
 
@@ -131,6 +133,9 @@ struct WelcomeView: View {
         }
         if copyClips != model.clipboardCopyOn {
             model.setClipboardCopy(copyClips)
+        }
+        if openWithKey != (model.state.hotKey != nil) {
+            model.setHotKey(openWithKey ? model.state.hotKeyChoice : nil)
         }
         model.finishWelcome()
         onDone(true)
@@ -326,10 +331,11 @@ private struct DoneStep: View {
     @Binding var startAtLogin: Bool
     @Binding var addCommand: Bool
     @Binding var copyClips: Bool
+    @Binding var openWithKey: Bool
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(spacing: model.hasClips ? 20 : 26) {
+        VStack(spacing: model.hasClips ? 16 : 22) {
             MenuBarPicture()
             StepHeading(
                 eyebrow: "All set",
@@ -363,6 +369,13 @@ private struct DoneStep: View {
                     .padding(.vertical, 10)
                     .padding(.horizontal, 14)
                 }
+                Hairline().padding(.leading, 44)
+                Toggle(isOn: $openWithKey) {
+                    option("keyboard", "Open Zone with \(model.state.hotKeyChoice.label)", "From any app, ready to search what you said. Another key can be chosen in Settings.")
+                }
+                .toggleStyle(ZoneToggleStyle())
+                .padding(.vertical, 10)
+                .padding(.horizontal, 14)
             }
             .zoneCard(padding: 0)
             .frame(width: 470)

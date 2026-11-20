@@ -74,6 +74,14 @@ final class AppModel {
     var agentError: String?
     /// One plain line about the last change to an agent, when there is something to know.
     private(set) var agentNotice: String?
+    /// Whether agents may use the library at all. Nil from a zone without `zone agents`.
+    private(set) var agentAccess: AgentAccess?
+    /// The example prompts, for an agent with the shared view. Nil from a zone without them.
+    private(set) var prompts: PromptList?
+    /// What to paste into an app zone does not know. Nil from a zone without `mcp config`.
+    private(set) var otherAppConfig: McpConfig?
+    /// True while the shared view is being written into every app that follows it.
+    private(set) var applyingView = false
     private(set) var pairing: PairingState = .idle
     private(set) var syncingUntil = Date.distantPast
     /// One line shown for a few seconds after an action ("Copied").
@@ -107,6 +115,11 @@ final class AppModel {
     /// Set by the windows: while someone is looking, the app asks zone more often.
     var watchers = 0
 
+    /// The search at the top of the menu.
+    let search: LiveSearch
+    /// Why the key that opens the menu could not be used. Nil when it works or is off.
+    private(set) var hotKeyTrouble: String?
+
     // MARK: Hooks the app delegate fills in
 
     @ObservationIgnored var showWelcome: () -> Void = {}
@@ -119,6 +132,10 @@ final class AppModel {
     @ObservationIgnored var showHistory: (PageRoute) -> Void = { _ in }
     /// Opens a page of System Settings with the card that says what to switch on.
     @ObservationIgnored var showGuide: (GuideRequest) -> Void = { _ in }
+    /// Registers the key that opens the menu (nil: none). False when the system refuses it.
+    @ObservationIgnored var registerHotKey: (HotKey?) -> Bool = { _ in true }
+    /// The app that was in front when the menu opened, for pasting into.
+    @ObservationIgnored var appBehindMenu: () -> NSRunningApplication? = { nil }
 
     // MARK: Private
 
@@ -162,6 +179,8 @@ final class AppModel {
         self.userPath = env.isSandbox
             ? "\(env.home.appendingPathComponent(".local/bin").path):/usr/bin:/bin"
             : env.searchPath
+        let searcher = ZoneClient(runner: ZoneProcessRunner(binary: env.stableBinary, environment: env.childEnvironment()))
+        self.search = LiveSearch { words in try await searcher.search(words, limit: 40) }
     }
 
     var client: ZoneClient {
@@ -751,6 +770,62 @@ final class AppModel {
             agentsZone = survey.zone ?? agentsBinary.path
         }
         agentsLoaded = true
+        // The newer commands. A zone without one answers nothing, and its part of the page
+        // is left out.
+        let client = agentsClient, shared = sharedView
+        agentAccess = await client.agentAccess()
+        prompts = await client.prompts(view: shared)
+        otherAppConfig = await client.mcpConfig(view: shared)
+    }
+
+    /// What most connected apps may read: what "What agents can read" shows, and what an app
+    /// connected next gets.
+    var sharedView: AgentView { SharedView.of(agents) }
+
+    /// The five choices for the shared view. Nil when it was set from the command line in a
+    /// way they cannot say.
+    var sharedChoices: ReadChoices? { ReadChoices(sharedView, knowsClips: hasClips) }
+
+    /// Turns agent access on or off for every agent at once.
+    func setAgentAccess(_ on: Bool) async {
+        agentError = nil
+        do {
+            agentAccess = try await agentsClient.setAgentAccess(on)
+        } catch {
+            agentError = error.localizedDescription
+        }
+    }
+
+    /// Writes a new shared view into every connected app that follows the shared one. Apps
+    /// with a limit of their own keep it.
+    func setSharedView(_ view: AgentView) async {
+        let old = sharedView
+        guard view != old, !applyingView else { return }
+        let followers = SharedView.followers(agents, shared: old)
+        guard !followers.isEmpty else { return }
+        applyingView = true
+        agentError = nil
+        agentNotice = nil
+        var failed: [String] = []
+        for agent in followers {
+            busyAgents.insert(agent.id)
+            do {
+                try await agentsClient.connect(agent, view: view)
+            } catch {
+                failed.append("\(agent.title): \(error.localizedDescription)")
+            }
+            busyAgents.remove(agent.id)
+            for place in agent.places { agentTests[place.path] = nil }
+        }
+        await loadAgents()
+        applyingView = false
+        if !failed.isEmpty { agentError = failed.joined(separator: "\n") }
+    }
+
+    /// Copies a prompt or a snippet, and marks it copied for a moment.
+    func copyText(_ text: String, id: String) {
+        putOnClipboard(text)
+        markCopied(id)
     }
 
     // MARK: Checking that an agent reaches the library
@@ -814,9 +889,11 @@ final class AppModel {
         // app cannot carry a limit over. It says so instead of widening it silently.
         var unknownView = false
         if connected, !agent.otherCopyPlaces.isEmpty, !agent.otherCopyKeepsView { unknownView = true }
+        // An app connected for the first time reads what the others read.
+        let firstView: AgentView? = connected && !agent.isOn ? sharedView : nil
         await changeAgent(agent) { [client = agentsClient] in
             if connected {
-                try await client.connect(agent)
+                try await client.connect(agent, view: firstView)
             } else {
                 try await client.disconnect(agent: agent.id)
             }
@@ -856,11 +933,88 @@ final class AppModel {
         }
     }
 
+    // MARK: The key that opens the menu
+
+    /// Turns the key on (with this key) or off. A key the system refuses is turned off again,
+    /// and the reason is kept for Settings to show.
+    func setHotKey(_ key: HotKey?) {
+        hotKeyTrouble = nil
+        if let key { state.recordedHotKey = key }
+        guard let key else {
+            state.hotKey = nil
+            _ = registerHotKey(nil)
+            return
+        }
+        if let problem = key.problem {
+            hotKeyTrouble = problem
+            return
+        }
+        if registerHotKey(key) {
+            state.hotKey = key
+        } else {
+            state.hotKey = nil
+            hotKeyTrouble = "Another app already uses \(key.label). Choose another key."
+        }
+    }
+
+    /// At launch: the key the person chose last time, if any.
+    func restoreHotKey() {
+        guard let key = state.hotKey else { return }
+        if !registerHotKey(key) {
+            hotKeyTrouble = "Another app already uses \(key.label). Choose another key."
+        }
+    }
+
+    func setHotKeyTrouble(_ text: String?) {
+        hotKeyTrouble = text
+    }
+
     // MARK: Actions
 
     func copy(_ item: ZoneItem) {
         putOnClipboard(item.copyText)
         markCopied(item.id)
+    }
+
+    /// The app that Command-Return pastes into, by name, while the menu is open.
+    var pasteTargetName: String? {
+        appBehindMenu()?.localizedName
+    }
+
+    /// Command-Return: puts the item on the clipboard and pastes it into the app that was in
+    /// front before the menu opened. Without Accessibility it is copied instead, and the first
+    /// time macOS is asked. Returns true when the menu should close.
+    func paste(_ item: ZoneItem) -> Bool {
+        let target = appBehindMenu()
+        if env.isSandbox {
+            // A test run posts no keys: what would have been pasted, and where, is noted.
+            putOnClipboard(item.copyText)
+            let file = env.dataDirectory.deletingLastPathComponent().appendingPathComponent("pasted")
+            let allowed = ProcessInfo.processInfo.environment["ZONE_MAC_PRETEND_ACCESSIBILITY"] != nil
+            if allowed {
+                try? "\(target?.localizedName ?? "nothing"): \(item.id)\n".write(to: file, atomically: true, encoding: .utf8)
+                return true
+            }
+            return explainPaste(item, target: target)
+        }
+        putOnClipboard(item.copyText)
+        if Paster.allowed(ask: false) {
+            Paster.paste(into: target)
+            return true
+        }
+        return explainPaste(item, target: target)
+    }
+
+    /// Paste without Accessibility: copied instead. The first time, one line says why and
+    /// macOS asks; after that it is simply copied.
+    private func explainPaste(_ item: ZoneItem, target: NSRunningApplication?) -> Bool {
+        markCopied(item.id)
+        guard !state.pasteExplained else { return true }
+        state.pasteExplained = true
+        let app = target?.localizedName ?? "the app you were in"
+        say("Copied. Pasting into \(app) needs Zone switched on in Accessibility, which macOS is asking about now.")
+        if !env.isSandbox { _ = Paster.allowed(ask: true) }
+        return false
     }
 
     /// Copies text. A test run writes the sandbox's `clipboard` file instead, so it never

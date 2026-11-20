@@ -14,10 +14,11 @@ server for agents, and a local history page.
   <img src="docs/media/agent.gif" width="88%" alt="Claude Code asked what was said on Wednesday between noon and 5pm, answering from the zone MCP">
 </p>
 
-- **For your agents:** an MCP server with six tools. `zone install` registers it with every AI client it
-  finds: Claude Code (every profile), Codex, Cursor, Hermes, Gemini CLI, Zed, VS Code, Windsurf and a dozen
-  more. Then ask "what did I say about the lease on Wednesday afternoon", or "work through my voice notes
-  from newest to oldest".
+- **For your agents:** an MCP server with six tools, ten ready prompts and a few resources. `zone install`
+  registers it with every AI client it finds: Claude Code (every profile), Codex and the ChatGPT desktop
+  app, Cursor, Antigravity, Hermes, Gemini CLI, Zed, VS Code, Windsurf, Warp and a dozen more. Then ask
+  "what did I say about the lease on Wednesday afternoon", or "work through my voice notes from newest to
+  oldest". `zone agents off` stops every agent at once.
 - **For you:** `zone open` for a local history page, and a command line to list, search and export.
 - **Three ways in:** Link (automatic, any network), Flash (no network at all: the phone flashes color codes
   at your webcam), and the Zone backup folder in iCloud Drive, OneDrive or Dropbox.
@@ -483,6 +484,7 @@ line, in this order:
 | `clip` | A clip arrived: `id`, `device`, `device_id`, `carrier` (`link` or `flash`), `source` (`clipboard`, `share`, `shortcut`, `typed`), `length` (characters), `bytes`, `copied` (it was put on the clipboard), `not_copied` (why not: `off`, `carrier`, `old`, `newer_clip`, `failed`, or null), `tool`. Never the text. |
 | `backup_import` | `trigger` (`watch`: zone saw the backup change, or the command: `import`, `backup-folder`), `items`, `new`, `changed`, `unchanged`, `notes`, `dictations`, `meetings`, `skipped` |
 | `resync_requested` | `device` (null for every phone), `phones` |
+| `agents_switched` | `on` (true: agents may use the library again, false: turned off), `by` (`cli`, `page` or `mac`) |
 
 ```json
 {"seq":5,"at":1794772842.9,"time":"2026-11-15T12:00:42-08:00","event":"link_session","device":"My iPhone","device_id":"7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f","items":600,"new":600,"changed":0,"deleted":0,"unchanged":0,"rejected":0,"frames":4,"path":"relay then direct","duration_s":1.2,"paired":true,"end":"bye"}
@@ -496,6 +498,45 @@ then each new one as it happens. `--after SEQ` prints only events numbered above
 that restarts passes the last `seq` it saw and misses nothing and repeats nothing. `--since TIME`
 takes the same times as `zone list`. On macOS and Linux a follower ends by itself when whatever
 was reading it goes away.
+
+## Ask your agent
+
+Once zone is registered, ask in plain words. Three of the built-in prompts (`zone prompts` lists all
+ten, and clients that support MCP prompts offer them as slash commands):
+
+- **"What did I say Wednesday between 12pm and 5pm?"** One `list_items` call with
+  `when: "Wednesday 12pm to 5pm"` returns that window's items with their full text and the window it
+  read, in ISO and in words ("Wednesday, November 18, 2026, 12:00 to 17:00"), so the agent can check
+  it. Back comes a recap by topic, with times, and anything that sounded like a decision or a task.
+- **"Turn my voice notes into a plan."** The agent lists your open voice notes, writes one checklist
+  grouped by theme, and once you agree marks the notes it covered as done, so they do not come back.
+- **"Use what I just sent."** The newest clip from your phone (a link, an address, a paragraph),
+  read exactly, and done with whatever you asked.
+
+```sh
+zone prompts                                          # the ten, one line each
+zone prompts show what-did-i-say day="yesterday afternoon"   # one, ready to paste into any agent
+```
+
+Search copes with speech. Other forms of a word always match (`harbors` finds "harbor trip"), and
+when few items have every word it adds close spellings from your own library (`Nakamura` finds
+"call Nakamora about the contract") and items with some of the words, each marked with how it
+matched. "Quoted phrases" stay exact.
+
+One switch stops every agent at once, without unregistering anything:
+
+```sh
+zone agents off      # every client still connects, and is told access is off on this computer
+zone agents on
+zone agents status
+```
+
+Servers that are already running notice within a few seconds and tell their client. The same switch
+is in the page's Settings, and apps such as Zone for Mac use `zone agents`.
+
+What zone is, next to the assistants that have their own memory: it works with any agent that speaks
+MCP, it is free and open source, it runs on Mac, Windows and Linux, and the library comes from your
+phone, where you actually talk.
 
 ## Use it from an AI agent
 
@@ -536,6 +577,14 @@ settings folder exists or its command is on your PATH.
 | Amp | `amp` | `~/.config/amp/settings.json` |
 | Cline | `cline` | `~/.cline/data/settings/cline_mcp_settings.json` (and the older VS Code extension's file) |
 | Roo Code | `roo` | The VS Code extension's `mcp_settings.json` |
+| Antigravity | `antigravity` | `~/.gemini/config/mcp_config.json`, and the earlier versions' `~/.gemini/antigravity/mcp_config.json` and the IDE app's `~/.gemini/antigravity-ide/mcp_config.json` where those exist |
+| Warp | `warp` | `~/.warp/.mcp.json` |
+| Junie | `junie` | `~/.junie/mcp/mcp.json` (the Junie command line; JetBrains IDEs share the format) |
+
+The ChatGPT desktop app reads Codex's `config.toml` for its local servers, so `codex` (also spelled
+`chatgpt`) covers it. Raycast keeps its MCP servers in its own settings rather than a file, so zone
+cannot write them: `zone mcp config --client raycast` prints the `raycast://mcp/install?...` link that
+installs zone there.
 
 Paths are the macOS and Linux ones; on Windows each client's own folder is used. Registering with
 every profile of Claude Code, Codex and Hermes is also what makes zone available in apps that run
@@ -545,7 +594,13 @@ Only the `zone` entry is added, changed or removed. Everything else in those fil
 it was, comments included (Zed, VS Code and Hermes keep comments in their settings), a link to a
 file kept elsewhere stays a link, and a copy of the original is saved beside it as
 `<file>.before-zone` the first time. Add `--read-only` to register a server that cannot flag
-items. For any other client, the command to run is `/path/to/zone mcp`.
+items.
+
+For any other app, `zone mcp config` prints what to paste, with this zone's full path: the usual
+`{"mcpServers": {"zone": ...}}` JSON, and the TOML and YAML that Codex, Hermes and Goose use.
+`zone mcp config --client <name>` prints one client's own form and where it goes, and `--json` gives
+every form at once for apps that offer a Copy button (the page's Settings does). The exact JSON of
+these commands is in [docs/agents-cli.md](docs/agents-cli.md).
 
 The server opens the database itself, so it works whether or not `zone serve` is running.
 
@@ -603,16 +658,30 @@ that fixes it.
 
 ### The tools
 
-Deliberately few.
+Deliberately few. Every answer is bounded, says when there is more (`more` and `next_cursor`), and
+says why when it is empty (a filter the agent set, or nothing recorded in that window). An argument a
+tool does not take is refused with what it does take, never ignored.
 
 | Tool | What it does |
 | --- | --- |
-| `list_items(start?, end?, kinds?, sources?, order?, limit?, cursor?, unprocessed_only?, timezone?)` | Short cards for a time range (id, kind, source, local time with weekday and UTC offset, duration, word count, first 200 characters, processed flag), the total that match, counts by kind, and a cursor for the next page. |
-| `search_items(query, start?, end?, kinds?, sources?, limit?, cursor?, timezone?)` | Full-text search with snippets around the matches, best match first, with a cursor for the next page. |
-| `get_items(ids, max_chars?, offset?, timezone?)` | Full text, bounded, with a `truncated` flag and `next_offset`. |
-| `library_stats(start?, end?, group_by?, kinds?, sources?, timezone?)` | Counts, words and recorded seconds by local day, kind or source. |
-| `sync_status()` | The computer's current local time, weekday and time zone (so an agent can resolve "Wednesday"), paired phones, last sync per carrier, counts. |
+| `list_items(when?, start?, end?, kinds?, sources?, order?, limit?, cursor?, unprocessed_only?, include_text?, timezone?)` | Cards for a time window (id, kind, source, local time with weekday, duration, words, processed flag), with full text when the page's text fits in about 12,000 characters (`include_text`: `auto`, `full`, `preview`; meetings stay previews unless asked), the total, counts by kind, the window it read, and a cursor for the next page. |
+| `search_items(query, when?, start?, end?, kinds?, sources?, limit?, cursor?, timezone?)` | Search that copes with speech: other word forms, close spellings and any-word matches, each hit marked `all words`, `close spelling` or `any word`, with snippets, best match first. |
+| `get_items(ids, max_chars?, offset?, timezone?)` | Full text, at most 100,000 characters a call, with `truncated` and `next_offset`. |
+| `library_stats(when?, start?, end?, group_by?, kinds?, sources?, timezone?)` | Counts, words and recorded seconds by local day, kind or source. |
+| `sync_status()` | The computer's current local time, weekday and time zone, paired phones, last sync per carrier, counts. Not needed before the others. |
 | `mark_processed(ids, processed?)` | The only write. Sets or clears a flag so an agent can work through items once. It never changes an item's text. Hidden by `--read-only`. |
+
+`when` takes the window in words, in the computer's time zone (or `timezone`): `Wednesday 12pm to
+5pm`, `yesterday afternoon`, `this morning`, `last week`, `3 days ago`, `Monday to Wednesday`,
+`Nov 11`, `2026-11-11`. A weekday alone is the most recent one, today included, and `last Wednesday`
+the one before today; `this Monday` is the Monday of this week. Parts of the day: morning 5:00 to
+12:00, afternoon 12:00 to 17:00, evening 17:00 to 21:00, night 21:00 to 5:00, and tonight and last
+night 17:00 to 5:00. `start` and `end` (and `--since`, `--until` and `--when` on the command line)
+take the same words.
+
+Resources, for clients that let you attach them to a conversation: `zone://clip/latest`,
+`zone://notes/open`, `zone://meeting/latest`, `zone://today`, and the templates `zone://item/{id}` and
+`zone://day/{day}`, as Markdown. They follow the client's view and the agents switch like the tools.
 
 The four kinds of item:
 

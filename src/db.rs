@@ -392,16 +392,52 @@ pub struct SearchHit {
     pub row: Row,
     /// Text around the matches, with matches wrapped in `[` and `]`.
     pub snippet: String,
+    /// How this item matched: [`ALL_WORDS`], [`CLOSE_SPELLING`], [`ANY_WORD`] or [`LITERAL`].
+    pub matched: &'static str,
 }
+
+/// Every word was found, as typed or in another form (plural, tense: `meeting` finds
+/// `meetings` and `met` does not).
+pub const ALL_WORDS: &str = "all words";
+/// Every word was found, some of them only with a close spelling or as the beginning of a
+/// longer word: what speech recognition turns `Kowalski` into.
+pub const CLOSE_SPELLING: &str = "close spelling";
+/// Some of the words were found, not all.
+pub const ANY_WORD: &str = "any word";
+/// The query has no words the index can use, so it was matched as literal text.
+pub const LITERAL: &str = "literal text";
+
+/// A search widens past items that have every word when fewer than this many do.
+pub const BROADEN_BELOW: i64 = 3;
 
 #[derive(Clone, Debug)]
 pub struct SearchResult {
     pub hits: Vec<SearchHit>,
     /// Every matching item, not only the ones returned.
     pub total: i64,
-    /// `words`, `prefix` (no whole-word match, so words were matched by their beginnings) or
-    /// `substring` (the query has no searchable words).
+    /// How the best of them matched (see [`SearchHit::matched`]).
     pub matched: &'static str,
+    /// How many items have every word (in some form).
+    pub all_words: i64,
+    /// True when items with only some of the words, or close spellings, were added because
+    /// few or none had them all.
+    pub broadened: bool,
+    /// The words that were found nowhere, with the spellings tried in their place.
+    pub respelled: Vec<(String, Vec<String>)>,
+}
+
+impl SearchResult {
+    /// How the best matches matched, in the words the page, `zone search --json` and Zone for
+    /// Mac used before close spellings: `words`, `prefix` (not as typed: by the beginning of a
+    /// word or a close spelling), `any` (some of the words) or `substring`.
+    pub fn legacy_matched(&self) -> &'static str {
+        match self.matched {
+            CLOSE_SPELLING => "prefix",
+            ANY_WORD => "any",
+            LITERAL => "substring",
+            _ => "words",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -662,6 +698,10 @@ impl Db {
         }
         add_missing_columns(&conn)?;
         settle_removed(&conn)?;
+        if let Err(error) = add_stem_index(&conn) {
+            // Search still works without it, on the plain index alone.
+            crate::warn!("library: could not add the stemmed search index: {error:#}");
+        }
         let db = Db { conn, atomic: false };
         if db.meta_get("database_id")?.is_none() {
             // INSERT OR IGNORE: two programs opening a brand new library at once agree on one id.
@@ -859,55 +899,207 @@ impl Db {
 
     /// One page of a search: `limit` matches after skipping `offset`. The order is the same
     /// on every call, so pages do not overlap as long as the library does not change between
-    /// them.
+    /// them. Widens only when nothing has every word: what the page and the command line want.
     pub fn search_page(&self, query: &str, filter: &Filter, order: Option<Order>, limit: usize, offset: usize) -> Result<SearchResult> {
-        let Some(words) = fts_query(query, false) else {
-            return self.search_substring(query, filter, order, limit, offset);
-        };
-        let result = self.search_fts(&words, filter, order, limit, offset, "words")?;
-        if result.total > 0 {
-            return Ok(result);
-        }
-        match fts_query(query, true) {
-            Some(prefixes) => self.search_fts(&prefixes, filter, order, limit, offset, "prefix"),
-            None => Ok(result),
-        }
+        self.search_wide(query, filter, order, limit, offset, 1)
     }
 
-    fn search_fts(
-        &self,
-        fts: &str,
-        filter: &Filter,
-        order: Option<Order>,
-        limit: usize,
-        offset: usize,
-        matched: &'static str,
-    ) -> Result<SearchResult> {
-        let (clause, filter_args) = filter_sql(filter);
-        let order_sql = match order {
-            None => "bm25(items_fts), i.created_at DESC, i.n DESC",
-            Some(Order::Newest) => "i.created_at DESC, i.n DESC",
-            Some(Order::Oldest) => "i.created_at ASC, i.n ASC",
+    /// A search that survives speech.
+    ///
+    /// Items with every word come first: as typed (the plain index), then in another form (the
+    /// stemmed index, so `harbors` finds `harbor`). When fewer than `broaden_below` items have
+    /// every word, it widens: a word found nowhere is tried with close spellings from the
+    /// library's own vocabulary (edit distance, and longer words it begins), and items with
+    /// only some of the words follow, best match first. Each hit says which of these it is.
+    /// "Quoted phrases" are always matched exactly, in every tier.
+    pub fn search_wide(&self, query: &str, filter: &Filter, order: Option<Order>, limit: usize, offset: usize, broaden_below: i64) -> Result<SearchResult> {
+        let Some(exact) = fts_query(query, false) else {
+            return self.search_substring(query, filter, order, limit, offset);
         };
+        let terms = query_terms(query);
+        let stem = self.stem_table();
+        let phrases = phrase_query(&terms);
+        let all_words = self.fts_count(stem, &exact, filter, phrases.as_deref())?;
+        let mut plan = Plan { exact: exact.clone(), all: exact.clone(), close: None, broad: exact, broadened: false, respelled: Vec::new() };
+        if all_words < broaden_below {
+            let mut close_terms = terms.clone();
+            for term in close_terms.iter_mut() {
+                let [Atom::Word { text, prefix: false }] = term.as_slice() else { continue };
+                if text.chars().count() < 3 || is_stopword(text) || self.fts_count(stem, &atom_query(&term[0]), &Filter::default(), None)? > 0 {
+                    continue;
+                }
+                let spellings = self.close_spellings(text)?;
+                if !spellings.is_empty() {
+                    plan.respelled.push((text.clone(), spellings.clone()));
+                    term.extend(spellings.into_iter().map(|s| Atom::Word { text: s, prefix: false }));
+                }
+            }
+            if !plan.respelled.is_empty() {
+                plan.close = Some(and_query(&close_terms));
+            }
+            // Any word: every word but the little ones (unless that is all there is), as
+            // itself, as the beginning of a longer word when it is long enough, and with its
+            // close spellings.
+            let content: Vec<&Vec<Atom>> = close_terms.iter().filter(|t| !t.iter().all(|a| matches!(a, Atom::Word { text, .. } if is_stopword(text)))).collect();
+            let chosen: Vec<&Vec<Atom>> = if content.is_empty() { close_terms.iter().collect() } else { content };
+            let mut atoms: Vec<Atom> = Vec::new();
+            for term in chosen {
+                for atom in term {
+                    // As the beginning of a longer word when it is found nowhere whole (what
+                    // typing a few letters asks for). Other forms are the stemmed index's job.
+                    if let Atom::Word { text, prefix: false } = atom
+                        && !plan.respelled.iter().any(|(_, spellings)| spellings.contains(text))
+                        && self.fts_count(stem, &atom_query(atom), &Filter::default(), None)? == 0
+                    {
+                        atoms.push(Atom::Word { text: text.clone(), prefix: true });
+                    } else {
+                        atoms.push(atom.clone());
+                    }
+                }
+            }
+            if let Some(any) = or_query(&atoms) {
+                plan.broad = any;
+                plan.broadened = true;
+            }
+        }
+        let mut result = self.search_tiers(stem, &plan, filter, phrases.as_deref(), order, limit, offset)?;
+        result.all_words = all_words;
+        Ok(result)
+    }
+
+    /// The stemmed index when this library has it, else the plain one.
+    fn stem_table(&self) -> &'static str {
+        let has: bool = self
+            .conn
+            .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'items_stem'", [], |row| Ok(row.get::<_, i64>(0)? > 0))
+            .unwrap_or(false);
+        if has { "items_stem" } else { "items_fts" }
+    }
+
+    fn fts_count(&self, table: &str, fts: &str, filter: &Filter, phrases: Option<&str>) -> Result<i64> {
+        let (clause, filter_args) = filter_sql(filter);
         let mut args = vec![Sql::Text(fts.to_string())];
-        args.extend(filter_args.iter().cloned());
+        args.extend(filter_args);
+        let mut sql = format!("SELECT count(*) FROM {table} JOIN items i ON i.n = {table}.rowid WHERE {table} MATCH ? AND {clause}");
+        if let Some(phrases) = phrases {
+            sql.push_str(" AND i.n IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)");
+            args.push(Sql::Text(phrases.to_string()));
+        }
+        Ok(self.conn.query_row(&sql, params_from_iter(args), |row| row.get(0))?)
+    }
+
+    /// The words of the library close to `word`: its own beginning of longer words, and words
+    /// one edit away (two for longer words), most used first.
+    ///
+    /// Only words starting with the same letter, or a letter that sounds alike (c k q s,
+    /// f p v, g j, the vowels), are read. Reading a range of the vocabulary costs a few
+    /// milliseconds; reading all of it means reading every word's list of items, about 150 ms
+    /// for 100,000 items and more as the library grows. A misheard word nearly always keeps
+    /// its first sound.
+    fn close_spellings(&self, word: &str) -> Result<Vec<String>> {
+        self.conn.execute_batch("CREATE VIRTUAL TABLE IF NOT EXISTS temp.zone_vocab USING fts5vocab(main, items_fts, row)")?;
+        let word = word.to_lowercase();
+        let first = word.chars().next().unwrap_or('a');
+        let groups: [&str; 5] = ["ckqs", "fpv", "gj", "aeiouy", "wh"];
+        let mut letters: Vec<char> = vec![first];
+        for group in groups {
+            if group.contains(first) {
+                letters.extend(group.chars().filter(|c| *c != first));
+            }
+        }
+        let length = word.chars().count();
+        // One edit for most words, two for long ones (names, technical words), where one
+        // misheard sound often changes two letters.
+        let allowed = if length <= 6 { 1 } else { 2 };
+        let mut found: Vec<(usize, i64, String)> = Vec::new();
+        let mut statement = self.conn.prepare_cached("SELECT term, doc FROM temp.zone_vocab WHERE term >= ?1 AND term < ?2")?;
+        for letter in letters {
+            let from = letter.to_string();
+            let to = char::from_u32(letter as u32 + 1).unwrap_or(letter).to_string();
+            let rows = statement.query_map(params![from, to], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+            for row in rows {
+                let (term, docs) = row?;
+                if term == word {
+                    continue;
+                }
+                let term_length = term.chars().count();
+                // The beginning of a longer word ("transcri", "kubern") counts as close.
+                if length >= 4 && term.starts_with(&word) {
+                    found.push((0, docs, term));
+                    continue;
+                }
+                if term_length.abs_diff(length) > allowed {
+                    continue;
+                }
+                if let Some(distance) = edit_distance(&word, &term, allowed) {
+                    found.push((distance, docs, term));
+                }
+            }
+        }
+        // Only the closest: when something is one edit away, words two edits away are left out.
+        let nearest = found.iter().filter(|f| f.0 > 0).map(|f| f.0).min().unwrap_or(0);
+        found.retain(|f| f.0 == 0 || f.0 == nearest);
+        found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        Ok(found.into_iter().take(3).map(|(_, _, term)| term).collect())
+    }
+
+    /// One page, best tier first: every word as typed, every word in some form, every word
+    /// with close spellings, then any word.
+    #[allow(clippy::too_many_arguments)]
+    fn search_tiers(&self, table: &str, plan: &Plan, filter: &Filter, phrases: Option<&str>, order: Option<Order>, limit: usize, offset: usize) -> Result<SearchResult> {
+        let (clause, filter_args) = filter_sql(filter);
+        let close = plan.close.clone().unwrap_or_else(|| plan.all.clone());
+        let tier = format!(
+            "CASE WHEN i.n IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?) THEN 0 \
+             WHEN i.n IN (SELECT rowid FROM {table} WHERE {table} MATCH ?) THEN 1 \
+             WHEN i.n IN (SELECT rowid FROM {table} WHERE {table} MATCH ?) THEN 2 ELSE 3 END"
+        );
+        let order_sql = match order {
+            None => format!("tier, bm25({table}), i.created_at DESC, i.n DESC"),
+            Some(Order::Newest) => "tier, i.created_at DESC, i.n DESC".to_string(),
+            Some(Order::Oldest) => "tier, i.created_at ASC, i.n ASC".to_string(),
+        };
+        let mut where_args = vec![Sql::Text(plan.broad.clone())];
+        where_args.extend(filter_args);
+        let mut where_sql = format!("{table} MATCH ? AND {clause}");
+        if let Some(phrases) = phrases {
+            where_sql.push_str(" AND i.n IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)");
+            where_args.push(Sql::Text(phrases.to_string()));
+        }
         let total: i64 = self.conn.query_row(
-            &format!("SELECT count(*) FROM items_fts JOIN items i ON i.n = items_fts.rowid WHERE items_fts MATCH ? AND {clause}"),
-            params_from_iter(args.iter().cloned()),
+            &format!("SELECT count(*) FROM {table} JOIN items i ON i.n = {table}.rowid WHERE {where_sql}"),
+            params_from_iter(where_args.iter().cloned()),
             |row| row.get(0),
         )?;
         let sql = format!(
-            "SELECT {ROW_COLUMNS}, snippet(items_fts, -1, '[', ']', ' ... ', 24) \
-             FROM items_fts JOIN items i ON i.n = items_fts.rowid \
-             WHERE items_fts MATCH ? AND {clause} ORDER BY {order_sql} LIMIT ? OFFSET ?"
+            "SELECT {ROW_COLUMNS}, snippet({table}, -1, '[', ']', ' ... ', 24), {tier} AS tier \
+             FROM {table} JOIN items i ON i.n = {table}.rowid \
+             WHERE {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
         );
+        let mut args = vec![Sql::Text(plan.exact.clone()), Sql::Text(plan.all.clone()), Sql::Text(close)];
+        args.extend(where_args);
         args.push(Sql::Integer(limit as i64));
         args.push(Sql::Integer(offset as i64));
         let mut statement = self.conn.prepare(&sql)?;
         let hits = statement
-            .query_map(params_from_iter(args), |row| Ok(SearchHit { row: read_row(row)?, snippet: row.get(19)? }))?
+            .query_map(params_from_iter(args), |row| {
+                let matched = match row.get::<_, i64>(20)? {
+                    0 | 1 => ALL_WORDS,
+                    2 => CLOSE_SPELLING,
+                    _ => ANY_WORD,
+                };
+                Ok(SearchHit { row: read_row(row)?, snippet: row.get(19)?, matched })
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(SearchResult { hits, total, matched })
+        // The best tier there is at all, not only on this page.
+        let matched = if total == 0 || plan.all == plan.broad || self.fts_count(table, &plan.all, filter, phrases)? > 0 {
+            ALL_WORDS
+        } else if plan.close.as_ref().is_some_and(|close| self.fts_count(table, close, filter, phrases).unwrap_or(0) > 0) {
+            CLOSE_SPELLING
+        } else {
+            ANY_WORD
+        };
+        Ok(SearchResult { hits, total, matched, all_words: 0, broadened: plan.broadened, respelled: plan.respelled.clone() })
     }
 
     /// For queries with nothing the word index can use (punctuation, symbols).
@@ -938,10 +1130,10 @@ impl Db {
             .into_iter()
             .map(|row| {
                 let snippet = substring_snippet(&row.text, needle);
-                SearchHit { row, snippet }
+                SearchHit { row, snippet, matched: LITERAL }
             })
             .collect();
-        Ok(SearchResult { hits, total, matched: "substring" })
+        Ok(SearchResult { hits, total, matched: LITERAL, all_words: total, broadened: false, respelled: Vec::new() })
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Row>> {
@@ -1958,6 +2150,58 @@ const FOLDED_RECORDING: &str = "(i.kind = 'dictation' AND i.source = 'note' AND 
 const RECORDING_OF_NOTE: &str = "note.created_at >= i.created_at - 5 AND note.created_at <= i.created_at + coalesce(i.duration_s, 0) + 120 \
      AND i.created_at BETWEEN note.created_at - 86520 AND note.created_at + 5";
 
+/// A second word index that reads words by their stem (Porter), so `harbors`, `meetings` and
+/// `planned` find `harbor`, `meeting` and `plan`. Added after zone 0.1.3, beside the plain
+/// index rather than in place of it: an older zone opening the library keeps its own index
+/// and queries, and its writes keep this one current through the triggers, which SQLite runs
+/// whichever program writes. Porter is built into every FTS5, so an older zone can run them.
+const STEM_INDEX: &str = r#"
+CREATE VIRTUAL TABLE items_stem USING fts5(
+    text, title,
+    content='items', content_rowid='n',
+    tokenize='porter unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER items_stem_insert AFTER INSERT ON items BEGIN
+    INSERT INTO items_stem (rowid, text, title) VALUES (new.n, new.text, new.title);
+END;
+CREATE TRIGGER items_stem_delete AFTER DELETE ON items BEGIN
+    INSERT INTO items_stem (items_stem, rowid, text, title) VALUES ('delete', old.n, old.text, old.title);
+END;
+CREATE TRIGGER items_stem_update AFTER UPDATE OF text, title ON items BEGIN
+    INSERT INTO items_stem (items_stem, rowid, text, title) VALUES ('delete', old.n, old.text, old.title);
+    INSERT INTO items_stem (rowid, text, title) VALUES (new.n, new.text, new.title);
+END;
+INSERT INTO items_stem (items_stem) VALUES ('rebuild');
+"#;
+
+/// Adds [`STEM_INDEX`] to a library that does not have it, filled from every item, in one
+/// transaction that holds the write lock: no item can be written between the index being made
+/// and being filled, and a second program opening the library at the same moment finds it
+/// made and does nothing.
+fn add_stem_index(conn: &Connection) -> Result<()> {
+    let exists = |conn: &Connection| -> rusqlite::Result<bool> {
+        conn.query_row("SELECT count(*) FROM sqlite_master WHERE name = 'items_stem'", [], |row| Ok(row.get::<_, i64>(0)? > 0))
+    };
+    if exists(conn)? {
+        return Ok(());
+    }
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let made = (|| -> rusqlite::Result<()> {
+        if !exists(conn)? {
+            conn.execute_batch(STEM_INDEX)?;
+        }
+        Ok(())
+    })();
+    match made {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
 /// Adds the columns of [`ADDED_COLUMNS`] that a library does not have yet.
 fn add_missing_columns(conn: &Connection) -> Result<()> {
     for (table, column, kind) in ADDED_COLUMNS {
@@ -2118,7 +2362,153 @@ pub fn fts_query(input: &str, all_prefix: bool) -> Option<String> {
     if terms.is_empty() {
         return None;
     }
-    Some(terms.iter().map(|t| if t.contains(" OR ") { format!("({t})") } else { t.clone() }).collect::<Vec<_>>().join(" "))
+    // AND spelled out: FTS5 does not take a bracketed group next to a term without it.
+    Some(terms.iter().map(|t| if t.contains(" OR ") { format!("({t})") } else { t.clone() }).collect::<Vec<_>>().join(" AND "))
+}
+
+/// What a search will ask the indexes, tier by tier.
+struct Plan {
+    /// Every word, on the plain index.
+    exact: String,
+    /// Every word, on the stemmed index.
+    all: String,
+    /// Every word, with close spellings for the ones found nowhere.
+    close: Option<String>,
+    /// What an item must match to be listed at all.
+    broad: String,
+    broadened: bool,
+    respelled: Vec<(String, Vec<String>)>,
+}
+
+/// One searchable piece of a query.
+#[derive(Clone, Debug, PartialEq)]
+enum Atom {
+    Word { text: String, prefix: bool },
+    Phrase(String),
+}
+
+/// A query as terms that must all match, each a list of alternatives (`a OR b`). The same
+/// reading as [`fts_query`].
+fn query_terms(input: &str) -> Vec<Vec<Atom>> {
+    let mut terms: Vec<Vec<Atom>> = Vec::new();
+    let mut pending_or = false;
+    let mut chars = input.chars().peekable();
+    let push = |atom: Atom, terms: &mut Vec<Vec<Atom>>, pending_or: &mut bool| {
+        match terms.last_mut() {
+            Some(last) if *pending_or => last.push(atom),
+            _ => terms.push(vec![atom]),
+        }
+        *pending_or = false;
+    };
+    while let Some(&ch) = chars.peek() {
+        if ch.is_whitespace() {
+            chars.next();
+        } else if ch == '"' {
+            chars.next();
+            let phrase: String = chars.by_ref().take_while(|c| *c != '"').collect();
+            if phrase.chars().any(char::is_alphanumeric) {
+                push(Atom::Phrase(phrase.to_lowercase()), &mut terms, &mut pending_or);
+            }
+        } else {
+            let mut word = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() || c == '"' {
+                    break;
+                }
+                word.push(c);
+                chars.next();
+            }
+            if word == "OR" {
+                pending_or = !terms.is_empty();
+            } else if word != "AND" && word.chars().any(char::is_alphanumeric) {
+                let prefix = word.ends_with('*');
+                let text = word.trim_end_matches('*').to_lowercase();
+                // A word with punctuation inside (don't, e-mail) is a phrase of its parts.
+                let atom = if text.chars().all(char::is_alphanumeric) { Atom::Word { text, prefix } } else { Atom::Phrase(text) };
+                push(atom, &mut terms, &mut pending_or);
+            }
+        }
+    }
+    terms
+}
+
+fn atom_query(atom: &Atom) -> String {
+    match atom {
+        Atom::Word { text, prefix } => format!("\"{}\"{}", text.replace('"', "\"\""), if *prefix { "*" } else { "" }),
+        Atom::Phrase(text) => format!("\"{}\"", text.replace('"', "\"\"")),
+    }
+}
+
+fn term_query(term: &[Atom]) -> String {
+    let parts: Vec<String> = term.iter().map(atom_query).collect();
+    if parts.len() == 1 { parts[0].clone() } else { format!("({})", parts.join(" OR ")) }
+}
+
+fn and_query(terms: &[Vec<Atom>]) -> String {
+    terms.iter().map(|t| term_query(t)).collect::<Vec<_>>().join(" AND ")
+}
+
+fn or_query(atoms: &[Atom]) -> Option<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for atom in atoms {
+        let text = atom_query(atom);
+        if !seen.contains(&text) {
+            seen.push(text);
+        }
+    }
+    (!seen.is_empty()).then(|| seen.join(" OR "))
+}
+
+/// The phrases every match must contain exactly, as a query on the plain index.
+fn phrase_query(terms: &[Vec<Atom>]) -> Option<String> {
+    let phrases: Vec<String> = terms
+        .iter()
+        .filter(|t| t.len() == 1 && matches!(&t[0], Atom::Phrase(p) if p.contains(char::is_whitespace)))
+        .map(|t| atom_query(&t[0]))
+        .collect();
+    (!phrases.is_empty()).then(|| phrases.join(" AND "))
+}
+
+/// Little words that say nothing on their own, left out of an any-word search.
+fn is_stopword(word: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "a", "about", "after", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be", "been", "but", "by", "can", "could", "did", "do",
+        "does", "for", "from", "get", "got", "had", "has", "have", "he", "her", "him", "his", "how", "i", "if", "in", "into", "is", "it", "its",
+        "just", "like", "me", "my", "no", "not", "of", "oh", "ok", "okay", "on", "or", "our", "out", "say", "said", "she", "so", "some", "than",
+        "that", "the", "their", "them", "then", "there", "these", "they", "this", "to", "too", "uh", "um", "up", "us", "was", "we", "were",
+        "what", "when", "where", "which", "who", "will", "with", "would", "yeah", "you", "your",
+    ];
+    WORDS.contains(&word)
+}
+
+/// The edit distance between two words (insertions, deletions, substitutions and swaps of
+/// two neighbours), or None when it is more than `most`.
+pub fn edit_distance(a: &str, b: &str, most: usize) -> Option<usize> {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.len().abs_diff(b.len()) > most {
+        return None;
+    }
+    // Three rows of the table: two back, one back, and the one being filled.
+    let mut two_back: Vec<usize> = Vec::new();
+    let mut one_back: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut row = vec![i; b.len() + 1];
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut value = (one_back[j] + 1).min(row[j - 1] + 1).min(one_back[j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                value = value.min(two_back[j - 2] + 1);
+            }
+            row[j] = value;
+        }
+        if row.iter().min().copied().unwrap_or(0) > most {
+            return None;
+        }
+        two_back = std::mem::replace(&mut one_back, row);
+    }
+    let distance = one_back[b.len()];
+    (distance <= most).then_some(distance)
 }
 
 fn substring_snippet(text: &str, needle: &str) -> String {
@@ -2481,7 +2871,7 @@ mod tests {
             ids
         };
         let r = db.search("coffee", &all, None, 10).unwrap();
-        assert_eq!((ids(&r), r.total, r.matched), (vec!["A".to_string(), "B".to_string()], 2, "words"));
+        assert_eq!((ids(&r), r.total, r.matched, r.legacy_matched()), (vec!["A".to_string(), "B".to_string()], 2, ALL_WORDS, "words"));
         assert!(r.hits[0].snippet.contains("[coffee]"));
         // All words are required.
         assert_eq!(ids(&db.search("coffee milk", &all, None, 10).unwrap()), ["A"]);
@@ -2494,7 +2884,7 @@ mod tests {
         assert_eq!(ids(&db.search("don't", &all, None, 10).unwrap()), ["C"]);
         // The beginning of a word matches when the whole word does not.
         let r = db.search("transcri", &all, None, 10).unwrap();
-        assert_eq!((ids(&r), r.matched), (vec!["C".to_string()], "prefix"));
+        assert_eq!((ids(&r), r.matched, r.legacy_matched()), (vec!["C".to_string()], CLOSE_SPELLING, "prefix"));
         assert_eq!(ids(&db.search("bench*", &all, None, 10).unwrap()), ["C"]);
         // Accents do not matter, and titles are searched.
         assert_eq!(ids(&db.search("cafe", &all, None, 10).unwrap()), ["M"]);
@@ -2531,11 +2921,12 @@ mod tests {
 
     #[test]
     fn fts_query_building() {
-        assert_eq!(fts_query("hello world", false).unwrap(), "\"hello\" \"world\"");
+        assert_eq!(fts_query("hello world", false).unwrap(), "\"hello\" AND \"world\"");
         assert_eq!(fts_query("hello OR world", false).unwrap(), "(\"hello\" OR \"world\")");
-        assert_eq!(fts_query("\"exact phrase\" tail*", false).unwrap(), "\"exact phrase\" \"tail\"*");
+        assert_eq!(fts_query("\"exact phrase\" tail*", false).unwrap(), "\"exact phrase\" AND \"tail\"*");
         assert_eq!(fts_query("ab", true).unwrap(), "\"ab\"*");
-        assert_eq!(fts_query("say \"hi", false).unwrap(), "\"say\" \"hi\"");
+        assert_eq!(fts_query("say \"hi", false).unwrap(), "\"say\" AND \"hi\"");
+        assert_eq!(fts_query("a OR b c", false).unwrap(), "(\"a\" OR \"b\") AND \"c\"");
         assert!(fts_query("?!", false).is_none());
         assert!(fts_query("", false).is_none());
     }
@@ -2931,6 +3322,70 @@ mod tests {
         assert_eq!(db.get("R1").unwrap().unwrap().text, "pick up the saffron");
     }
 
+    /// What speech recognition does to words, and what a search for the word the person
+    /// meant finds.
+    #[test]
+    fn search_survives_misheard_words() {
+        let mut db = Db::open_in_memory().unwrap();
+        let texts = [
+            ("PLURAL", "booked the harbor trip for saturday"),
+            ("TENSE", "we plan to meet with the movers next week"),
+            ("NAME", "call nakamora about the contract before friday"),
+            ("NEAR", "the least renewal is due next month"),
+            ("SWAP", "did you recieve the invoice"),
+            ("SOME", "dentist on tuesday at ten"),
+            ("SPLIT", "the cooper netties cluster is down again"),
+            ("OTHER", "pick up oat milk"),
+            ("STEMMED", "ask kowalsky"),
+        ];
+        let items: Vec<Item> = texts.iter().map(|(id, text)| item(id, 1.0, text)).collect();
+        db.apply_items(&items, &link(1.0)).unwrap();
+        let all = Filter::default();
+        let first = |query: &str| -> (Option<String>, &'static str) {
+            let r = db.search_wide(query, &all, None, 10, 0, BROADEN_BELOW).unwrap();
+            (r.hits.first().map(|h| h.row.id.clone()), r.hits.first().map(|h| h.matched).unwrap_or("none"))
+        };
+        // Other forms of a word: plural, tense.
+        assert_eq!(first("harbors"), (Some("PLURAL".to_string()), ALL_WORDS));
+        assert_eq!(first("planned meeting"), (Some("TENSE".to_string()), ALL_WORDS));
+        // A name or word written another way.
+        assert_eq!(first("Nakamura contract"), (Some("NAME".to_string()), CLOSE_SPELLING));
+        // Stemming alone already takes some names: Kowalsky and Kowalski share a stem.
+        assert_eq!(first("Kowalski"), (Some("STEMMED".to_string()), ALL_WORDS));
+        assert_eq!(first("lease renewal"), (Some("NEAR".to_string()), CLOSE_SPELLING));
+        assert_eq!(first("receive invoice"), (Some("SWAP".to_string()), CLOSE_SPELLING));
+        // Some of the words.
+        assert_eq!(first("dentist appointment tuesday"), (Some("SOME".to_string()), ANY_WORD));
+        // A word split in two is not found by spelling: said plainly, not guessed.
+        assert_eq!(first("kubernetes"), (None, "none"));
+        let r = db.search_wide("Nakamura contract", &all, None, 10, 0, BROADEN_BELOW).unwrap();
+        assert_eq!(r.respelled, vec![("nakamura".to_string(), vec!["nakamora".to_string()])]);
+        assert!(r.broadened && r.all_words == 0 && r.hits[0].snippet.contains("[nakamora]"), "{:?}", r.hits[0]);
+        // "contract" alone (any word) never ranks above the close spelling with both words.
+        assert!(r.hits.iter().all(|h| h.row.id == "NAME"), "only one item has either word");
+        // Quoted phrases stay exact, in every tier.
+        assert_eq!(db.search_wide("\"harbor trips\"", &all, None, 10, 0, BROADEN_BELOW).unwrap().total, 0);
+        assert_eq!(db.search_wide("\"harbor trip\" saturdays", &all, None, 10, 0, BROADEN_BELOW).unwrap().hits[0].row.id, "PLURAL");
+        // Little words alone do not pull in the whole library when widening.
+        let r = db.search_wide("the dentist", &all, None, 10, 0, BROADEN_BELOW).unwrap();
+        assert_eq!(r.hits.iter().map(|h| h.row.id.as_str()).collect::<Vec<_>>(), ["SOME"]);
+        // The page and the command line widen only when nothing has every word.
+        assert_eq!(db.search("dentist tuesday", &all, None, 10).unwrap().total, 1);
+        assert!(db.search("dentist appointment tuesday", &all, None, 10).unwrap().broadened);
+    }
+
+    #[test]
+    fn close_spellings_are_measured_by_edits() {
+        assert_eq!(edit_distance("kowalski", "kowalsky", 2), Some(1));
+        assert_eq!(edit_distance("recieve", "receive", 2), Some(1));
+        assert_eq!(edit_distance("lease", "least", 1), Some(1));
+        assert_eq!(edit_distance("harbor", "harbour", 2), Some(1));
+        assert_eq!(edit_distance("kitten", "sitting", 2), None);
+        assert_eq!(edit_distance("kitten", "sitting", 3), Some(3));
+        assert_eq!(edit_distance("", "ab", 2), Some(2));
+        assert_eq!(edit_distance("same", "same", 0), Some(0));
+    }
+
     #[test]
     fn a_library_from_zone_0_1_2_is_upgraded_in_place() {
         // A library exactly as zone 0.1.2 made it, with a phone, items, a used offer, settings
@@ -2966,6 +3421,9 @@ mod tests {
             assert_eq!((row.text.as_str(), row.device_id.as_deref(), row.rev.as_deref(), row.words), ("amber harbor lantern", Some("PHONE-OLD"), Some("r1"), 3));
             assert_eq!(db.get("OLD-2").unwrap().unwrap().processed_at, Some(170.0));
             assert_eq!(db.search("lantern", &Filter::default(), None, 5).unwrap().total, 1);
+            // The stemmed index was added and filled from what was there.
+            assert_eq!(db.stem_table(), "items_stem");
+            assert_eq!(db.search_wide("lanterns", &Filter::default(), None, 5, 0, BROADEN_BELOW).unwrap().hits[0].row.id, "OLD-1");
             let device = db.device("ep-old").unwrap().unwrap();
             assert_eq!((device.label().as_str(), device.items_received, device.nickname.clone(), device.appearance.clone()), ("iPhone", 3, None, None));
             assert_eq!(db.meta_get("clipboard").unwrap().as_deref(), Some("on"));
@@ -2993,6 +3451,23 @@ mod tests {
             .query_row("SELECT count(*) FROM (SELECT endpoint_id, phone_id, name, app, paired_at, last_seen, last_sync, items_received, last_path, resend_all FROM devices)", [], |row| row.get(0))
             .unwrap();
         assert_eq!(read, 2);
+        // An older zone writes items without knowing of the stemmed index: the triggers keep
+        // it current, and the plain index answers the older zone's own queries as before.
+        old.execute(
+            "INSERT INTO items (id, kind, source, created_at, updated_at, text, carrier, received_at, words) VALUES ('OLD-4', 'note', NULL, 200.0, 200.0, 'paint the cedar boards', 'link', 200.0, 4)",
+            [],
+        )
+        .unwrap();
+        old.execute("UPDATE items SET text = 'oil the cedar boards' WHERE id = 'OLD-4'", []).unwrap();
+        let plain: i64 = old.query_row("SELECT count(*) FROM items_fts WHERE items_fts MATCH 'oil'", [], |row| row.get(0)).unwrap();
+        assert_eq!(plain, 1);
+        drop(old);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.search_wide("oiled", &Filter::default(), None, 5, 0, BROADEN_BELOW).unwrap().hits[0].row.id, "OLD-4");
+        assert_eq!(db.search_wide("painted", &Filter::default(), None, 5, 0, BROADEN_BELOW).unwrap().all_words, 0);
+        let check: String = db.conn.query_row("SELECT 'ok' FROM items_stem WHERE items_stem MATCH 'cedar' LIMIT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(check, "ok");
+        db.conn.execute_batch("INSERT INTO items_stem (items_stem) VALUES ('integrity-check')").unwrap();
     }
 
 }

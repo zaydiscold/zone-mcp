@@ -84,7 +84,7 @@ fn plain_json_clients() {
     let dir = tempfile::tempdir().unwrap();
     let env = env(dir.path());
     let existing = "{\n  \"theme\": \"dark\",\n  \"mcpServers\": {\n    \"files\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"files\"]\n    }\n  },\n  \"last\": true\n}\n";
-    for client in [Client::ClaudeDesktop, Client::Cursor, Client::Gemini, Client::Qwen, Client::Windsurf, Client::Kiro, Client::LmStudio, Client::Roo] {
+    for client in [Client::ClaudeDesktop, Client::Cursor, Client::Gemini, Client::Qwen, Client::Windsurf, Client::Kiro, Client::LmStudio, Client::Roo, Client::Warp, Client::Junie, Client::Antigravity] {
         round_trip(client, &env, Some(existing), |text| {
             let value: Value = serde_json::from_str(text).unwrap();
             assert_eq!(value["mcpServers"]["zone"], json!({ "command": "/opt/zone/bin/zone", "args": ["mcp"], "env": { "ZONE_HOME": "/tmp/zone home" } }));
@@ -389,6 +389,8 @@ fn client_names() {
     assert_eq!(Client::parse("claude_desktop").unwrap(), Client::ClaudeDesktop);
     assert_eq!(Client::parse("VS Code").unwrap(), Client::VsCode);
     assert_eq!(Client::parse("gemini-cli").unwrap(), Client::Gemini);
+    assert_eq!(Client::parse("ChatGPT").unwrap(), Client::Codex);
+    assert_eq!(Client::parse("agy").unwrap(), Client::Antigravity);
     for client in Client::ALL {
         assert_eq!(Client::parse(client.name()).unwrap(), client);
     }
@@ -521,4 +523,102 @@ fn an_install_keeps_what_it_was_not_asked_to_change() {
     assert_eq!(args(Wish { view_named: true, ..Wish::default() }, &odd), ["mcp"]);
     assert_eq!(base.with_view(true, &no_keyboard).view_words().unwrap(), "read-only, hides keyboard");
     assert_eq!(base.view_words(), None);
+}
+
+#[test]
+fn snippets_to_paste_are_what_an_install_would_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = env(dir.path());
+    let generic = generic_snippet(&with_home());
+    let value: Value = serde_json::from_str(&generic.text).unwrap();
+    assert_eq!(value, json!({ "mcpServers": { "zone": { "command": "/opt/zone/bin/zone", "args": ["mcp"], "env": { "ZONE_HOME": "/tmp/zone home" } } } }));
+    assert_eq!(generic.key_path, ["mcpServers", "zone"]);
+    // Each client's snippet, saved as its whole settings file, reads back as this zone.
+    for client in Client::ALL {
+        let snippet = client_snippet(client, &with_home(), &env);
+        let target = client.targets(&env).into_iter().next().unwrap();
+        assert_eq!(snippet.path.as_deref(), Some(target.path.as_path()), "{client:?}");
+        write(&target.path, &snippet.text);
+        assert_eq!(read_entry(&target, &env), Found::Present(with_home()), "{client:?}:\n{}", snippet.text);
+        assert_eq!(snippet.key_path.last().map(String::as_str), Some(SERVER_NAME));
+        let format = match target.format {
+            Format::Json(..) => "json",
+            Format::Toml => "toml",
+            Format::Yaml(..) => "yaml",
+        };
+        assert_eq!(snippet.format, format, "{client:?}");
+        assert_eq!(snippet.command_line.is_some(), client == Client::ClaudeCode);
+    }
+    // A limited, read-only view goes into the snippet.
+    let narrow = with_home().with_view(true, &Scope::new(&["note".to_string()], &[]).unwrap());
+    let text = generic_snippet(&narrow).text;
+    assert!(text.contains("\"--read-only\"") && text.contains("\"--kinds\"") && text.contains("\"note\""), "{text}");
+}
+
+#[test]
+fn status_says_what_each_place_launches() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = env(dir.path());
+    let target = only(Client::Cursor, &env);
+    register(&target, &with_home(), &env, &mut State::default(), Mode::Explicit);
+    let rows = survey(&env, &State::default(), &with_home());
+    let value = rows_json(&rows, &with_home(), &State::default());
+    let cursor = value["clients"].as_array().unwrap().iter().find(|c| c["client"] == "cursor").unwrap();
+    assert_eq!(cursor["launch"], json!({ "command": "/opt/zone/bin/zone", "args": ["mcp"], "env": { "ZONE_HOME": "/tmp/zone home" } }));
+    let zed = value["clients"].as_array().unwrap().iter().find(|c| c["client"] == "zed").unwrap();
+    assert_eq!(zed["launch"], Value::Null);
+}
+
+#[test]
+fn antigravity_warp_and_junie_are_where_their_documentation_says() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = env(dir.path());
+    let home = dir.path();
+    for client in [Client::Antigravity, Client::Warp, Client::Junie] {
+        assert!(!client.installed(&env), "{client:?}");
+    }
+    assert_eq!(only(Client::Warp, &env).path, home.join(".warp/.mcp.json"));
+    assert_eq!(only(Client::Junie, &env).path, home.join(".junie/mcp/mcp.json"));
+    // Antigravity: the documented file, and the earlier versions' files only when they are there.
+    assert_eq!(only(Client::Antigravity, &env).path, home.join(".gemini/config/mcp_config.json"));
+    // The shape found on a real machine: mcpServers with command, args, env and disabled.
+    let earlier = home.join(".gemini/antigravity/mcp_config.json");
+    write(&earlier, "{\n  \"mcpServers\": {\n    \"tavily\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"tavily-mcp\"],\n      \"env\": {},\n      \"disabled\": false\n    }\n  }\n}\n");
+    assert!(Client::Antigravity.installed(&env));
+    let targets = Client::Antigravity.targets(&env);
+    assert_eq!(targets.iter().map(|t| t.label()).collect::<Vec<_>>(), ["Antigravity (global)", "Antigravity (earlier versions)"]);
+    let mut state = State::default();
+    for target in &targets {
+        assert_eq!(register(target, &with_home(), &env, &mut state, Mode::Explicit), Outcome::Registered, "{}", target.label());
+    }
+    let value = json_at(&earlier);
+    assert_eq!(value["mcpServers"]["tavily"]["disabled"], false);
+    assert_eq!(value["mcpServers"]["zone"]["command"], "/opt/zone/bin/zone");
+    std::fs::create_dir_all(home.join(".warp")).unwrap();
+    assert!(Client::Warp.installed(&env));
+}
+
+#[test]
+fn raycast_installs_from_a_link() {
+    let link = raycast_deeplink(&with_home());
+    let encoded = link.strip_prefix("raycast://mcp/install?").unwrap();
+    assert!(encoded.chars().all(|c| c.is_ascii_alphanumeric() || "-_.~%".contains(c)), "{encoded}");
+    // Decoded, it is the server as Raycast's manual describes it.
+    let bytes: Vec<u8> = {
+        let raw = encoded.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < raw.len() {
+            if raw[i] == b'%' {
+                out.push(u8::from_str_radix(std::str::from_utf8(&raw[i + 1..i + 3]).unwrap(), 16).unwrap());
+                i += 3;
+            } else {
+                out.push(raw[i]);
+                i += 1;
+            }
+        }
+        out
+    };
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value, json!({ "name": "zone", "type": "stdio", "command": "/opt/zone/bin/zone", "args": ["mcp"], "env": { "ZONE_HOME": "/tmp/zone home" } }));
 }

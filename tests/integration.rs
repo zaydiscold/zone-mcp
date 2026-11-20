@@ -2419,7 +2419,11 @@ fn mcp_round_trip_over_stdio() {
     assert_eq!(first["returned"], 20);
     assert_eq!(first["range"]["start"], "Wed 2026-11-11 12:00:00 -08:00");
     assert_eq!(first["items"][0]["time"], "Wed 2026-11-11 12:00:00 -08:00");
-    assert!(first["items"][0]["preview"].as_str().unwrap().starts_with("synthetic dictation number"));
+    // A small page carries the whole text, so no get_items is needed.
+    assert!(first["items"][0]["text"].as_str().unwrap().starts_with("synthetic dictation number"));
+    // The same window in words.
+    let worded = mcp.tool("list_items", json!({ "when": "Nov 11 2026 12pm to 5pm", "timezone": "America/Los_Angeles" }));
+    assert_eq!((worded["total"].as_i64(), worded["range"]["start_iso"].as_str()), (Some(32), Some("2026-11-11T12:00:00-08:00")));
     let mut next = window.clone();
     next["cursor"] = first["next_cursor"].clone();
     let second = mcp.tool("list_items", next);
@@ -2469,8 +2473,8 @@ fn mcp_round_trip_over_stdio() {
     // Mistakes come back as tool errors an agent can read, not protocol failures.
     assert!(mcp.tool_error("list_items", json!({ "start": "next blue moon" })).contains("cannot read the time"));
     assert!(mcp.tool_error("list_items", json!({ "timezone": "Mars/Olympus" })).contains("unknown time zone"));
-    let unknown = mcp.request("tools/call", json!({ "name": "delete_everything", "arguments": {} }));
-    assert!(unknown["error"].is_object(), "{unknown}");
+    assert!(mcp.tool_error("delete_everything", json!({})).contains("unknown tool"));
+    assert!(mcp.tool_error("list_items", json!({ "date": "2026-11-11" })).contains("does not take \"date\""));
 
     // --read-only hides the one tool that writes, and refuses it if called anyway.
     drop(mcp);
@@ -2478,8 +2482,7 @@ fn mcp_round_trip_over_stdio() {
     let tools = read_only.request("tools/list", json!({}));
     let names: Vec<String> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
     assert_eq!(names, ["list_items", "search_items", "get_items", "library_stats", "sync_status"]);
-    let refused = read_only.request("tools/call", json!({ "name": "mark_processed", "arguments": { "ids": [meeting_id] } }));
-    assert!(refused["error"].is_object(), "{refused}");
+    assert!(read_only.tool_error("mark_processed", json!({ "ids": [meeting_id] })).contains("--read-only"));
     assert_eq!(read_only.tool("list_items", json!({ "unprocessed_only": true, "limit": 1 }))["total"], 43);
 }
 

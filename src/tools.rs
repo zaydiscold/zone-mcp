@@ -20,6 +20,8 @@ pub const MAX_SEARCH_LIMIT: usize = 100;
 pub const DEFAULT_MAX_CHARS: usize = 20_000;
 pub const MAX_MAX_CHARS: usize = 200_000;
 pub const MAX_GET_IDS: usize = 50;
+/// The most text one get_items call returns, over all its items.
+pub const MAX_GET_TOTAL: usize = 100_000;
 pub const MAX_MARK_IDS: usize = 500;
 const PREVIEW_CHARS: usize = 200;
 
@@ -42,33 +44,29 @@ pub fn instructions(scope: &Scope) -> String {
 
 /// What every agent is told once, when it connects.
 pub const INSTRUCTIONS: &str = "\
-Zone is this person's dictation library: everything they spoke into the Zone app on their iPhone, \
-copied to this computer. Dictations, notes and meetings are their own spoken words turned into \
-text, so expect speech recognition mistakes and informal phrasing.
+Zone is this person's spoken library from the Zone app on their iPhone, copied to this computer. \
+Dictations, notes and meetings are their own speech recognized on the phone, so expect misheard \
+words and informal phrasing. Clips are exact text.
 
-There are four kinds of item. Filter on `kinds` to pick one.
-- `dictation`: something they dictated. Most dictations have source `keyboard`: those are messages \
-and text they typed by voice into other apps (chats, emails, search boxes, prompts), so they are \
-usually short and addressed to someone else. Source `app` was dictated inside the Zone app, and \
-source `note` is the raw dictation behind a voice note.
-- `note`: a voice note they chose to save in Zone. These are notes to self.
-- `meeting`: a recorded meeting with a transcript, one line per speaker turn, with a title.
-- `clip`: text the person sent to this computer on purpose, for example something they copied on \
-the phone (source `clipboard`), shared from another app (`share`), sent with a shortcut (`shortcut`) \
-or typed (`typed`). It is exact text, not speech. Treat the newest clip as \"the thing I just sent \
-you\": when they say \"what I just sent\" or \"the link from my phone\", call `list_items` with \
-`kinds: [\"clip\"]` and `limit: 1`.
+Kinds (filter with `kinds`):
+- `dictation`: something they dictated. Source `keyboard` is text typed by voice into other apps \
+(messages, emails, prompts), usually addressed to someone else. Source `app` was dictated inside \
+Zone, source `note` is the raw dictation behind a voice note.
+- `note`: a voice note they saved, a note to self.
+- `meeting`: a meeting transcript with a title, one \"Speaker: words\" line per turn.
+- `clip`: text they sent to this computer on purpose (copied, shared, sent by a shortcut or typed). \
+The newest clip is \"the thing I just sent you\": list_items with kinds [\"clip\"] and limit 1.
 
 How to work with it:
-- Call `sync_status` first when a request mentions a day or time (\"Wednesday afternoon\", \
-\"yesterday\"). It returns the current local date, weekday and time zone, and says how fresh the \
-library is.
-- `list_items` returns short cards for a time range, newest or oldest first, with a total count and \
-a cursor for the next page. Times without an offset are read in the computer's time zone unless \
-you pass `timezone`.
-- `search_items` finds words, best match first, with a cursor for the next page. `get_items` \
-returns full text for ids you picked from cards.
-- `mark_processed` only sets a flag so you can work through items once (`unprocessed_only` skips \
+- For a time, pass the person's words as `when` to list_items: \"Wednesday 12pm to 5pm\", \
+\"yesterday afternoon\", \"last week\". One call returns the cards, with full text when the page is \
+small. `range` says the exact window it read. sync_status is only for the current date, the time \
+zone or how fresh the library is.
+- search_items finds words and copes with plurals, other word forms and misheard or misspelled \
+words. Each hit says how it matched.
+- get_items reads full text by id; long items continue from next_offset.
+- Answers say when there is more (pass next_cursor as cursor) and why a list came back empty.
+- mark_processed only sets a flag so you can work through items once (unprocessed_only skips \
 flagged items). Nothing here can edit or delete the person's words.
 
 This is private speech. Quote it only as far as the task needs.";
@@ -93,8 +91,12 @@ fn time_property(which: &str) -> Value {
     json!({ "type": "string", "description": format!("{meaning} {TIME_HELP}") })
 }
 
+/// How `when` is described to agents.
+const WHEN_HELP: &str = "The time window in words, read in the computer's time zone (or `timezone`): \"Wednesday 12pm to 5pm\", \"yesterday afternoon\", \"this morning\", \"last week\", \"3 days ago\", \"Monday to Wednesday\", \"2026-11-11\". A weekday alone is the most recent one, today included; \"last Wednesday\" is the one before today. Parts of the day: morning 5:00 to 12:00, afternoon 12:00 to 17:00, evening 17:00 to 21:00, night 21:00 to 5:00, tonight and last night 17:00 to 5:00. Use it instead of start and end. The answer's `range` says the exact window it read, so check it.";
+
 fn common_filters(scope: &Scope) -> Map<String, Value> {
     let mut properties = Map::new();
+    properties.insert("when".into(), json!({ "type": "string", "description": WHEN_HELP }));
     properties.insert("start".into(), time_property("start"));
     properties.insert("end".into(), time_property("end"));
     let all = if scope.kinds.is_empty() { "Leave out for all of them." } else { "Leave out for every kind this server shows." };
@@ -148,6 +150,10 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         json!({ "type": "string", "description": "next_cursor from the previous call, to continue where it stopped. Keep the other arguments the same." }),
     );
     list_properties.insert(
+        "include_text".into(),
+        json!({ "type": "string", "enum": ["auto", "full", "preview"], "default": "auto", "description": format!("auto (default): each card carries its full text when this page's text, meetings aside, is at most {AUTO_TEXT_BUDGET} characters, else a 200-character preview; meetings are previews. full: full text (at most {FULL_TEXT_BUDGET} characters a page, the rest as previews). preview: previews only. A card whose preview is not the whole text says \"cut\": true; get_items reads it.") }),
+    );
+    list_properties.insert(
         "unprocessed_only".into(),
         json!({ "type": "boolean", "default": false, "description": "Skip items already flagged with mark_processed." }),
     );
@@ -157,7 +163,7 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         "query".into(),
         json!({
             "type": "string",
-            "description": "Words to find. Every word must appear. Use \"double quotes\" for an exact phrase, OR between alternatives, and a trailing * for the beginning of a word (transcri*). Case and accents do not matter."
+            "description": "Words to find. Items with every word (in any form: plural, tense) come first. When fewer than 3 items have them all, items with close spellings of a word found nowhere (speech recognition mishears names) and items with some of the words follow, each marked in \"matched\". \"Double quotes\" match an exact phrase, OR gives alternatives, a trailing * matches the beginning of a word (transcri*). Case and accents do not matter."
         }),
     );
     search_properties.extend(common_filters(scope));
@@ -180,21 +186,21 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         ToolDef {
             name: "list_items",
             title: "List dictations, notes, meetings and clips",
-            description: format!("{}{limit}", "List the person's spoken items in a time range as short cards (id, kind, source, local time with weekday and UTC offset, duration, word count, first 200 characters, processed flag), with the total number that match and a cursor for the next page. Use it for requests like \"everything from Wednesday 12pm to 5pm\" (start \"2026-11-11 12:00\", end \"2026-11-11 17:00\") or to work through the library newest to oldest. Kinds: dictation items with source keyboard are messages and text the person typed by voice in other apps; note items are voice notes they saved; meeting items are meeting transcripts; clip items are text they sent to this computer on purpose (kinds [\"clip\"] with limit 1 is \"the thing I just sent you\"). Cards are previews: call get_items for full text."),
+            description: format!("{}{limit}", "List the person's items in a time window, newest or oldest first, as cards (id, kind, source, local time with weekday, duration, words, processed flag) with their full text when the page is small, else 200-character previews. For \"what did I say Wednesday 12pm to 5pm\" pass when \"Wednesday 12pm to 5pm\": one call, no other tool needed first. Returns the total that match, counts by kind, `range` (the exact window read, in ISO and in words), `more` and next_cursor when there is another page, and a note saying why when nothing matches. Kinds: dictation (source keyboard is text typed by voice into other apps), note (voice notes), meeting (meeting transcripts), clip (text sent from the phone on purpose; kinds [\"clip\"] with limit 1 is \"the thing I just sent you\")."),
             input_schema: json!({ "type": "object", "properties": list_properties, "additionalProperties": false }),
             read_only: true,
         },
         ToolDef {
             name: "search_items",
             title: "Search the spoken library",
-            description: format!("{}{limit}", "Full-text search over everything the person dictated: dictations (mostly messages typed by voice in other apps), voice notes, meeting transcripts and titles, and clips (text they sent to this computer on purpose). Returns the best matches with a snippet around the matching words (matches are wrapped in [brackets]), plus the total number of matches and a truncated flag when there are more than were returned. Narrow with start, end, kinds or sources."),
+            description: format!("{}{limit}", "Search everything the person said and sent (dictations, voice notes, meeting transcripts and titles, clips) for words, best match first. It copes with speech: other word forms always match, and when few items have every word it adds close spellings and items with some of the words, saying for each how it matched (all words, close spelling, any word). Returns snippets with the matching words in [brackets], the total, `more` and next_cursor when there is another page, and a note saying why when nothing matches. Narrow with when (\"last week\"), kinds or sources; get_items reads a match in full."),
             input_schema: json!({ "type": "object", "properties": search_properties, "required": ["query"], "additionalProperties": false }),
             read_only: true,
         },
         ToolDef {
             name: "get_items",
             title: "Read full items",
-            description: "Return the full text of items by id (ids come from list_items or search_items). Long texts such as meeting transcripts are cut at max_chars and marked truncated, with next_offset to continue reading. For a meeting, text is the transcript with one \"Speaker: words\" line per turn.".to_string(),
+            description: format!("Return the full text of items by id (ids come from list_items or search_items). Long texts such as meeting transcripts are cut at max_chars (and at {MAX_GET_TOTAL} characters for the whole call) and marked truncated, with next_offset: call again with offset to read on. For a meeting, text is the transcript with one \"Speaker: words\" line per turn. An id that is not in the library comes back in not_found."),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -218,7 +224,7 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
         ToolDef {
             name: "sync_status",
             title: "Current time and sync state",
-            description: "The computer's current local date, weekday, time and time zone (use it to resolve words like \"Wednesday\" or \"yesterday\" into dates), which phones are paired, when each carrier last delivered items, and how many items of each kind the library holds. Call it first when a request depends on what day it is or on how fresh the library is.".to_string(),
+            description: "The computer's current local date, weekday, time and time zone, which phones are paired, when each way in last delivered items, and how many items of each kind the library holds. Not needed before list_items or search_items (they read \"Wednesday\" or \"yesterday afternoon\" themselves); use it when the person asks how fresh the library is or what day it is.".to_string(),
             input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
             read_only: true,
         },
@@ -249,14 +255,38 @@ pub fn definitions(access: &Access) -> Vec<ToolDef> {
 /// counted or flagged, and asking for it by id answers as if it did not exist.
 pub fn call(db: &mut Db, name: &str, args: &Map<String, Value>, access: &Access) -> Result<Value> {
     let scope = &access.scope;
+    let definitions = definitions(access);
+    let Some(def) = definitions.iter().find(|d| d.name == name) else {
+        if name == "mark_processed" {
+            bail!("this server was started with --read-only, so mark_processed is not available. Tell the person which items you handled instead.");
+        }
+        let names: Vec<&str> = definitions.iter().map(|d| d.name).collect();
+        bail!("unknown tool \"{name}\". The tools are: {}.", names.join(", "));
+    };
+    // An argument a tool does not take is named, with what it does take, rather than ignored:
+    // an agent that sends `date` must not get the whole library and think it is that day's.
+    if let Some(properties) = def.input_schema["properties"].as_object()
+        && let Some(unknown) = args.keys().find(|key| !properties.contains_key(key.as_str()))
+    {
+        let takes: Vec<&str> = properties.keys().map(String::as_str).collect();
+        let hint = match unknown.as_str() {
+            "date" | "day" | "time" | "window" | "range" | "since" | "until" | "from" | "to" if properties.contains_key("when") => {
+                " For a time, send when with words such as \"Wednesday 12pm to 5pm\", or start and end."
+            }
+            "kind" | "type" if properties.contains_key("kinds") => " Send kinds as a list: [\"note\"].",
+            "id" if properties.contains_key("ids") => " Send ids as a list: [\"<id>\"].",
+            "q" | "text" | "search" if properties.contains_key("query") => " Send the words as query.",
+            _ => "",
+        };
+        bail!("{name} does not take \"{unknown}\". It takes: {}.{hint}", takes.join(", "));
+    }
     match name {
         "list_items" => list_items(db, args, scope),
         "search_items" => search_items(db, args, scope),
         "get_items" => get_items(db, args, scope),
         "library_stats" => library_stats(db, args, scope),
         "sync_status" => sync_status(db, scope),
-        "mark_processed" if !access.read_only => mark_processed(db, args, scope),
-        "mark_processed" => bail!("this server was started with --read-only, so mark_processed is not available"),
+        "mark_processed" => mark_processed(db, args, scope),
         other => bail!("unknown tool \"{other}\""),
     }
 }
@@ -323,14 +353,26 @@ fn clock(args: &Map<String, Value>) -> Result<Clock> {
 /// Asking by name for a kind or a source the server does not show is an error, so the agent
 /// learns why instead of concluding there is nothing.
 fn filter(args: &Map<String, Value>, clock: &Clock, scope: &Scope) -> Result<(Filter, Value)> {
-    let start = match opt_string(args, "start")? {
+    let when = opt_string(args, "when")?;
+    let mut start = match opt_string(args, "start")? {
         Some(text) => Some(clock.parse(&text, Bound::Start).map_err(|e| anyhow!("start: {e}"))?),
         None => None,
     };
-    let end = match opt_string(args, "end")? {
+    let mut end = match opt_string(args, "end")? {
         Some(text) => Some(clock.parse(&text, Bound::End).map_err(|e| anyhow!("end: {e}"))?),
         None => None,
     };
+    if let Some(text) = &when {
+        if start.is_some() || end.is_some() {
+            bail!("give when, or start and end, not both. when \"{text}\" already sets the window.");
+        }
+        let window = clock.window(text).map_err(|e| anyhow!("when: {e}"))?;
+        if window.start == window.end {
+            bail!("when \"{text}\" is a single moment ({}), not a window. Add a second time: \"{text} to 5pm\", or a part of the day.", clock.full(window.start));
+        }
+        start = Some(window.start);
+        end = Some(window.end);
+    }
     if let (Some(s), Some(e)) = (start, end)
         && s >= e {
             bail!("start ({}) is not before end ({})", clock.full(s), clock.full(e));
@@ -350,8 +392,12 @@ fn filter(args: &Map<String, Value>, clock: &Clock, scope: &Scope) -> Result<(Fi
         );
     }
     let range = json!({
+        "when": when,
+        "words": clock.window_words(start, end),
         "start": start.map(|t| clock.full(t)),
         "end": end.map(|t| clock.full(t)),
+        "start_iso": start.map(|t| clock.rfc3339(t)),
+        "end_iso": end.map(|t| clock.rfc3339(t)),
         "timezone": clock.zone_name(),
     });
     Ok((Filter { start, end, kinds, sources, scope: scope.clone(), ..Filter::default() }, range))
@@ -415,6 +461,7 @@ fn list_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<V
         Some(text) => Some(Cursor::decode(&text)?),
         None => None,
     };
+    let mode = TextMode::parse(opt_string(args, "include_text")?.as_deref())?;
 
     let total = db.count(&filter)?;
     let by_kind = db.counts_by_kind_filtered(&filter)?;
@@ -423,22 +470,173 @@ fn list_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<V
     let more = rows.len() > limit;
     rows.truncate(limit);
     let next_cursor = if more { rows.last().map(|row| Cursor::after(row).encode()) } else { None };
-    let items: Vec<Value> = rows.iter().map(|row| card(row, &clock)).collect();
+    let (items, text, text_note) = cards_with_text(&rows, &clock, mode);
 
-    Ok(json!({
-        "range": range,
-        "order": if order == Order::Newest { "newest" } else { "oldest" },
-        "total": total,
-        "total_by_kind": kind_counts(&by_kind),
-        "returned": items.len(),
-        "next_cursor": next_cursor,
-        "items": items,
-    }))
+    let mut notes = Vec::new();
+    if let Some(note) = text_note {
+        notes.push(note);
+    }
+    if more {
+        notes.push(format!(
+            "There are more: this page has {} of {total}. Call list_items again with cursor set to next_cursor (keep the other arguments) for the next ones.",
+            items.len()
+        ));
+    }
+    if total == 0 {
+        notes.push(empty_note(db, &filter, &clock, None)?);
+    }
+    let mut out = Map::new();
+    out.insert("range".into(), range);
+    out.insert("order".into(), json!(if order == Order::Newest { "newest" } else { "oldest" }));
+    out.insert("total".into(), json!(total));
+    out.insert("total_by_kind".into(), kind_counts(&by_kind));
+    out.insert("returned".into(), json!(items.len()));
+    out.insert("more".into(), json!(more));
+    out.insert("next_cursor".into(), json!(next_cursor));
+    out.insert("text".into(), json!(text));
+    if !notes.is_empty() {
+        out.insert("note".into(), json!(notes.join(" ")));
+    }
+    out.insert("items".into(), json!(items));
+    Ok(Value::Object(out))
+}
+
+/// How much of each item's text `list_items` returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextMode {
+    /// Full text when the page's text is small, else previews. Meetings stay previews.
+    Auto,
+    Full,
+    Preview,
+}
+
+impl TextMode {
+    fn parse(text: Option<&str>) -> Result<TextMode> {
+        match text.map(|t| t.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("auto") => Ok(TextMode::Auto),
+            Some("full") | Some("true") => Ok(TextMode::Full),
+            Some("preview") | Some("previews") | Some("false") => Ok(TextMode::Preview),
+            Some(other) => bail!("include_text must be auto, full or preview, not \"{other}\""),
+        }
+    }
+}
+
+/// `auto` returns full text when the page's text (meetings aside) is at most this long.
+pub const AUTO_TEXT_BUDGET: usize = 12_000;
+/// `full` returns at most this much text in one page; items past it come as previews.
+pub const FULL_TEXT_BUDGET: usize = 60_000;
+
+/// Cards for a page, with full text or previews as `mode` says. Returns the cards, `full`,
+/// `preview` or `mixed`, and a sentence when some text was left out.
+fn cards_with_text(rows: &[Row], clock: &Clock, mode: TextMode) -> (Vec<Value>, &'static str, Option<String>) {
+    let length = |row: &Row| row.text.chars().count();
+    let page_chars: usize = rows.iter().filter(|r| r.kind != "meeting").map(length).sum();
+    let mut budget = match mode {
+        TextMode::Preview => 0,
+        TextMode::Auto if page_chars > AUTO_TEXT_BUDGET => 0,
+        TextMode::Auto => AUTO_TEXT_BUDGET,
+        TextMode::Full => FULL_TEXT_BUDGET,
+    };
+    let (mut full, mut previews, mut meetings_held) = (0usize, 0usize, 0usize);
+    let mut cards = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut card = card(row, clock);
+        let chars = length(row);
+        let meeting_held = mode == TextMode::Auto && row.kind == "meeting";
+        // In full mode a long item takes what is left of the budget, and says where to go on.
+        if !meeting_held && budget > 0 && (chars <= budget || mode == TextMode::Full) {
+            let shown: String = row.text.chars().take(DEFAULT_MAX_CHARS.min(budget)).collect();
+            let returned = shown.chars().count();
+            budget -= returned;
+            if let Some(map) = card.as_object_mut() {
+                map.remove("preview");
+                map.insert("text".into(), json!(shown));
+                if returned < chars {
+                    map.insert("total_chars".into(), json!(chars));
+                    map.insert("next_offset".into(), json!(returned));
+                }
+            }
+            full += 1;
+        } else {
+            if meeting_held && chars > PREVIEW_CHARS {
+                meetings_held += 1;
+            }
+            if chars > PREVIEW_CHARS
+                && let Some(map) = card.as_object_mut()
+            {
+                map.insert("cut".into(), json!(true));
+                map.insert("total_chars".into(), json!(chars));
+            }
+            previews += 1;
+        }
+        cards.push(card);
+    }
+    let cut = cards.iter().filter(|c| c["cut"] == true).count();
+    let shape = match (full, previews) {
+        (_, 0) => "full",
+        (0, _) => "preview",
+        _ => "mixed",
+    };
+    let note = if cut == 0 {
+        None
+    } else if mode == TextMode::Auto && page_chars > AUTO_TEXT_BUDGET {
+        Some(format!(
+            "The text of this page is {page_chars} characters, more than fits, so items are previews (\"cut\": true where the preview is not the whole text). Call get_items with the ids you need, or list again with include_text \"full\" and a smaller limit."
+        ))
+    } else if meetings_held == cut {
+        Some("Meeting transcripts are previews unless you pass include_text \"full\". get_items reads one in full.".to_string())
+    } else {
+        Some("Items marked \"cut\": true are previews: get_items returns their full text.".to_string())
+    };
+    (cards, shape, note)
+}
+
+/// Why a list or search came back empty, in a sentence an agent can act on: a filter it set
+/// leaves out what is there, or nothing was recorded in the window at all.
+fn empty_note(db: &Db, filter: &Filter, clock: &Clock, query: Option<&str>) -> Result<String> {
+    let window_only = Filter { start: filter.start, end: filter.end, scope: filter.scope.clone(), ..Filter::default() };
+    let in_window = db.count(&window_only)?;
+    let mut set = Vec::new();
+    if let Some(query) = query {
+        set.push(format!("the words \"{query}\""));
+    }
+    if !filter.kinds.is_empty() {
+        set.push(format!("kinds {}", json!(filter.kinds)));
+    }
+    if !filter.sources.is_empty() {
+        set.push(format!("sources {}", json!(filter.sources)));
+    }
+    if filter.unprocessed_only {
+        set.push("unprocessed_only".to_string());
+    }
+    let window = clock.window_words(filter.start, filter.end);
+    if in_window > 0 && !set.is_empty() {
+        let by_kind = db.counts_by_kind_filtered(&window_only)?;
+        let mut sentence = format!(
+            "Nothing matches, but that comes from what you set: {} ({in_window} items are in {window}: {}).",
+            set.join(", "),
+            kind_counts(&by_kind)
+        );
+        if filter.unprocessed_only && query.is_none() {
+            sentence.push_str(" Without unprocessed_only, items already marked processed are listed too.");
+        }
+        return Ok(sentence);
+    }
+    let counts = db.counts_in(&filter.scope)?;
+    Ok(match counts.span {
+        None => "The library is empty: nothing has arrived from the phone yet (sync_status says how it is connected).".to_string(),
+        Some((oldest, newest)) if filter.start.is_some() || filter.end.is_some() => format!(
+            "Nothing was recorded in {window}. The library runs from {} to {}, so check the window in range, or widen it.",
+            clock.full(oldest),
+            clock.full(newest)
+        ),
+        Some(_) => "Nothing matches.".to_string(),
+    })
 }
 
 fn search_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
     let Some(query) = opt_string(args, "query")? else {
-        bail!("query is required: the words to look for");
+        bail!("query is required: the words to look for, for example {{\"query\": \"lease renewal\"}}");
     };
     let clock = clock(args)?;
     let (filter, range) = filter(args, &clock, scope)?;
@@ -447,7 +645,7 @@ fn search_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result
         Some(text) => SearchCursor::decode(&text)?.0,
         None => 0,
     };
-    let result = db.search_page(&query, &filter, None, limit, offset)?;
+    let result = db.search_wide(&query, &filter, None, limit, offset, crate::db::BROADEN_BELOW)?;
     let next_cursor = SearchCursor::next(offset, result.hits.len(), result.total).map(|c| c.encode());
     let items: Vec<Value> = result
         .hits
@@ -462,38 +660,53 @@ fn search_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result
                 entry.insert("title".into(), json!(title));
             }
             entry.insert("words".into(), json!(hit.row.words));
+            entry.insert("matched".into(), json!(hit.matched));
             entry.insert("snippet".into(), json!(hit.snippet));
             entry.insert("processed".into(), json!(hit.row.processed_at.is_some()));
             Value::Object(entry)
         })
         .collect();
-    let truncated = next_cursor.is_some();
+    let more = next_cursor.is_some();
+    let mut notes = Vec::new();
+    if result.broadened && result.total > 0 {
+        let few = match result.all_words {
+            0 => "No item has every word".to_string(),
+            1 => "Only 1 item has every word".to_string(),
+            n => format!("Only {n} items have every word"),
+        };
+        notes.push(format!("{few}, so items with close spellings or some of the words follow, best first. Each item's \"matched\" says which: all words, close spelling or any word."));
+    }
+    if !result.respelled.is_empty() {
+        let tried: Vec<String> = result.respelled.iter().map(|(word, spellings)| format!("\"{word}\" as {}", spellings.join(", "))).collect();
+        notes.push(format!("Found nowhere as typed, so tried: {}. Speech recognition often writes a word this way.", tried.join("; ")));
+    }
+    if more {
+        let shown = if offset == 0 {
+            format!("This page has the {} best of {} matches.", items.len(), result.total)
+        } else {
+            format!("This page has matches {} to {} of {}.", offset + 1, offset + items.len(), result.total)
+        };
+        notes.push(format!("{shown} There are more: call search_items again with cursor set to next_cursor (keep the other arguments), or narrow with when, kinds or sources."));
+    }
+    if result.total == 0 {
+        notes.push(format!("{} Try other words or spellings: names and rare words are often misheard.", empty_note(db, &filter, &clock, Some(&query))?));
+    }
     let mut out = Map::new();
     out.insert("query".into(), json!(query));
     out.insert("range".into(), range);
     out.insert("total".into(), json!(result.total));
+    out.insert("all_words".into(), json!(result.all_words));
+    out.insert("matched".into(), json!(result.matched));
     out.insert("returned".into(), json!(items.len()));
-    out.insert("truncated".into(), json!(truncated));
+    out.insert("more".into(), json!(more));
+    out.insert("truncated".into(), json!(more));
     out.insert("next_cursor".into(), json!(next_cursor));
-    if truncated {
-        let shown = if offset == 0 {
-            format!("Showing the {} best of {} matches.", items.len(), result.total)
-        } else {
-            format!("Showing matches {} to {} of {}.", offset + 1, offset + items.len(), result.total)
-        };
-        out.insert(
-            "note".into(),
-            json!(format!("{shown} Pass next_cursor as cursor for the ones after, or narrow with start, end, kinds or sources.")),
-        );
+    if !result.respelled.is_empty() {
+        let map: Map<String, Value> = result.respelled.iter().map(|(word, spellings)| (word.clone(), json!(spellings))).collect();
+        out.insert("respelled".into(), Value::Object(map));
     }
-    match result.matched {
-        "prefix" => {
-            out.insert("matched".into(), json!("No whole-word match, so words were matched by their beginnings."));
-        }
-        "substring" => {
-            out.insert("matched".into(), json!("The query has no searchable words, so it was matched as literal text."));
-        }
-        _ => {}
+    if !notes.is_empty() {
+        out.insert("note".into(), json!(notes.join(" ")));
     }
     out.insert("items".into(), json!(items));
     Ok(Value::Object(out))
@@ -513,6 +726,9 @@ fn get_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Va
 
     let mut items = Vec::new();
     let mut not_found = Vec::new();
+    // What is left of the whole call's text. An item past it comes back empty, with where to
+    // start reading it.
+    let mut left = MAX_GET_TOTAL;
     for id in &ids {
         let Some(row) = db.get(id)? else {
             not_found.push(id.clone());
@@ -525,8 +741,9 @@ fn get_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Va
         }
         let total_chars = row.text.chars().count();
         let start = offset.min(total_chars);
-        let text: String = row.text.chars().skip(start).take(max_chars).collect();
+        let text: String = row.text.chars().skip(start).take(max_chars.min(left)).collect();
         let returned = text.chars().count();
+        left -= returned;
         let truncated = start + returned < total_chars;
         let mut entry = Map::new();
         entry.insert("id".into(), json!(row.id));
@@ -555,7 +772,18 @@ fn get_items(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Va
         entry.insert("text".into(), json!(text));
         items.push(Value::Object(entry));
     }
-    Ok(json!({ "items": items, "not_found": not_found }))
+    let mut out = json!({ "items": items, "not_found": not_found });
+    if items_cut(&out) {
+        out["note"] = json!(format!(
+            "Some text was cut (\"truncated\": true): at most {} characters per item (max_chars) and {MAX_GET_TOTAL} per call. Call get_items again with that id and offset set to its next_offset.",
+            max_chars
+        ));
+    }
+    Ok(out)
+}
+
+fn items_cut(out: &Value) -> bool {
+    out["items"].as_array().is_some_and(|items| items.iter().any(|i| i["truncated"] == true))
 }
 
 fn library_stats(db: &mut Db, args: &Map<String, Value>, scope: &Scope) -> Result<Value> {
@@ -872,6 +1100,84 @@ mod tests {
     }
 
     #[test]
+    fn one_call_reads_a_window_in_words_with_its_text() {
+        let mut db = library();
+        let out = call(
+            &mut db,
+            "list_items",
+            &args(json!({ "when": "Nov 11 2026 12pm to 5pm", "timezone": "America/Los_Angeles", "order": "oldest" })),
+            false,
+        )
+        .unwrap();
+        assert_eq!(ids(&out), ["B-NOON", "C-NOTE", "D-APP"]);
+        assert_eq!(out["range"]["start_iso"], "2026-11-11T12:00:00-08:00");
+        assert_eq!(out["range"]["end_iso"], "2026-11-11T17:00:00-08:00");
+        assert_eq!(out["range"]["words"], "Wednesday, November 11, 2026, 12:00 to 17:00");
+        assert_eq!(out["range"]["when"], "Nov 11 2026 12pm to 5pm");
+        // Small page: the whole text is there, no second call needed.
+        assert_eq!((out["text"].as_str(), out["items"][1]["text"].as_str()), (Some("full"), Some("a note to self about the harbor trip")));
+        assert!(out["items"][1].get("preview").is_none() && out.get("note").is_none(), "{out}");
+        assert_eq!((out["more"].as_bool(), &out["next_cursor"]), (Some(false), &Value::Null));
+        // The same window as start and end, and both at once is refused.
+        let same = call(&mut db, "list_items", &args(json!({ "start": "2026-11-11 12pm", "end": "2026-11-11 5pm", "timezone": "America/Los_Angeles" })), false).unwrap();
+        assert_eq!(same["total"], 3);
+        let both = call(&mut db, "list_items", &args(json!({ "when": "2026-11-11", "start": "2026-11-11" })), false).unwrap_err().to_string();
+        assert!(both.contains("not both"), "{both}");
+        let point = call(&mut db, "list_items", &args(json!({ "when": "2026-11-11 3pm" })), false).unwrap_err().to_string();
+        assert!(point.contains("single moment"), "{point}");
+        let bad = call(&mut db, "list_items", &args(json!({ "when": "whenever" })), false).unwrap_err().to_string();
+        assert!(bad.starts_with("when: cannot read") && bad.contains("Wednesday 12pm to 5pm"), "{bad}");
+    }
+
+    #[test]
+    fn text_modes_and_meetings() {
+        let mut db = library();
+        // auto: the meeting stays a preview, marked cut, with a note on how to read it.
+        let out = call(&mut db, "list_items", &args(json!({})), false).unwrap();
+        assert_eq!(out["text"], "mixed");
+        let meeting = &out["items"][0];
+        assert_eq!((meeting["kind"].as_str(), meeting["cut"].as_bool()), (Some("meeting"), Some(true)));
+        assert!(meeting["preview"].is_string() && meeting.get("text").is_none());
+        assert!(out["note"].as_str().unwrap().contains("include_text \"full\""), "{out}");
+        // full: the meeting too.
+        let out = call(&mut db, "list_items", &args(json!({ "include_text": "full" })), false).unwrap();
+        assert_eq!(out["text"], "full");
+        assert_eq!(out["items"][0]["text"].as_str().unwrap().chars().count(), 1450);
+        // preview: none.
+        let out = call(&mut db, "list_items", &args(json!({ "include_text": "preview" })), false).unwrap();
+        assert_eq!(out["text"], "preview");
+        assert!(out["items"].as_array().unwrap().iter().all(|i| i.get("text").is_none()));
+        assert!(call(&mut db, "list_items", &args(json!({ "include_text": "all" })), false).unwrap_err().to_string().contains("auto, full or preview"));
+        // A big page in auto mode is previews, with a note saying how to get the rest.
+        let long: Vec<Item> = (0..20).map(|n| make(&format!("L{n:02}"), "note", None, "2026-11-13T18:00:00Z", &"word ".repeat(200))).collect();
+        db.apply_items(&long, &Delivery { carrier: Carrier::Link, device_id: None, received_at: 1.0 }).unwrap();
+        let out = call(&mut db, "list_items", &args(json!({ "kinds": ["note"] })), false).unwrap();
+        assert_eq!(out["text"], "preview");
+        assert!(out["note"].as_str().unwrap().contains("more than fits") && out["note"].as_str().unwrap().contains("get_items"), "{}", out["note"]);
+        // full mode stops at its budget and says where to go on.
+        let out = call(&mut db, "list_items", &args(json!({ "kinds": ["note"], "include_text": "full" })), false).unwrap();
+        let total: usize = out["items"].as_array().unwrap().iter().filter_map(|i| i["text"].as_str()).map(|t| t.chars().count()).sum();
+        assert!(total <= FULL_TEXT_BUDGET);
+    }
+
+    #[test]
+    fn more_pages_and_empty_answers_are_explained() {
+        let mut db = library();
+        let out = call(&mut db, "list_items", &args(json!({ "limit": 2 })), false).unwrap();
+        assert_eq!(out["more"], true);
+        assert!(out["note"].as_str().unwrap().contains("this page has 2 of 6") && out["note"].as_str().unwrap().contains("next_cursor"), "{out}");
+        // Empty because of a filter the agent set: said so, with what is there.
+        let out = call(&mut db, "list_items", &args(json!({ "when": "2026-11-11", "timezone": "America/Los_Angeles", "kinds": ["meeting"] })), false).unwrap();
+        let note = out["note"].as_str().unwrap();
+        assert!(note.contains("comes from what you set: kinds [\"meeting\"]") && note.contains("5 items are in"), "{note}");
+        // Empty because nothing was said then: said so, with where the library starts and ends.
+        let out = call(&mut db, "list_items", &args(json!({ "when": "2026-10-01", "timezone": "America/Los_Angeles" })), false).unwrap();
+        assert!(out["note"].as_str().unwrap().starts_with("Nothing was recorded in Thursday, October 1, 2026"), "{}", out["note"]);
+        let out = call(&mut db, "list_items", &args(json!({ "unprocessed_only": true, "kinds": ["note"] })), false).unwrap();
+        assert_eq!(out["total"], 1);
+    }
+
+    #[test]
     fn list_pages_filters_and_flags() {
         let mut db = library();
         let first = call(&mut db, "list_items", &args(json!({ "limit": 4 })), false).unwrap();
@@ -919,6 +1225,33 @@ mod tests {
     }
 
     #[test]
+    fn arguments_a_tool_does_not_take_are_named_with_what_to_send() {
+        let mut db = library();
+        let error = call(&mut db, "list_items", &args(json!({ "date": "2026-11-11" })), false).unwrap_err().to_string();
+        assert!(error.starts_with("list_items does not take \"date\". It takes: ") && error.contains("send when"), "{error}");
+        let error = call(&mut db, "get_items", &args(json!({ "id": "B-NOON" })), false).unwrap_err().to_string();
+        assert!(error.contains("Send ids as a list"), "{error}");
+        let error = call(&mut db, "search_items", &args(json!({ "q": "harbor" })), false).unwrap_err().to_string();
+        assert!(error.contains("Send the words as query"), "{error}");
+        let error = call(&mut db, "list_everything", &args(json!({})), false).unwrap_err().to_string();
+        assert!(error.contains("The tools are: list_items, search_items"), "{error}");
+    }
+
+    #[test]
+    fn get_items_never_returns_more_than_its_budget() {
+        let mut db = library();
+        let long: Vec<Item> = (0..6).map(|n| make(&format!("BIG{n}"), "meeting", None, "2026-11-13T18:00:00Z", &"x".repeat(30_000))).collect();
+        db.apply_items(&long, &Delivery { carrier: Carrier::Link, device_id: None, received_at: 1.0 }).unwrap();
+        let ids: Vec<String> = (0..6).map(|n| format!("BIG{n}")).collect();
+        let out = call(&mut db, "get_items", &args(json!({ "ids": ids, "max_chars": 200000 })), false).unwrap();
+        let total: usize = out["items"].as_array().unwrap().iter().map(|i| i["text"].as_str().unwrap().chars().count()).sum();
+        assert_eq!(total, MAX_GET_TOTAL);
+        let last = &out["items"][5];
+        assert_eq!((last["truncated"].as_bool(), last["next_offset"].as_u64()), (Some(true), Some(0)));
+        assert!(out["note"].as_str().unwrap().contains("offset set to its next_offset"));
+    }
+
+    #[test]
     fn read_only_hides_and_refuses_the_write() {
         let mut db = library();
         assert!(definitions(false).iter().any(|t| t.name == "mark_processed"));
@@ -947,6 +1280,26 @@ mod tests {
         assert_eq!((ids(&out), out["truncated"].as_bool()), (vec!["C-NOTE".to_string()], Some(false)));
         let out = call(&mut db, "search_items", &args(json!({ "query": "zebra" })), false).unwrap();
         assert_eq!(out["total"], 0);
+    }
+
+    #[test]
+    fn search_says_how_each_item_matched() {
+        let mut db = library();
+        // Another form of the word is still every word.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "harbors" })), false).unwrap();
+        assert_eq!((out["total"].as_i64(), out["matched"].as_str(), out["items"][0]["matched"].as_str()), (Some(2), Some("all words"), Some("all words")));
+        // One item has every word, so the ones with some follow, marked, with a note.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "harbor trip" })), false).unwrap();
+        assert_eq!((out["all_words"].as_i64(), out["items"][0]["id"].as_str(), out["items"][1]["matched"].as_str()), (Some(1), Some("C-NOTE"), Some("any word")));
+        assert!(out["note"].as_str().unwrap().contains("Only 1 item has every word"), "{out}");
+        // A word found nowhere is tried with the library's close spellings, and that is said.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "harbr" })), false).unwrap();
+        assert_eq!((out["matched"].as_str(), &out["respelled"]), (Some("close spelling"), &json!({ "harbr": ["harbor"] })));
+        assert!(out["note"].as_str().unwrap().contains("\"harbr\" as harbor"), "{out}");
+        // Nothing at all: why, and what to try.
+        let out = call(&mut db, "search_items", &args(json!({ "query": "zebra", "kinds": ["note"] })), false).unwrap();
+        let note = out["note"].as_str().unwrap();
+        assert!(note.contains("the words \"zebra\"") && note.contains("misheard"), "{note}");
     }
 
     #[test]
@@ -1091,7 +1444,7 @@ mod tests {
         // "The thing I just sent you": the newest clip.
         let out = ask(&mut db, &everything, "list_items", json!({ "kinds": ["clip"], "limit": 1 })).unwrap();
         assert_eq!((out["total"].as_i64(), out["items"][0]["id"].as_str(), out["items"][0]["source"].as_str()), (Some(2), Some("H-CLIP"), Some("typed")));
-        assert_eq!(out["items"][0]["preview"], "the gate code is four two");
+        assert_eq!(out["items"][0]["text"], "the gate code is four two");
         let out = ask(&mut db, &everything, "list_items", json!({ "kinds": "clips", "sources": ["clipboard"] })).unwrap();
         assert_eq!((out["total"].as_i64(), out["items"][0]["id"].as_str()), (Some(1), Some("G-CLIP")));
         let out = ask(&mut db, &everything, "search_items", json!({ "query": "harbor", "kinds": ["clip"] })).unwrap();
