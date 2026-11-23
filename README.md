@@ -27,9 +27,9 @@ server for agents, and a local history page.
   <img src="docs/media/cli.gif" width="88%" alt="zone stats, zone list and zone search in a terminal">
 </p>
 
-> **Getting the iPhone side.** Pairing a computer lives in Zone's Settings > Computers (Beta). It is in
-> testing and arrives with the next Zone update. Until then, the [backup folder](#the-three-ways-items-arrive)
-> works with the Zone version on the App Store today. Every example in this README uses a made-up library.
+> **Getting the iPhone side.** In Zone 1.0.5, open Settings > Computers (Beta) > Pair a computer
+> and scan the QR code on your computer. You can also [import a backup folder](#the-three-ways-items-arrive).
+> Every example in this README uses a made-up library.
 
 ## Flash: your library, straight off the screen
 
@@ -56,17 +56,17 @@ The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 | MCP server, command line, web page | Works on macOS; registration checked against the real config files of 20 AI clients. |
 | Flash, black and white and color | Tested with pictures and recordings from the iPhone app's own code, and a simulated webcam. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is still unknown. |
 | Clips (text sent from the phone) | The computer's side works and is tested with a stand-in phone. A clip with accents, Japanese and an emoji reached the real clipboard exactly: on a Mac from a zone started by launchd (`pbcopy`), on Windows 10 (`clip.exe`), and on Linux under a virtual X11 display (`xclip`, `xsel`). The iPhone app's side (Settings > Computers > Send text to your computer, a share sheet action and a Shortcut) was tested in the iOS simulator against a real zone: clips arrived in 0.2 to 1.4 seconds. **Not yet sent from a real iPhone.** Wayland's `wl-copy` is written and has not been run. |
-| Downloads and one-line installs | `install.sh` installs, updates and refuses a tampered download, tested against a universal Mac archive built the way the release workflow builds it, and in the test suite on macOS and Linux. `install.ps1` passes its test on Windows 10 in Windows PowerShell and PowerShell 7. Release 0.1.0 is published. GitHub's release workflow built all four downloads and ran `install.sh` against them on macOS, Linux x86_64 and Linux arm64 before attaching them. |
+| Downloads and one-line installs | [Release 0.1.4](https://github.com/zaydiscold/zone-mcp/releases/tag/v0.1.4) includes a Mac disk image, a universal Mac command-line program, and x64 and ARM64 builds for Windows and Linux. The installers verify the archive against the release's SHA-256 checksums before installing. |
 | Windows | x64 and ARM64 downloads with a native notification-area menu. See [Windows](#windows). |
 | Linux | The whole test suite passes in a Debian container (arm64), Link over iroh and `install.sh` included. **Not run on a real Linux desktop** yet, so `zone install` (the systemd unit) is untested there. |
 
 ## Install
 
 <!-- mac-app -->
-Zone for Mac, a menu bar app that brings `zone` with it, is on its way.
+**Mac menu bar app.** Download [Zone.dmg](https://github.com/zaydiscold/zone-mcp/releases/download/v0.1.4/Zone.dmg), drag Zone to Applications, and open it. The app includes `zone` and walks you through pairing your phone.
 <!-- /mac-app -->
 
-Until then, one line installs the command line program. Nothing else is needed: no Rust, no admin rights.
+For the command line on Mac or Linux, or the tray app and command line on Windows, run the installer for your system. It runs under your user account.
 
 **macOS and Linux**
 
@@ -80,15 +80,8 @@ curl -fsSL https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.sh
 irm https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.ps1 | iex
 ```
 
-**Homebrew** (soon: the formula is written, the tap is not published yet)
-
-```sh
-brew install zaydiscold/zone/zone
-```
-
 The script downloads the latest [release](https://github.com/zaydiscold/zone-mcp/releases) for your
-computer (one program for both kinds of Mac, a static one for Linux on x86_64 and arm64, an `.exe`
-for 64-bit Windows), checks it against the release's `SHA256SUMS`, and puts `zone` in `~/.local/bin`
+computer, checks it against the release's `SHA256SUMS`, and puts `zone` in `~/.local/bin`
 (on Windows `%LOCALAPPDATA%\Zone\bin`, which it adds to your PATH). It changes nothing else. To read
 it first, open [install.sh](install.sh) or [install.ps1](install.ps1). To choose the folder or the
 version, set `ZONE_INSTALL_DIR` or `ZONE_VERSION` before running it.
@@ -119,7 +112,7 @@ zone update --check    # only say
 | The install script | `zone update`, or run the script again. Both install the latest published release, checked against that release's `SHA256SUMS`. |
 | `cargo install` | `cargo install --locked --force --git https://github.com/zaydiscold/zone-mcp zone`. It builds `main` as it is that day. |
 | Zone for Mac | Download the new `Zone.dmg` and replace the app: its Settings say when one is out. The zone the app keeps for agents and the terminal can also be updated by itself with `zone update`, and the app leaves a newer one alone. |
-| Homebrew | Not published yet. |
+| Homebrew | Each release includes a `zone.rb` formula for maintainers of their own taps. |
 
 zone never installs an update by itself. `zone update` and `zone doctor` ask GitHub once, when you
 run them, which release is the latest, and while the web page is open zone asks at most twice a
@@ -143,9 +136,8 @@ After an update, the new version is the one that runs:
 - `zone status` and `zone doctor` name the version that is running whenever it is not the one on
   disk.
 
-If you download an archive from the releases page with a browser on a Mac, macOS will refuse to
-open the program, because it is not notarized by Apple. The install script does not have that
-problem. For a file you downloaded by hand: `xattr -d com.apple.quarantine ./zone`.
+The 0.1.4 Mac app, disk image, and standalone command-line program are signed with
+Developer ID and notarized by Apple. Gatekeeper checks the standalone program online on first launch.
 
 ### From source
 
@@ -825,7 +817,7 @@ git tag v0.2.0 && git push origin v0.2.0
 The tag must match the version in `Cargo.toml`. The workflow builds a universal program for
 macOS, static programs for Linux on x86_64 and arm64, and Windows x64 and ARM64 ZIPs containing the CLI, login launcher and tray. It runs
 `install.sh` and `install.ps1` against the packaged programs, and attaches the archives, `SHA256SUMS` and a filled-in
-Homebrew formula to a draft release. Nothing is public until you publish the draft on GitHub.
+Homebrew formula to a draft release. Follow the [Mac signing and notarization instructions](mac/README.md) to attach the stapled `Zone.dmg` and replace the CLI archive, checksums and formula together. Verify the downloads before publishing the draft.
 The install scripts and `zone update` find a release only once it is published and is the latest.
 The formula template is [packaging/homebrew/zone.rb](packaging/homebrew/zone.rb): its header says
 how to make the tap.

@@ -222,11 +222,11 @@ and Login Items from `SMAppService`.
 
 ## Install
 
-1. Open `Zone.dmg` and drag Zone to Applications.
-2. Open Zone. The guide walks through the rest.
+1. Download [Zone.dmg](https://github.com/zaydiscold/zone-mcp/releases/download/v0.1.4/Zone.dmg), open it, and drag Zone to Applications.
+2. Open Zone on your Mac and choose **Pair a phone**.
+3. On your iPhone, open Zone's **Settings > Computers (Beta) > Pair a computer** and scan the code.
 
-Pairing with a computer arrives with Zone's next iPhone update (Settings > Computers). Until
-then, the backup folder works with the Zone on the App Store today: Settings > Read backups from a folder.
+To import an existing library from a backup, open **Settings > Read backups from a folder** on your Mac.
 
 To remove it: quit Zone (that stops zone too), turn off "Start Zone when you log in" first if
 it was on, and delete the app. Your library stays in `~/Library/Application Support/Zone`.

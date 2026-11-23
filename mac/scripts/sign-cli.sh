@@ -75,13 +75,17 @@ elif [ -n "${NOTARY_PROFILE:-}" ]; then
 else
     xcrun notarytool submit "$work/zone.zip" --key "${NOTARY_KEY:?}" --key-id "${NOTARY_KEY_ID:?}" --issuer "${NOTARY_ISSUER:?}" --wait
 fi
+codesign --verify --strict --all-architectures --check-notarization "$zone"
 
 mkdir -p "$build"
 name="zone-$version-macos-universal.tar.gz"
 out="$build/$name"
 files=(zone)
 [ -f "$work/stage/LICENSE" ] && files+=(LICENSE)
-tar -C "$work/stage" -czf "$out" "${files[@]}"
+# Only ship the program and license. macOS tar otherwise includes AppleDouble
+# files and extended attributes from the signing machine.
+COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --uid 0 --gid 0 --uname root --gname wheel \
+    -C "$work/stage" -czf "$out" "${files[@]}"
 sha="$(shasum -a 256 "$out" | cut -d' ' -f1)"
 echo "== Done: $out"
 echo "sha256 $sha"

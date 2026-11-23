@@ -128,7 +128,8 @@ jobs:
           codesign --verify --verbose stage/zone
           stage/zone --version
           cp LICENSE stage/
-          tar -C stage -czf "dist/zone-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.gz" zone LICENSE
+          COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --uid 0 --gid 0 --uname root --gname wheel \
+            -C stage -czf "dist/zone-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.gz" zone LICENSE
 
       - name: Package (Linux)
         if: startsWith(matrix.platform, 'linux-')
