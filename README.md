@@ -3,7 +3,7 @@
 **Your iPhone dictations, voice notes and meeting transcripts, on your computer and inside your AI agents.**
 
 `zone` is the computer side of [Zone](https://apps.apple.com/app/id6830955448), a free on-device
-voice dictation keyboard and app for iPhone. Pair once by scanning a QR code. After that every
+voice dictation keyboard and app for iPhone ([its source](https://github.com/zaydiscold/zone-voice)). Pair once by scanning a QR code. After that every
 dictation, note and meeting transcript lands in a SQLite library on your computer a few seconds
 after you make it, over any network, end to end encrypted, with no account and no Zone server.
 
