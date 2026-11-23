@@ -7,7 +7,7 @@
 #   zone-<version>-macos-universal.tar.gz   (arm64 and x86_64 in one program)
 #   zone-<version>-linux-x86_64.tar.gz      (static, runs on any distribution)
 #   zone-<version>-linux-aarch64.tar.gz
-#   zone-<version>-windows-x86_64.zip       (zone.exe, and zonew.exe for the login entry)
+#   zone-<version>-windows-x86_64.zip       (CLI, login launcher and notification-area app)
 #   zone-<version>-windows-aarch64.zip      (the same for Windows on ARM)
 #   SHA256SUMS
 name: Release
@@ -153,25 +153,26 @@ jobs:
           New-Item -ItemType Directory -Path stage, dist -Force | Out-Null
           Copy-Item "target/${{ matrix.targets }}/release/zone.exe" stage/zone.exe
           Copy-Item "target/${{ matrix.targets }}/release/zonew.exe" stage/zonew.exe
+          Copy-Item "target/${{ matrix.targets }}/release/zone-tray.exe" stage/zone-tray.exe
           & stage/zone.exe --version
           if ($LASTEXITCODE -ne 0) { exit 1 }
           # Each program is for the processor of its archive. The PE header says which:
           # 0x8664 is x86_64, 0xAA64 is arm64.
           $wanted = if ('${{ matrix.platform }}' -eq 'windows-aarch64') { 0xAA64 } else { 0x8664 }
-          foreach ($program in 'stage/zone.exe', 'stage/zonew.exe') {
+          foreach ($program in 'stage/zone.exe', 'stage/zonew.exe', 'stage/zone-tray.exe') {
             $bytes = [IO.File]::ReadAllBytes((Resolve-Path $program))
             $pe = [BitConverter]::ToInt32($bytes, 0x3C)
             $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
             # The subsystem: 3 is a console program (zone.exe), 2 a windowed one (zonew.exe).
             $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
-            $expectedSubsystem = if ($program -like '*zonew.exe') { 2 } else { 3 }
+            $expectedSubsystem = if ($program -eq 'stage/zone.exe') { 3 } else { 2 }
             if ($machine -ne $wanted -or $subsystem -ne $expectedSubsystem) {
               Write-Error ("{0}: machine 0x{1:X4} subsystem {2}, expected 0x{3:X4} subsystem {4}" -f $program, $machine, $subsystem, $wanted, $expectedSubsystem)
               exit 1
             }
           }
           Copy-Item LICENSE stage/LICENSE.txt
-          Compress-Archive -Path stage/zone.exe, stage/zonew.exe, stage/LICENSE.txt -DestinationPath "dist/zone-${{ steps.version.outputs.version }}-${{ matrix.platform }}.zip"
+          Compress-Archive -Path stage/zone.exe, stage/zonew.exe, stage/zone-tray.exe, stage/LICENSE.txt -DestinationPath "dist/zone-${{ steps.version.outputs.version }}-${{ matrix.platform }}.zip"
 
       - name: The built program says the tagged version
         shell: bash
@@ -297,6 +298,12 @@ jobs:
             $said = & (Join-Path $env:ZONE_INSTALL_DIR 'zone.exe') --version
             if ($said -ne "zone $version") { Write-Error "zone.exe says $said"; exit 1 }
             if (-not (Test-Path (Join-Path $env:ZONE_INSTALL_DIR 'zonew.exe'))) { Write-Error 'zonew.exe was not installed'; exit 1 }
+            $env:ZONE_HOME = Join-Path $env:RUNNER_TEMP 'zone-test-library'
+            $tray = Join-Path $env:ZONE_INSTALL_DIR 'zone-tray.exe'
+            $trayVersion = & $tray --version | Out-String
+            if ($LASTEXITCODE -ne 0 -or $trayVersion.Trim() -ne "zone-tray $version") { throw "Wrong tray version: $trayVersion" }
+            $menu = & $tray --print-menu | Out-String
+            if ($LASTEXITCODE -ne 0 -or $menu -notmatch 'Copy MCP settings' -or $menu -notmatch 'Start zone') { throw "Unexpected tray menu: $menu" }
             # A second run is an update, and leaves the same programs.
             & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
             if ($LASTEXITCODE -ne 0) { exit 1 }

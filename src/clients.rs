@@ -1669,22 +1669,21 @@ pub fn config(client: Option<&str>, read_only: bool, scope: &Scope, as_json: boo
             println!();
             println!("`zone mcp install {}` writes it for you and keeps everything else in the file.", snippet.client.map(Client::name).unwrap_or_default());
         }
-        _ => {
+        Some(None) => print!("{}", ensure_newline(&generic.text)),
+        None => {
             println!("For any app that takes MCP servers as JSON (the usual \"mcpServers\" shape):");
             println!();
             print!("{}", ensure_newline(&generic.text));
-            if chosen.is_none() {
-                for client in [Client::Codex, Client::Hermes, Client::Goose] {
-                    let snippet = snippets.iter().find(|s| s.client == Some(client)).expect("every client has a snippet");
-                    println!();
-                    println!("{} ({}, {}):", snippet.label, snippet.format.to_uppercase(), snippet.path.as_ref().map(|p| env.show(p)).unwrap_or_default());
-                    println!();
-                    print!("{}", ensure_newline(&snippet.text));
-                }
+            for client in [Client::Codex, Client::Hermes, Client::Goose] {
+                let snippet = snippets.iter().find(|s| s.client == Some(client)).expect("every client has a snippet");
                 println!();
-                println!("`zone mcp config --client <name>` prints the one for a client zone knows (`zone mcp status` lists them),");
-                println!("and `zone mcp install <name>` writes it for you.");
+                println!("{} ({}, {}):", snippet.label, snippet.format.to_uppercase(), snippet.path.as_ref().map(|p| env.show(p)).unwrap_or_default());
+                println!();
+                print!("{}", ensure_newline(&snippet.text));
             }
+            println!();
+            println!("`zone mcp config --client <name>` prints the one for a client zone knows (`zone mcp status` lists them),");
+            println!("and `zone mcp install <name>` writes it for you.");
         }
     }
     Ok(())

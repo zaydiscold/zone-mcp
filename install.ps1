@@ -3,7 +3,7 @@
 #   irm https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.ps1 | iex
 #
 # It downloads the latest release from GitHub, checks it against the release's SHA256SUMS,
-# puts zone.exe (and zonew.exe, which starts it at login with no window) in
+# puts zone.exe, the login launcher and the notification-area app in
 # %LOCALAPPDATA%\Zone\bin and adds that folder to your PATH. No admin rights. Run it again to
 # update. `zone update` runs this same script. Works in Windows PowerShell 5.1 and in
 # PowerShell 7, on 64-bit Intel and AMD processors and on ARM (Windows 11 runs the Intel
@@ -113,13 +113,16 @@
         if ($LASTEXITCODE -ne 0 -or -not $installedVersion) { Fail 'the downloaded zone does not run on this computer. Nothing was installed.' }
         # Releases from 0.1.4 on carry zonew.exe, which starts zone at login with no window.
         $newWindowless = Join-Path $unpacked 'zonew.exe'
+        $newTray = Join-Path $unpacked 'zone-tray.exe'
+        if ([version]($version -split '[-+]')[0] -ge [version]'0.1.4') {
+            foreach ($companion in $newWindowless, $newTray) {
+                if (-not (Test-Path -LiteralPath $companion -PathType Leaf)) { Fail "$asset is missing $(Split-Path $companion -Leaf). Nothing was installed." }
+            }
+        }
 
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $target = Join-Path $dir 'zone.exe'
         $updating = Test-Path -LiteralPath $target
-
-        # What an earlier update could not delete because it was still running.
-        Get-ChildItem -LiteralPath $dir -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^zonew?\.exe\.old-[0-9]+$' } | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 
         # Whether zone starts at login from this folder: the login entry names this folder, or
         # (zone 0.1.3 and earlier) names a VBScript that starts the program here.
@@ -138,27 +141,54 @@
             }
         }
 
-        # A program that is running cannot be written over or deleted on Windows, but it can
-        # be renamed. So the old one is moved aside, the new one takes its name, and the old
-        # one is deleted if nothing is running from it any more (else by the next update, or by
-        # zone itself when it next starts).
-        function Install-Program([string]$from, [string]$to) {
-            if (Test-Path -LiteralPath $to) {
-                $aside = "$to.old-" + [DateTime]::UtcNow.Ticks
-                Move-Item -LiteralPath $to -Destination $aside -Force
-                try {
-                    Copy-Item -LiteralPath $from -Destination $to -Force
-                } catch {
-                    Move-Item -LiteralPath $aside -Destination $to -Force
-                    Fail "cannot write to $dir"
-                }
-                Remove-Item -LiteralPath $aside -Force -ErrorAction SilentlyContinue
-            } else {
-                Copy-Item -LiteralPath $from -Destination $to -Force
+        # Stage on the destination volume: renaming a complete file also works when
+        # the previous executable is running. Hold the lock through any rollback so
+        # two installers cannot interleave their three executables.
+        $lockPath = Join-Path $dir '.zone-install.lock'
+        $lock = [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+        $stage = Join-Path $dir ('.install-' + [Guid]::NewGuid().ToString('N'))
+        $backups = [ordered]@{}
+        $placed = @()
+        $committed = $false
+        try {
+            New-Item -ItemType Directory -Path $stage | Out-Null
+            $programs = @($newWindowless, $newTray, $new) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+            foreach ($program in $programs) { Copy-Item -LiteralPath $program -Destination $stage }
+            # Remove leftovers from a prior successful update only after the old
+            # process has released them. Failed restorations are kept separately.
+            Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -match '^zone(w|-tray)?\.exe\.old-[0-9]+$' } | ForEach-Object {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
             }
+            foreach ($program in $programs) {
+                $name = Split-Path -Leaf $program
+                $to = Join-Path $dir $name
+                if (Test-Path -LiteralPath $to -PathType Leaf) {
+                    $aside = "$to.rollback-" + [DateTime]::UtcNow.Ticks
+                    [IO.File]::Move($to, $aside)
+                    $backups[$to] = $aside
+                }
+                [IO.File]::Move((Join-Path $stage $name), $to)
+                $placed += $to
+            }
+            $committed = $true
+        } catch {
+            foreach ($to in $placed) { [IO.File]::Delete($to) }
+            foreach ($to in $backups.Keys) { [IO.File]::Move($backups[$to], $to) }
+            throw
+        } finally {
+            try {
+                Remove-Item -LiteralPath $stage -Force -Recurse -ErrorAction SilentlyContinue
+                foreach ($to in $backups.Keys) {
+                    $aside = $backups[$to]
+                    # Rename backups for later cleanup only when the swap completed.
+                    if ($committed -and (Test-Path -LiteralPath $aside -PathType Leaf)) {
+                        $old = "$to.old-" + ($aside -split '\.rollback-')[-1]
+                        [IO.File]::Move($aside, $old)
+                        Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            } finally { $lock.Dispose() }
         }
-        Install-Program $new $target
-        if (Test-Path -LiteralPath $newWindowless) { Install-Program $newWindowless (Join-Path $dir 'zonew.exe') }
         Write-Host "Installed $installedVersion in $target"
 
         if ($startsHere -and $env:ZONE_INSTALL_NO_RESTART -ne '1') {

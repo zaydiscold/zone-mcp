@@ -57,7 +57,7 @@ The wire format between phone and computer is in [PROTOCOL.md](PROTOCOL.md).
 | Flash, black and white and color | Tested with pictures and recordings from the iPhone app's own code, and a simulated webcam. **Not yet tested with a real phone held up to a real camera**, so how it copes with glare, blur and distance is still unknown. |
 | Clips (text sent from the phone) | The computer's side works and is tested with a stand-in phone. A clip with accents, Japanese and an emoji reached the real clipboard exactly: on a Mac from a zone started by launchd (`pbcopy`), on Windows 10 (`clip.exe`), and on Linux under a virtual X11 display (`xclip`, `xsel`). The iPhone app's side (Settings > Computers > Send text to your computer, a share sheet action and a Shortcut) was tested in the iOS simulator against a real zone: clips arrived in 0.2 to 1.4 seconds. **Not yet sent from a real iPhone.** Wayland's `wl-copy` is written and has not been run. |
 | Downloads and one-line installs | `install.sh` installs, updates and refuses a tampered download, tested against a universal Mac archive built the way the release workflow builds it, and in the test suite on macOS and Linux. `install.ps1` passes its test on Windows 10 in Windows PowerShell and PowerShell 7. Release 0.1.0 is published. GitHub's release workflow built all four downloads and ran `install.sh` against them on macOS, Linux x86_64 and Linux arm64 before attaching them. |
-| Windows | Built and run on Windows 10: see [Windows](#windows) for exactly what was checked. |
+| Windows | x64 and ARM64 downloads with a native notification-area menu. See [Windows](#windows). |
 | Linux | The whole test suite passes in a Debian container (arm64), Link over iroh and `install.sh` included. **Not run on a real Linux desktop** yet, so `zone install` (the systemd unit) is untested there. |
 
 ## Install
@@ -165,36 +165,22 @@ cp target/release/zone ~/.local/bin/      # or anywhere on your PATH
 
 ### Windows
 
-The one-line install above is the short way. To build it yourself you need Rust with the MSVC
-toolchain (what `rustup` installs by default on Windows, together with the Visual Studio C++ build
-tools). In PowerShell:
+Run the PowerShell installer above, then `zone install`. The **Z beside the clock** opens
+your library. Windows may put it under **Show hidden icons**. Right-click it for recent
+transcriptions to copy, the last meeting, Flash, pairing, and agent access. The Developer menu
+has connected apps, copyable MCP settings, diagnostics, logs, versions, restart, and updates.
+To reopen a tray you quit, run `zone-tray.exe`. The receiver keeps working when the menu closes.
 
-```powershell
-# in a checkout of this repository
-cargo build --release                      # about four minutes the first time
-# copy target\release\zone.exe to any folder on your PATH, then:
-zone install                               # start at login, no admin rights needed
-zone doctor
-```
+**Upgrading from 0.1.3 or earlier?** Run the PowerShell installer from this README once.
+Those versions have an older installer built into `zone update` that installs only
+`zone.exe`. The current installer also installs the tray and replaces the old VBScript
+login entry when it belongs to this copy. Future updates use `zone update`.
 
-`zone install` writes a small script, `zone-serve.vbs`, into the data folder
-(`%LOCALAPPDATA%\Zone`) and adds a per-user entry named `Zone` under
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` that runs it at login. The script starts
-`zone serve` without opening a window. `zone uninstall` removes both and stops zone.
-
-What was checked on a Windows 10 computer (Rust 1.97, MSVC), and what was not:
-
-- Checked: the build (`zone.exe` is about 7.7 MB), the whole test suite (which installs and
-  updates with `install.ps1` and puts a clip on the clipboard through a stand-in), `zone status`,
-  `zone doctor`, `zone serve`, `zone pair`, `zone stats`, `zone search`, and reading Flash pictures
-  with `zone dev flash-decode`.
-- Checked across two computers: a stand-in phone on a Mac paired with the Windows computer and sent
-  it items, once the normal way (it began on the relay and moved to a direct connection) and once
-  forced through the relay only. The counts on Windows matched what was sent.
-- Checked: `zone install --no-start` writes the script, and running the script starts zone in the
-  background.
-- Not checked: the login entry itself (`zone install` without `--no-start`, then logging out and
-  in), `zone uninstall`, `zone open` launching a browser, and the Flash page with a Windows camera.
+Zone uses a per-user login entry and a windowless launcher. `zone stop` pauses the receiver,
+`zone start` resumes it, and `zone uninstall` removes the login entry and closes the receiver
+and tray. Your library stays on disk. For a source build, run `cargo build --release` with
+the MSVC toolchain and copy `zone.exe`, `zonew.exe`, and `zone-tray.exe` from
+`target\release` into the same folder on your PATH.
 
 If the web page's usual port (47813) is taken by another program, zone picks a free one and
 `zone status` shows which. `zone open` always uses the right one.

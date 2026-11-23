@@ -24,6 +24,12 @@ fn zone_exe() -> PathBuf {
     PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
 }
 
+#[test]
+fn generic_mcp_settings_are_pasteable_json() {
+    let settings = Sandbox::new().json(&["mcp", "config", "--client", "other"]);
+    assert_eq!(settings["mcpServers"]["zone"]["args"][0], "mcp");
+}
+
 /// A temporary world: a data directory and a home folder that belong to one test.
 struct Sandbox {
     _dir: tempfile::TempDir,
@@ -1395,6 +1401,10 @@ fn a_held_backup_read_is_reported_and_blocks_nothing() {
     add_note_to_backup(&package, "A0000000-0000-4000-8000-000000000003");
     std::fs::remove_file(&hold).unwrap();
     wait_for_total(&sandbox, 164, 20, "the daemon did not import after the read was let go");
+    // The SQLite commit is visible before the watcher publishes its finished-read status.
+    wait_until(20, "the watcher did not finish the read", || {
+        sandbox.daemon_info().is_some_and(|info| info["backup"].is_object() && info["backup"]["read_started_at"].is_null())
+    });
     let status = sandbox.json(&["status", "--json"]);
     assert_eq!(status["backup_folder_state"]["state"], "watching", "{status}");
     assert!(sandbox.daemon_info().unwrap()["backup"]["read_started_at"].is_null());
@@ -2096,14 +2106,16 @@ fn install_ps1_installs_checks_and_updates() {
     std::fs::create_dir_all(&staging).unwrap();
     std::fs::copy(ZONE, staging.join("zone.exe")).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_zonew"), staging.join("zonew.exe")).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_zone-tray"), staging.join("zone-tray.exe")).unwrap();
     let asset = "zone-99.0.0-windows-x86_64.zip";
     let made = Command::new("powershell")
         .env_remove("PSModulePath")
         .args(["-NoProfile", "-Command"])
         .arg(format!(
-            "$ErrorActionPreference='Stop'; Compress-Archive -Path '{}','{}' -DestinationPath '{}'; (Get-FileHash -LiteralPath '{}' -Algorithm SHA256).Hash",
+            "$ErrorActionPreference='Stop'; Compress-Archive -Path '{}','{}','{}' -DestinationPath '{}'; (Get-FileHash -LiteralPath '{}' -Algorithm SHA256).Hash",
             staging.join("zone.exe").display(),
             staging.join("zonew.exe").display(),
+            staging.join("zone-tray.exe").display(),
             folder.join(asset).display(),
             folder.join(asset).display()
         ))
@@ -2143,6 +2155,7 @@ fn install_ps1_installs_checks_and_updates() {
                 .env("ZONE_INSTALL_DIR", &dir)
                 .env("ZONE_INSTALL_NO_PATH", "1")
                 .env("ZONE_INSTALL_NO_RESTART", "1")
+                .env("ZONE_INSTALL_ARCH", "AMD64")
                 .env_remove("ZONE_VERSION")
                 .envs(extra.iter().copied())
                 .output()
@@ -2162,8 +2175,22 @@ fn install_ps1_installs_checks_and_updates() {
         assert!(again.status.success() && out.contains("stop it and start it again"), "{shell}: {out}\n{}", String::from_utf8_lossy(&again.stderr));
         let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
         left.sort();
-        assert_eq!(left, ["zone.exe", "zonew.exe"], "{shell}");
+        assert_eq!(left, ["zone-tray.exe", "zone.exe", "zonew.exe"], "{shell}");
+        assert_eq!(std::fs::read(dir.join("zone-tray.exe")).unwrap(), std::fs::read(env!("CARGO_BIN_EXE_zone-tray")).unwrap(), "{shell}");
         assert_eq!(std::fs::read(dir.join("zonew.exe")).unwrap(), std::fs::read(env!("CARGO_BIN_EXE_zonew")).unwrap(), "{shell}");
+
+        // The first companion has already been replaced when a sharing violation on
+        // the tray stops the install. The previous launcher and CLI must survive.
+        let launcher = dir.join("zonew.exe");
+        std::fs::write(&launcher, b"previous launcher").unwrap();
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let _held = std::fs::OpenOptions::new().read(true).share_mode(1).open(dir.join("zone-tray.exe")).unwrap();
+            let failed = run(&[("ZONE_VERSION", "99.0.0")]);
+            assert!(!failed.status.success(), "{shell}: expected sharing violation");
+            assert_eq!(std::fs::read(&launcher).unwrap(), b"previous launcher", "{shell}");
+            assert_eq!(std::fs::read(&installed).unwrap(), std::fs::read(ZONE).unwrap(), "{shell}");
+        }
 
         // On ARM, a release without an ARM build installs the Intel one, and says so.
         let arm = run(&[("ZONE_VERSION", "99.0.0"), ("ZONE_INSTALL_ARCH", "ARM64")]);

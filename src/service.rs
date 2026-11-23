@@ -403,6 +403,8 @@ fn run_this_version(dir: &Path) -> Result<()> {
     }
     if !background::keeper_running(dir) {
         background::start_keeper(None)?;
+    } else {
+        background::start_tray(&paths::current_exe()?, dir);
     }
     if !background::wait_until_running(dir, std::time::Duration::from_secs(20)) {
         bail!("zone did not start within 20 seconds. Its log may say why: {}", paths::log_file(dir).display());
@@ -415,6 +417,13 @@ fn run_this_version(dir: &Path) -> Result<()> {
 /// Removes the login item. With `stop` false nothing is unloaded or stopped: only the file
 /// is removed.
 pub fn uninstall(stop: bool) -> Result<()> {
+    #[cfg(windows)]
+    if stop {
+        let dir = paths::data_dir()?;
+        if dir.is_dir() {
+            std::fs::write(dir.join("tray.stop"), paths::now_unix().to_string()).context("could not ask the tray to close")?;
+        }
+    }
     if let Some(text) = item_text().filter(|text| !item_is_for_this_folder(text)) {
         let home = item_home(&text).unwrap_or_else(|| "the usual data folder".to_string());
         println!("The login item starts zone for another data folder ({home}), so it was left alone.");

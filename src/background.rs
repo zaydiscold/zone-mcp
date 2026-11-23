@@ -212,6 +212,19 @@ pub fn serve_background(port: Option<u16>) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// At login the keeper inherits the selected library and port. Launch its companion
+/// in that session. Headless installs can still run the service without a tray binary.
+#[cfg(windows)]
+pub fn start_tray(program: &Path, dir: &Path) {
+    let tray = program.with_file_name("zone-tray.exe");
+    if tray.is_file() && !daemon_info::is_locked(&dir.join("tray.lock")) {
+        let mut command = Command::new(tray);
+        if let Err(error) = spawn_detached(&mut command) {
+            warn!("could not start the Windows tray: {error}");
+        }
+    }
+}
+
 /// The keeper itself.
 fn keep(port: Option<u16>) -> Result<ExitCode> {
     // Asked once, now: an update may move this very file aside while the keeper runs, and the
@@ -224,6 +237,8 @@ fn keep(port: Option<u16>) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     let started_at = paths::now_unix();
+    #[cfg(windows)]
+    start_tray(&program, &dir);
     let me = KeeperInfo { pid: std::process::id(), version: env!("CARGO_PKG_VERSION").to_string(), started_at };
     let _ = paths::write_private(&keeper_info_path(&dir), &serde_json::to_vec_pretty(&me)?);
     // What an update left beside the program. A `zone update` that is still finishing holds its
@@ -367,7 +382,7 @@ pub fn remove_old_programs(program: &Path) -> usize {
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let old = ["zone.exe.old-", "zonew.exe.old-"].iter().any(|prefix| name.starts_with(prefix) && name[prefix.len()..].chars().all(|c| c.is_ascii_digit()) && name.len() > prefix.len());
+        let old = ["zone.exe.old-", "zonew.exe.old-", "zone-tray.exe.old-"].iter().any(|prefix| name.starts_with(prefix) && name[prefix.len()..].chars().all(|c| c.is_ascii_digit()) && name.len() > prefix.len());
         if old && std::fs::remove_file(entry.path()).is_ok() {
             removed += 1;
         }
@@ -477,10 +492,10 @@ mod tests {
     #[test]
     fn files_left_by_an_update_are_removed_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["zone.exe", "zonew.exe", "zone.exe.old-638123", "zonew.exe.old-1", "zone.exe.old-", "zone.exe.old-12x", "notes.txt"] {
+        for name in ["zone.exe", "zonew.exe", "zone.exe.old-638123", "zonew.exe.old-1", "zone-tray.exe.old-2", "zone.exe.old-", "zone.exe.old-12x", "notes.txt"] {
             std::fs::write(dir.path().join(name), "x").unwrap();
         }
-        assert_eq!(remove_old_programs(&dir.path().join("zone.exe")), 2);
+        assert_eq!(remove_old_programs(&dir.path().join("zone.exe")), 3);
         let mut left: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
         left.sort();
         assert_eq!(left, ["notes.txt", "zone.exe", "zone.exe.old-", "zone.exe.old-12x", "zonew.exe"]);

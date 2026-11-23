@@ -361,6 +361,9 @@ enum Command {
     },
     /// Stop zone and no longer start it at login. Your library is kept
     Uninstall {
+        /// Remove only the login entry, keeping the running service and AI registration preferences
+        #[arg(long)]
+        only_login_item: bool,
         /// Remove the login item but do not stop or unload anything
         #[arg(long)]
         no_stop: bool,
@@ -831,7 +834,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 clients::register_on_install()?;
             }
         }
-        Command::Uninstall { no_stop } => {
+        Command::Uninstall { only_login_item: true, .. } => service::uninstall(false)?,
+        Command::Uninstall { no_stop, .. } => {
             service::uninstall(!no_stop)?;
             clients::stop_registering_by_itself();
             println!("AI clients keep zone registered (it works without the daemon). `zone mcp uninstall --all` takes it out of them.");
