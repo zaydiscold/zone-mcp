@@ -721,7 +721,7 @@ fn the_windows_login_entry_replaces_the_vbscript_and_keeps_zone_running() {
     let out = String::from_utf8_lossy(&installed.stdout).to_string();
     assert!(installed.status.success() && out.contains("Removed the old launcher script") && out.contains("it is running"), "{out}\n{}", String::from_utf8_lossy(&installed.stderr));
     let entry = login_entry(&sandbox).expect("the login entry is there");
-    assert_eq!(entry, format!("\"{}\" serve --background --home \"{}\"", exe.with_file_name("zonew.exe").display(), sandbox.zone_home.display()));
+    assert_eq!(entry, format!("\"{}\" serve --background --port 0 --home \"{}\"", exe.with_file_name("zonew.exe").display(), sandbox.zone_home.display()));
     assert!(!script.exists(), "the old script is still there");
     let check = login_check();
     assert_eq!(check["result"], "ok", "{check}");

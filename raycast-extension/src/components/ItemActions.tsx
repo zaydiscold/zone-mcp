@@ -18,6 +18,8 @@ import {
 } from "../lib/format";
 import { itemRoute, ZoneItem } from "../lib/zone";
 
+const primaryModifier = process.platform === "win32" ? "ctrl" : "cmd";
+
 export interface ItemActionsProps {
   item: ZoneItem;
   /** Called after Mark Done or Mark Not Done changed the item. */
@@ -54,7 +56,7 @@ export function ItemActions({ item, onDoneChanged, onToggleDetail, onRefresh, ex
             <Action
               title="Mark as Not Done"
               icon={Icon.Circle}
-              shortcut={{ modifiers: ["cmd"], key: "d" }}
+              shortcut={{ modifiers: [primaryModifier], key: "d" }}
               onAction={async () => {
                 if (await markDone([item], false)) onDoneChanged?.(item, false);
               }}
@@ -63,7 +65,7 @@ export function ItemActions({ item, onDoneChanged, onToggleDetail, onRefresh, ex
             <Action
               title="Mark as Done"
               icon={Icon.CheckCircle}
-              shortcut={{ modifiers: ["cmd"], key: "d" }}
+              shortcut={{ modifiers: [primaryModifier], key: "d" }}
               onAction={async () => {
                 if (await markDone([item], true)) onDoneChanged?.(item, true);
               }}
@@ -82,7 +84,7 @@ export function ItemActions({ item, onDoneChanged, onToggleDetail, onRefresh, ex
           <Action
             title="Toggle Details"
             icon={Icon.AppWindowSidebarRight}
-            shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
+            shortcut={{ modifiers: [primaryModifier, "shift"], key: "d" }}
             onAction={onToggleDetail}
           />
         )}

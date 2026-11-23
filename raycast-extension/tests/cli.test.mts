@@ -8,6 +8,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  agentRead,
+  runZone,
+  findZone,
   listItems,
   searchItems,
   setDone,
@@ -32,6 +35,16 @@ test("a missing zone path is reported as not found", async () => {
   setSettingsSource(() => ({ zonePath: "/nonexistent/zone" }));
   await assert.rejects(listItems({}, 1), (error: unknown) => error instanceof ZoneNotFoundError);
 });
+
+test(
+  "Windows automatically discovers the installer copy",
+  { skip: process.platform !== "win32" || !process.env.ZONE_TEST_WINDOWS_INSTALL },
+  async () => {
+    setSettingsSource(() => ({ libraryFolder: home }));
+    assert.equal(findZone(), process.env.ZONE_TEST_WINDOWS_INSTALL);
+    assert.ok((await listItems({}, 1)).total > 0);
+  },
+);
 
 test("list pages by time cover every item once", live, async () => {
   setSettingsSource(() => ({ zonePath: bin, libraryFolder: home }));
@@ -97,4 +110,24 @@ test("done is set and cleared through zone mcp", live, async () => {
 test("zone's own errors come through as ZoneCommandError", live, async () => {
   setSettingsSource(() => ({ zonePath: bin, libraryFolder: home }));
   await assert.rejects(listItems({ since: "not a time" }, 1), (error: unknown) => error instanceof ZoneCommandError);
+});
+
+test("Raycast AI respects the switch while manual reads remain available", live, async () => {
+  setSettingsSource(() => ({ zonePath: bin, libraryFolder: home }));
+  const read = agentRead(() => listItems({}, 1));
+  try {
+    assert.ok((await read()).total > 0);
+    await runZone(["agents", "off"]);
+    await assert.rejects(read(), /access is off/i);
+    assert.ok((await listItems({}, 1)).total > 0);
+    await runZone(["agents", "on"]);
+    const interrupted = agentRead(async () => {
+      const page = await listItems({}, 1);
+      await runZone(["agents", "off"]);
+      return page;
+    });
+    await assert.rejects(interrupted(), /access is off/i);
+  } finally {
+    await runZone(["agents", "on"]);
+  }
 });

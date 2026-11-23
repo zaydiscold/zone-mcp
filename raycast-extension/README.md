@@ -4,7 +4,7 @@ Your [Zone for iPhone](https://apps.apple.com/app/id6830955448) dictations, voic
 transcripts and clips, searchable from Raycast, and readable by Raycast AI.
 
 The extension reads the copy of your library that [`zone`](https://github.com/zaydiscold/zone-mcp)
-keeps on your Mac. It runs the `zone` command line program and nothing else: no network requests,
+keeps on your computer. It runs the `zone` command line program and nothing else: no network requests,
 no analytics, no account. Your words stay where zone keeps them; the extension caches none of
 them on disk.
 
@@ -28,6 +28,8 @@ menu bar app.
 
 ## AI tools
 
+The Agents switch also controls AI tool results and Zone mentions. Manual search stays available when the switch is off.
+
 Mention `@zone` in Raycast AI, or use the tools from another agent through Raycast's MCP server.
 
 | Tool | What it does |
@@ -46,20 +48,11 @@ The instructions and evals for Raycast AI are in [`ai.yaml`](ai.yaml).
 
 ## Requirements
 
-- macOS and Raycast 2.13 or later.
-- `zone` installed on the Mac:
+Use Raycast on macOS or Windows. [Install the Zone desktop CLI](https://github.com/zaydiscold/zone-mcp#install),
+then run `zone install` and `zone pair` to connect your iPhone. A local Zone backup also works.
 
-  ```sh
-  curl -fsSL https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.sh | sh
-  zone install   # start zone at login
-  zone pair      # pair your iPhone
-  ```
-
-  or Zone for Mac, which brings `zone` with it.
-- Zone on your iPhone, paired with the Mac (Settings > Computers), or a Zone backup folder.
-
-The extension finds `zone` in `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin` or inside
-`Zone.app`. Set the **zone Path** preference to use another copy, and **Library Folder** to read
+On Windows, the extension looks in `%LOCALAPPDATA%\Zone\bin` and the Cargo bin directory.
+On macOS, it checks `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin` and `Zone.app`. Set the **zone Path** preference to use another copy, and **Library Folder** to read
 another library (zone's `ZONE_HOME`).
 
 Reading works whether or not zone is running. Opening zone's page, Flash and pairing need zone

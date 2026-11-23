@@ -36,16 +36,19 @@ pub fn off_message() -> String {
     format!("Agent access to Zone is turned off on this computer, so nothing from the person's library can be read through this connection. Tell the person. {HOW_TO_TURN_ON}")
 }
 
-/// Whether agents may use the library. A library that cannot be read counts as on: the tools
-/// then report what is wrong themselves.
+/// An absent setting is the original default. If the setting cannot be read, withhold access.
+fn read_enabled(db: &Db) -> Result<bool> {
+    Ok(db.meta_get(SETTING)?.as_deref() != Some("off"))
+}
+
 pub fn enabled(db: &Db) -> bool {
-    !matches!(db.meta_get(SETTING), Ok(Some(value)) if value == "off")
+    read_enabled(db).unwrap_or(false)
 }
 
 /// Turns agent access on or off. `by` says who did it (`cli`, `page`), for the feed. Returns
 /// whether anything changed: switching to what it already is records nothing.
 pub fn set_enabled(db: &Db, on: bool, by: &str) -> Result<bool> {
-    if enabled(db) == on {
+    if read_enabled(db)? == on {
         return Ok(false);
     }
     if on {

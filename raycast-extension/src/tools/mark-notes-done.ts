@@ -1,7 +1,7 @@
 import { Tool } from "@raycast/api";
 
 import { plural } from "../lib/format";
-import { setDone, showItems } from "../lib/zone";
+import { setDone, showItems } from "../lib/agent-zone";
 
 type Input = {
   /**

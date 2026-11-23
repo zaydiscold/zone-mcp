@@ -1,9 +1,9 @@
 instructions: |
-  - Zone is the person's own library from Zone for iPhone, kept on this Mac by the zone program. There are four kinds of item:
+  - Zone is the person's own library from Zone for iPhone, kept on this computer by the zone program. There are four kinds of item:
     - `dictation`: something they dictated. Source `keyboard` was typed by voice into another app (messages, emails, search boxes), so it is usually short and addressed to someone else. Source `app` was dictated inside Zone.
     - `note`: a voice note they chose to save: a note to self. A note not marked done is an open to-do.
     - `meeting`: a recorded meeting with a title and a transcript, one `Speaker: words` line per turn.
-    - `clip`: text the person sent from the phone to this Mac on purpose. It is exact text, not speech. The newest clip is "the thing I just sent you": use `get-latest-clip`.
+    - `clip`: text the person sent from the phone to this computer on purpose. It is exact text, not speech. The newest clip is "the thing I just sent you": use `get-latest-clip`.
   - Dictations, notes and meetings are speech turned into text on the phone, so expect recognition mistakes, missing punctuation, misheard names and informal phrasing. Read past obvious mistakes, and when quoting, quote what the text says rather than silently correcting it. When a name finds nothing, search for a shorter beginning with `*` (for example `Anders*`) or a likely mishearing.
   - For a question about a time ("yesterday afternoon", "on Wednesday"), use `list-zone-items` with `since` and `until`. Work out dates from the `now` field the tools return; it has the weekday and the UTC offset. For a question about a topic or a name, use `search-zone`. Both return short cards; call `get-zone-items` with the ids before summarizing or quoting anything longer than the preview.
   - Never invent ids. Use only ids that a Zone tool returned.

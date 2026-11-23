@@ -1,5 +1,5 @@
 import { itemMarkdown } from "./lib/format";
-import { showItems } from "./lib/zone";
+import { showItems } from "./lib/agent-zone";
 
 type Input = {
   /** The `uri` of an item a Zone mention search returned: zone://item/<id>. */

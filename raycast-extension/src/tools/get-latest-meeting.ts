@@ -1,5 +1,5 @@
 import { toFull } from "../lib/ai";
-import { listItems } from "../lib/zone";
+import { listItems } from "../lib/agent-zone";
 
 type Input = {
   /**

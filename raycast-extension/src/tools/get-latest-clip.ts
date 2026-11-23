@@ -1,7 +1,7 @@
-import { latestClip } from "../lib/zone";
+import { latestClip } from "../lib/agent-zone";
 
 /**
- * Get the newest clip: text the person sent from Zone on their iPhone to this Mac on purpose
+ * Get the newest clip: text the person sent from Zone on their iPhone to this computer on purpose
  * (from the phone's clipboard, shared from an app, a shortcut, or typed). It is exact text, not
  * speech. Use it for "what I just sent", "the link from my phone" or "the thing I copied on my
  * phone".

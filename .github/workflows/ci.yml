@@ -53,6 +53,26 @@ jobs:
       - name: Test
         run: cargo test --locked --no-fail-fast
 
+      - name: Exercise the Raycast extension with the Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'Raycast Test'
+          $env:ZONE_HOME = Join-Path $env:LOCALAPPDATA 'library'
+          $bin = Join-Path $env:LOCALAPPDATA 'Zone/bin'
+          $backup = Join-Path $env:LOCALAPPDATA 'backups/demo.zonebackup'
+          New-Item -Type Directory -Force $bin, $backup | Out-Null
+          $env:ZONE_TEST_BIN = Join-Path $bin 'zone.exe'
+          $env:ZONE_TEST_HOME = $env:ZONE_HOME
+          Copy-Item target/debug/zone.exe $env:ZONE_TEST_BIN
+          $env:ZONE_TEST_WINDOWS_INSTALL = (Resolve-Path $env:ZONE_TEST_BIN).Path
+          $notes = 1..42 | ForEach-Object { @{id = [guid]::NewGuid().ToString(); text = "The demo note $_"; createdAt = 816120000 + $_} }
+          @{formatVersion=1; createdAt=816120100; notes=$notes; dictations=@(); meetings=@()} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $backup 'library.json') -Encoding utf8NoBOM
+          & $env:ZONE_TEST_BIN backup-folder (Split-Path $backup)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types --test raycast-extension/tests/cli.test.mts
+
   # Windows on ARM (many new laptops): the release builds zone there too. The image may lack
   # rustup, and ring (under iroh) compiles its arm64 code for Windows with clang only.
   test-windows-arm:

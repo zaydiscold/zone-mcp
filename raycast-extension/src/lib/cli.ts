@@ -105,7 +105,10 @@ export interface ZoneStatus {
 
 export const INSTALL_URL = "https://github.com/zaydiscold/zone-mcp#install";
 export const APP_STORE_URL = "https://apps.apple.com/app/id6830955448";
-export const INSTALL_COMMAND = "curl -fsSL https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.sh | sh";
+export const INSTALL_COMMAND =
+  process.platform === "win32"
+    ? "irm https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.ps1 | iex"
+    : "curl -fsSL https://raw.githubusercontent.com/zaydiscold/zone-mcp/main/install.sh | sh";
 
 /** zone could not be found where the preference or the usual places say. */
 export class ZoneNotFoundError extends Error {
@@ -150,7 +153,9 @@ export function setSettingsSource(source: () => ZoneSettings) {
 }
 
 function expandHome(path: string): string {
-  return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+  return path === "~" || path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))
+    ? join(homedir(), path.slice(1))
+    : path;
 }
 
 function isExecutable(path: string): boolean {
@@ -163,6 +168,11 @@ function isExecutable(path: string): boolean {
 }
 
 export function candidatePaths(): string[] {
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local");
+    const cargo = process.env.CARGO_HOME || join(homedir(), ".cargo");
+    return [join(local, "Zone", "bin", "zone.exe"), join(cargo, "bin", "zone.exe")];
+  }
   return [
     join(homedir(), ".local/bin/zone"),
     "/usr/local/bin/zone",
@@ -205,7 +215,7 @@ export function runZone(args: string[], options: RunOptions = {}): Promise<strin
     execFile(
       program,
       args,
-      { env: zoneEnv(), maxBuffer: 256 * 1024 * 1024, timeout: 30_000, signal: options.signal },
+      { env: zoneEnv(), windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout: 30_000, signal: options.signal },
       (error, stdout, stderr) => {
         if (!error) return resolve(stdout);
         const code = typeof error.code === "number" ? error.code : null;
@@ -224,6 +234,23 @@ export function runZone(args: string[], options: RunOptions = {}): Promise<strin
 
 async function runJson<T>(args: string[], options?: RunOptions): Promise<T> {
   return JSON.parse(await runZone([...args, "--json"], options)) as T;
+}
+
+/** Raycast's AI tools and mention provider share the library's Agents switch.
+ * Recheck before returning text in case the person switched access during a read.
+ * A CLI that predates the switch cannot verify access and the request fails. */
+export function agentRead<Args extends unknown[], Result>(read: (...args: Args) => Promise<Result>) {
+  async function permission() {
+    const setting = await runJson<{ enabled: boolean; changed_at: number | null }>(["agents", "status"]);
+    if (setting.enabled !== true) throw new Error("Agent access is off in Zone.");
+    return setting.changed_at;
+  }
+  return async (...args: Args): Promise<Result> => {
+    const started = await permission();
+    const result = await read(...args);
+    if ((await permission()) !== started) throw new Error("Agent access changed during this request. Try again.");
+    return result;
+  };
 }
 
 /** A time zone understands: RFC 3339 in UTC with microseconds. */
@@ -384,7 +411,7 @@ interface McpResult {
 export async function setDone(ids: string[], done: boolean): Promise<{ updated: number; not_found: string[] }> {
   const program = findZone();
   const result = await new Promise<McpResult>((resolve, reject) => {
-    const child = spawn(program, ["mcp"], { env: zoneEnv(), stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(program, ["mcp"], { env: zoneEnv(), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     let buffer = "";
     let stderr = "";
     let settled = false;

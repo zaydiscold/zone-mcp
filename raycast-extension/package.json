@@ -2,11 +2,12 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "zone",
   "title": "Zone",
-  "description": "Search your Zone for iPhone dictations, voice notes, meetings and clips on your Mac, paste the latest clip, and tick off open notes.",
+  "description": "Search your Zone for iPhone dictations, voice notes, meetings and clips on your computer, paste the latest clip, and tick off open notes.",
   "icon": "icon.png",
   "author": "zaydiscold",
   "platforms": [
-    "macOS"
+    "macOS",
+    "Windows"
   ],
   "categories": [
     "Productivity"
@@ -25,7 +26,7 @@
       "name": "zonePath",
       "type": "textfield",
       "title": "zone Path",
-      "description": "Where the zone program is. Leave empty to look in ~/.local/bin, /usr/local/bin, /opt/homebrew/bin and Zone.app.",
+      "description": "Where the zone program is. Leave empty to find a standard Zone installation on Windows or macOS.",
       "placeholder": "Auto-detect",
       "required": false
     },
@@ -93,7 +94,7 @@
     {
       "name": "recent-clips",
       "title": "Recent Clips",
-      "description": "Text you sent from your iPhone to this Mac, newest first.",
+      "description": "Text you sent from your iPhone to this computer, newest first.",
       "mode": "view",
       "keywords": [
         "clipboard",
@@ -135,7 +136,7 @@
     {
       "name": "get-latest-clip",
       "title": "Get Latest Clip",
-      "description": "Get the newest clip: text the person sent from their iPhone to this Mac on purpose, \"the thing I just sent you\"."
+      "description": "Get the newest clip: text the person sent from their iPhone to this computer on purpose, \"the thing I just sent you\"."
     },
     {
       "name": "get-open-notes",

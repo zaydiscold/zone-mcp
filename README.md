@@ -163,6 +163,8 @@ cargo build --release
 cp target/release/zone ~/.local/bin/      # or anywhere on your PATH
 ```
 
+Use the [Zone Raycast extension](raycast-extension/) on Windows or macOS to search transcriptions, paste the latest clip, and mark notes done. The extension is available from source.
+
 ### Windows
 
 Run the PowerShell installer above, then `zone install`. The **Z beside the clock** opens
@@ -821,8 +823,8 @@ git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The tag must match the version in `Cargo.toml`. The workflow builds a universal program for
-macOS, static programs for Linux on x86_64 and arm64, and `zone.exe` for Windows, runs
-`install.sh` against what it built, and attaches the archives, `SHA256SUMS` and a filled-in
+macOS, static programs for Linux on x86_64 and arm64, and Windows x64 and ARM64 ZIPs containing the CLI, login launcher and tray. It runs
+`install.sh` and `install.ps1` against the packaged programs, and attaches the archives, `SHA256SUMS` and a filled-in
 Homebrew formula to a draft release. Nothing is public until you publish the draft on GitHub.
 The install scripts and `zone update` find a release only once it is published and is the latest.
 The formula template is [packaging/homebrew/zone.rb](packaging/homebrew/zone.rb): its header says

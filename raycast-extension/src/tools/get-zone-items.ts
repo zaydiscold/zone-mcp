@@ -1,5 +1,5 @@
 import { clampLimit, toFull } from "../lib/ai";
-import { showItems } from "../lib/zone";
+import { showItems } from "../lib/agent-zone";
 
 type Input = {
   /**

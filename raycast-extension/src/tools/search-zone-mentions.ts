@@ -2,7 +2,7 @@ import { Icon } from "@raycast/api";
 
 import { withoutRecordings } from "../lib/ai";
 import { fullDate, KIND_LABEL, rowTitle } from "../lib/format";
-import { Kind, listItems, searchItems, ZoneItem } from "../lib/zone";
+import { Kind, listItems, searchItems, ZoneItem } from "../lib/agent-zone";
 
 type Input = {
   /** What the person typed after choosing Zone Items, empty for the newest items. */

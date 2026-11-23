@@ -1,5 +1,5 @@
 import { clampLimit, nowLocal, parseKinds, toCard, withoutRecordings } from "../lib/ai";
-import { searchItems } from "../lib/zone";
+import { searchItems } from "../lib/agent-zone";
 
 type Input = {
   /**

@@ -56,7 +56,7 @@ impl ZoneServer {
 
     /// Whether agents may use the library right now. Read on every request.
     fn agents_on(&self) -> bool {
-        self.db.lock().map(|db| agents::enabled(&db)).unwrap_or(true)
+        self.db.lock().map(|db| agents::enabled(&db)).unwrap_or(false)
     }
 
     fn tool_list(&self) -> Vec<Tool> {

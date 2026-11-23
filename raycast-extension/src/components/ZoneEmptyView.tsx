@@ -17,7 +17,7 @@ export function notFoundDescription(error: ZoneNotFoundError): string {
   if (error.configuredPath) {
     return `No zone program at ${error.configuredPath}. Fix the zone Path preference, or clear it to look in the usual places.`;
   }
-  return "zone keeps a copy of your Zone for iPhone library on this Mac: dictations, voice notes, meetings and clips. Install it, then pair your phone with zone pair.";
+  return "zone keeps a copy of your Zone for iPhone library on this computer: dictations, voice notes, meetings and clips. Install it, then pair your phone with zone pair.";
 }
 
 /** The view for an error: zone missing, or zone saying no. */

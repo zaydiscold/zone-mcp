@@ -15,7 +15,7 @@ function statusMarkdown(status: ZoneStatus): string {
       "# zone Is Not Running",
       "",
       "Your library can still be read here, but nothing new arrives from your iPhone until zone runs.",
-      "Run `zone install` once in Terminal to start zone every time you log in.",
+      "Run `zone install` once in your terminal to start zone every time you log in.",
     );
   }
   lines.push("");
@@ -80,7 +80,7 @@ export default function ZoneStatusCommand() {
               />
             </Detail.Metadata.TagList>
             <Detail.Metadata.Label title="Version" text={status.daemon?.version ?? status.computer.zone_version} />
-            <Detail.Metadata.Label title="This Mac" text={status.computer.name} />
+            <Detail.Metadata.Label title="This Computer" text={status.computer.name} />
             <Detail.Metadata.Separator />
             <Detail.Metadata.Label
               title="Phones"
